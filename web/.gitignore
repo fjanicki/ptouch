@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dev-dist/
+src/wasm/pkg/
+test-results/
+playwright-report/
+.vitest-attachments/
+.vitest/

@@ -1,6 +1,10 @@
-# Rust CI: formatting, lints, tests on Linux and macOS, and the no_std / wasm guards of the
-# sans-IO core (docs/ARCHITECTURE.md §8.1, action versions per §10). Hardware tests are
-# `#[ignore]`d and never run here.
+# CI: Rust formatting, lints, tests on Linux and macOS, the no_std / wasm guards of the sans-IO
+# core, workflow lint, and the web studio (ptouch-wasm + Vite app, via the reusable web.yml).
+# This whole workflow gates the Pages deploy: pages.yml runs after a successful CI run on main
+# (workflow_run) and calls it (workflow_call) for manual deploys, so the core's golden byte-stream
+# tests, fmt, clippy, gen-models --check and the no_std build all guard what ships, and nothing
+# runs twice per push. docs/ARCHITECTURE.md §8, §9; action versions per §10.
+# Hardware tests are `#[ignore]`d and never run here.
 name: CI
 
 on:
@@ -8,12 +12,14 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # github.workflow is the caller's name when called from pages.yml (no clash with a push run).
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -43,6 +49,11 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: generated model table is up to date
         run: cargo xtask gen-models --check
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: actionlint@1.7.12
+      - name: actionlint
+        run: actionlint
 
   test:
     name: test (${{ matrix.os }})
@@ -81,3 +92,7 @@ jobs:
         run: cargo build -p ptouch --no-default-features --target thumbv7em-none-eabihf
       - name: clippy on wasm32
         run: cargo clippy -p ptouch --all-features --target wasm32-unknown-unknown -- -D warnings
+
+  web:
+    name: web studio
+    uses: ./.github/workflows/web.yml

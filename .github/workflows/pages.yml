@@ -1,0 +1,111 @@
+# Web studio → GitHub Pages (https://fjanicki.github.io/ptouch/): deploy only what the full CI
+# passed (Rust fmt/clippy/tests incl. the core's golden byte streams, gen-models --check, no_std,
+# and the web checks), then build the wasm bindings + Vite app under the Pages base path and
+# deploy (docs/ARCHITECTURE.md §9; action versions per §10). Pushes to main: runs after CI
+# succeeded (workflow_run), on the commit CI tested. Manual runs call CI first. Pages must be
+# enabled with source "GitHub Actions" for `deploy`.
+name: Pages
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Don't cancel a deploy mid-flight.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.97.1"   # must match rust-toolchain.toml
+  NODE_VERSION: "24.18.0"
+  WASM_PACK_VERSION: "0.15.0"
+
+jobs:
+  # Manual deploys run the full CI here; pushes were already gated by the CI run that triggered us.
+  ci:
+    name: CI
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: build site
+    needs: ci
+    # A red main never deploys: only after a successful CI run of a push to main, or a manual run
+    # whose CI passed.
+    if: >-
+      always() &&
+      ((github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push') ||
+       (github.event_name == 'workflow_dispatch' && needs.ci.result == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The commit CI tested (workflow_run runs on the default branch's latest state).
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - id: pages
+        uses: actions/configure-pages@v6
+      - name: build
+        run: npm ci && npm run wasm && npm run build
+        working-directory: web
+        env:
+          # "/ptouch" on https://fjanicki.github.io/ptouch/ → Vite base "/ptouch/".
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+      - name: check the built site (base path, CSP, service worker, manifest)
+        working-directory: web/dist
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: |
+          base="${BASE_PATH%/}/"
+          test -f index.html && test -f sw.js && test -f manifest.webmanifest
+          grep -q 'http-equiv="Content-Security-Policy"' index.html
+          grep -q "connect-src 'self'" index.html
+          grep -q "src=\"${base}assets/" index.html
+          grep -q "\"scope\":\"${base}\"" manifest.webmanifest
+          ls assets/*.wasm
+          grep -q '\.wasm' sw.js
+          # Source maps are published for debugging but never precached.
+          if grep -q '\.map"' sw.js; then echo "source maps in precache" >&2; exit 1; fi
+          # Licence notices of everything bundled ship with the site.
+          test -f licenses/THIRD_PARTY.md && test -f licenses/index.html
+          grep -q 'Permission is hereby granted' licenses/MIT.txt
+          grep -q 'Apache License' licenses/Apache-2.0.txt
+          grep -q 'ISC License' licenses/ISC-Lucide.txt
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: web/dist
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

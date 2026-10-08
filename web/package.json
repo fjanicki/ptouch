@@ -1,0 +1,43 @@
+{
+  "name": "ptouch-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Install-free web print studio for Brother P-touch label printers (Web Serial / WebUSB)",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.18.0"
+  },
+  "scripts": {
+    "wasm": "wasm-pack build ../crates/ptouch-wasm --target web --release --out-dir ../../web/src/wasm/pkg --out-name ptouch",
+    "wasm:dev": "wasm-pack build ../crates/ptouch-wasm --target web --dev --out-dir ../../web/src/wasm/pkg --out-name ptouch",
+    "predev": "node scripts/ensure-wasm.mjs",
+    "dev": "vite",
+    "precheck": "node scripts/ensure-wasm.mjs",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "build": "npm run check && vite build",
+    "preview": "vite preview",
+    "test": "vitest run --project unit",
+    "test:browser": "vitest run --project browser",
+    "test:all": "vitest run",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "idb-keyval": "6.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@tsconfig/svelte": "5.0.8",
+    "@types/node": "24.19.0",
+    "@types/w3c-web-serial": "1.0.8",
+    "@types/w3c-web-usb": "1.0.14",
+    "@vitest/browser-playwright": "5.0.3",
+    "svelte": "5.57.2",
+    "svelte-check": "4.7.6",
+    "typescript": "6.0.3",
+    "vite": "8.3.4",
+    "vite-plugin-pwa": "2.0.0",
+    "vitest": "5.0.3"
+  }
+}

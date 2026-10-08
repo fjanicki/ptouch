@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/ptouch", "crates/ptouch-transport", "crates/ptouch-cli", "xtask"]
+members = [
+    "crates/ptouch",
+    "crates/ptouch-transport",
+    "crates/ptouch-cli",
+    "crates/ptouch-wasm",
+    "xtask",
+]
 default-members = ["crates/ptouch", "crates/ptouch-transport", "crates/ptouch-cli"]
 
 [workspace.package]
@@ -55,6 +61,17 @@ clap = { version = "=4.6.7", features = ["derive", "env"] }
 fontdue = "=0.9.4"
 png = "=0.18.1"
 ctrlc = "=3.5.2"
+
+# --- browser bindings (crates/ptouch-wasm; ARCHITECTURE.md §4.2, §10) ---
+# wasm-bindgen must equal the wasm-bindgen CLI that wasm-pack 0.15.0 downloads, hence `=`.
+wasm-bindgen = "=0.2.129"
+js-sys = "=0.3.106"
+tsify = { version = "=0.5.8", default-features = false, features = ["js"] }
+serde-wasm-bindgen = "=0.6.5"
+wasm-bindgen-test = "=0.3.79"
+# Barcode / QR module matrices for the studio (MIT / MIT OR Apache-2.0).
+fast_qr = { version = "=0.14.0", default-features = false }
+barcoders = { version = "=2.0.0", default-features = false, features = ["std"] }
 
 # --- tooling / tests ---
 toml = "=1.1.7"

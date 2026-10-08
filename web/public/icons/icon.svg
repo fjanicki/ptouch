@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a3550"/>
+      <stop offset="1" stop-color="#151b28"/>
+    </linearGradient>
+    <linearGradient id="tape" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e9edf5"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- printer slot -->
+  <rect x="64" y="168" width="64" height="176" rx="20" fill="#0d121c"/>
+  <rect x="104" y="188" width="10" height="136" rx="5" fill="#5b82ff"/>
+  <!-- label tape -->
+  <rect x="110" y="196" width="338" height="120" rx="18" fill="url(#tape)"/>
+  <!-- text lines -->
+  <rect x="150" y="226" width="150" height="22" rx="11" fill="#1d2433"/>
+  <rect x="150" y="264" width="104" height="22" rx="11" fill="#2456d6"/>
+  <!-- code -->
+  <g fill="#1d2433">
+    <rect x="338" y="222" width="20" height="20" rx="3"/>
+    <rect x="364" y="222" width="20" height="20" rx="3"/>
+    <rect x="390" y="222" width="20" height="20" rx="3"/>
+    <rect x="338" y="248" width="20" height="20" rx="3"/>
+    <rect x="390" y="248" width="20" height="20" rx="3"/>
+    <rect x="338" y="274" width="20" height="20" rx="3"/>
+    <rect x="364" y="274" width="20" height="20" rx="3"/>
+  </g>
+  <rect x="390" y="274" width="20" height="20" rx="3" fill="#2456d6"/>
+</svg>

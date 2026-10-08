@@ -1,0 +1,40 @@
+[package]
+name = "ptouch-wasm"
+description = "wasm-bindgen + tsify bindings of the ptouch core for the browser studio (bindings only, no protocol logic)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories = ["wasm", "hardware-support"]
+publish = false
+
+[lib]
+# cdylib for wasm-pack, rlib so native `cargo test`/clippy can build the DTO conversions.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `virtual`: VirtualPrinter + decode_job back the TS MockTransport and the diagnostics page.
+ptouch = { workspace = true, features = ["virtual"] }
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true, features = ["std"] }
+serde-wasm-bindgen = { workspace = true }
+tsify = { workspace = true }
+fast_qr = { workspace = true }
+barcoders = { workspace = true }
+
+[dev-dependencies]
+wasm-bindgen-test = { workspace = true }
+
+[lints]
+workspace = true
+
+# wasm-pack 0.15.0 downloads binaryen version_117; `-Oz` is all we need (ARCHITECTURE.md §9).
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz"]
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false

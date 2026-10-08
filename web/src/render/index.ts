@@ -1,0 +1,11 @@
+// W3 — public surface of the render layer.
+export * from './types'
+export * from './units'
+export { renderLabel } from './renderer'
+export { paintPreview, thumbnailPng } from './preview'
+export { buildPrintJob, copiesOf, jobOptions, printBlocker, MAX_COPIES } from './job'
+export { FONTS, fontDef, ensureFonts, preloadAllFonts, resolveWeight, fontsUsed, CODE_TEXT_FONT, type FontDef, type FontReport } from './fonts'
+export { ICONS, ICON_CATEGORIES, iconById, searchIcons, type IconDef, type IconCategory } from './icons'
+export { codeMatrix, codeSizeDots, maxModuleDots, tapeMarginDots, isLinear, humanReadable, ean13CheckDigit, type CodeSize } from './codes'
+export { canvasReadbackIsNoisy } from './antifp'
+export { imageSize, dataUrlToBlob } from './images'

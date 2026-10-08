@@ -1,0 +1,95 @@
+# Web studio checks, called by ci.yml (every push / PR; CI as a whole gates the Pages deploy):
+# ptouch-wasm clippy on wasm32 + wasm-bindgen tests in headless Chrome, then the Vite app —
+# svelte-check, Vitest (unit + browser), Playwright e2e against the production build under
+# /ptouch/ (navigator.serial mocked, backed by the wasm VirtualPrinter), and a Pages-like build.
+# docs/ARCHITECTURE.md §8.3, §8.4, §9; tool and action versions per §10.
+name: Web
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.97.1"   # must match rust-toolchain.toml
+  NODE_VERSION: "24.18.0"
+  WASM_PACK_VERSION: "0.15.0"
+
+jobs:
+  web:
+    name: wasm + web app
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
+      - name: clippy (ptouch-wasm on wasm32)
+        run: cargo clippy -p ptouch-wasm --all-targets --target wasm32-unknown-unknown -- -D warnings
+      - name: wasm-bindgen tests (headless Chrome)
+        run: wasm-pack test --headless --chrome --chromedriver "$CHROMEWEBDRIVER/chromedriver" crates/ptouch-wasm
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: install
+        run: npm ci
+        working-directory: web
+      - name: build wasm package (release)
+        run: npm run wasm
+        working-directory: web
+      - name: wasm size budget (150 KB gzipped)
+        working-directory: web/src/wasm/pkg
+        run: |
+          size=$(gzip -9 -c ptouch_bg.wasm | wc -c)
+          echo "ptouch_bg.wasm: $(wc -c < ptouch_bg.wasm) B raw, ${size} B gzipped"
+          echo "### ptouch_bg.wasm: ${size} B gzipped (budget 153600)" >> "$GITHUB_STEP_SUMMARY"
+          test "$size" -le 153600
+      - name: svelte-check
+        run: npm run check
+        working-directory: web
+      - name: install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: vitest (unit + browser)
+        run: npx vitest run
+        working-directory: web
+        env:
+          PW_CHANNEL: chromium
+      - name: playwright e2e (production build served under /ptouch/)
+        run: npx playwright test
+        working-directory: web
+        env:
+          PW_CHANNEL: chromium
+      - name: Pages build (BASE_PATH=/ptouch/)
+        run: npx vite build
+        working-directory: web
+        env:
+          BASE_PATH: /ptouch/
+      - name: JS size budget (entry chunk 120 KB gzipped) and licence notices
+        working-directory: web/dist
+        run: |
+          entry=$(ls assets/index-*.js)
+          size=$(gzip -9 -c "$entry" | wc -c)
+          echo "### ${entry}: ${size} B gzipped (budget 122880)" >> "$GITHUB_STEP_SUMMARY"
+          test "$size" -le 122880
+          test -f licenses/THIRD_PARTY.md && test -f licenses/MIT.txt && test -f licenses/Apache-2.0.txt
+      - name: upload test output
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-test-output
+          path: |
+            web/test-results
+            web/.vitest-attachments
+          retention-days: 7

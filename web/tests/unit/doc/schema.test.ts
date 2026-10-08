@@ -1,0 +1,250 @@
+// W3 — schema factories, ops immutability, history (undo/redo/coalesce), validateDoc.
+import { describe, expect, it } from 'vitest'
+import { createDoc, createItem, SCHEMA_VERSION, validateDoc, type ItemKind, type LabelDoc, type TextItem } from '../../../src/doc/schema'
+import { addItem, duplicateItem, moveItem, removeItem, updateDoc, updateItem } from '../../../src/doc/ops'
+import { COALESCE_MS, createHistory } from '../../../src/doc/history'
+
+const KINDS: ItemKind[] = ['text', 'icon', 'code', 'image', 'shape', 'spacer']
+
+/** Deep-freezes a doc so any mutation by an op throws. */
+function frozen<T>(v: T): T {
+  if (typeof v === 'object' && v !== null) {
+    for (const k of Object.keys(v)) frozen((v as Record<string, unknown>)[k])
+    Object.freeze(v)
+  }
+  return v
+}
+
+describe('schema', () => {
+  it('creates a 24 mm flow label with one text block', () => {
+    const d = createDoc()
+    expect(d.schema).toBe(SCHEMA_VERSION)
+    expect(d.tape.widthMm).toBe(24)
+    expect(d.items.map((i) => i.kind)).toEqual(['text'])
+  })
+
+  it('every factory item survives validation unchanged', () => {
+    const d = createDoc({ items: KINDS.map((k) => createItem(k)) })
+    const v = validateDoc(JSON.parse(JSON.stringify(d)))
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.doc).toEqual(d)
+    expect(v.notices).toEqual([])
+  })
+})
+
+describe('ops', () => {
+  it('never mutate the input', () => {
+    const d = frozen(createDoc())
+    const [d2, id] = addItem(d, 'code')
+    expect(d.items).toHaveLength(1)
+    expect(moveItem(d2, id, 0).items[0]?.id).toBe(id)
+    expect(createItem('spacer').kind).toBe('spacer')
+    const textId = d.items[0]?.id ?? ''
+    expect(updateItem<TextItem>(d, textId, { text: 'Hi' }).items[0]).toMatchObject({ text: 'Hi', kind: 'text' })
+    expect(removeItem(d, textId).items).toHaveLength(0)
+    expect(updateDoc(d, { name: 'x' }).name).toBe('x')
+    expect(d.name).toBe('Untitled label')
+  })
+
+  it('addItem inserts after the given item', () => {
+    const [d1, a] = addItem(createDoc({ items: [] }), 'text')
+    const [d2, b] = addItem(d1, 'icon')
+    const [d3, c] = addItem(d2, 'code', a)
+    expect(d3.items.map((i) => i.id)).toEqual([a, c, b])
+  })
+
+  it('duplicateItem deep-copies right after the source with a new id', () => {
+    const base = frozen(createDoc({ items: [createItem('text'), { ...createItem('icon'), frame: { xMm: 1, yMm: 1, wMm: 5, hMm: 5, rotation: 0 } }] }))
+    const [first, second] = base.items
+    const [d, id] = duplicateItem(base, first?.id ?? '')
+    expect(d.items).toHaveLength(3)
+    expect(d.items[1]?.id).toBe(id)
+    expect(id).not.toBe(first?.id)
+    expect({ ...d.items[1], id: 'x' }).toEqual({ ...first, id: 'x' })
+    const [d2, id2] = duplicateItem(base, second?.id ?? '')
+    expect(d2.items[2]?.frame).toEqual({ xMm: 3, yMm: 3, wMm: 5, hMm: 5, rotation: 0 })
+    expect(d2.items[2]?.id).toBe(id2)
+    expect(duplicateItem(base, 'missing')).toEqual([base, ''])
+  })
+})
+
+describe('history', () => {
+  const docs = (n: number): LabelDoc[] => Array.from({ length: n }, (_, i) => createDoc({ name: `v${i}` }))
+
+  it('undo / redo walk the snapshots; a new edit clears redo', () => {
+    const [a, b, c, d] = docs(4) as [LabelDoc, LabelDoc, LabelDoc, LabelDoc]
+    const h = createHistory(a)
+    expect(h.canUndo).toBe(false)
+    h.push(b)
+    h.push(c)
+    expect(h.undo()).toBe(b)
+    expect(h.undo()).toBe(a)
+    expect(h.undo()).toBeUndefined()
+    expect(h.canRedo).toBe(true)
+    expect(h.redo()).toBe(b)
+    h.push(d)
+    expect(h.canRedo).toBe(false)
+    expect(h.redo()).toBeUndefined()
+    expect(h.undo()).toBe(b)
+  })
+
+  it('coalesces edits with the same key within 1 s', () => {
+    let t = 0
+    const [a, b, c, d, e] = docs(5) as [LabelDoc, LabelDoc, LabelDoc, LabelDoc, LabelDoc]
+    const h = createHistory(a, 200, () => t)
+    h.push(b, 'text:1')
+    t += 300
+    h.push(c, 'text:1') // merged into b's step
+    t += 300
+    h.push(d, 'text:2') // other key → new step
+    t += COALESCE_MS + 1
+    h.push(e, 'text:2') // too late → new step
+    expect(h.undo()).toBe(d)
+    expect(h.undo()).toBe(c)
+    expect(h.undo()).toBe(a)
+    expect(h.canUndo).toBe(false)
+  })
+
+  it('does not coalesce across an undo', () => {
+    let t = 0
+    const [a, b, c] = docs(3) as [LabelDoc, LabelDoc, LabelDoc]
+    const h = createHistory(a, 200, () => t)
+    h.push(b, 'k')
+    h.undo()
+    t += 10
+    h.push(c, 'k')
+    expect(h.undo()).toBe(a)
+  })
+
+  it('keeps at most `capacity` snapshots', () => {
+    const all = docs(10)
+    const h = createHistory(all[0] as LabelDoc, 4)
+    for (const d of all.slice(1)) h.push(d)
+    const seen: string[] = []
+    for (let d = h.undo(); d; d = h.undo()) seen.push(d.name)
+    expect(seen).toEqual(['v8', 'v7', 'v6'])
+  })
+
+  it('reset forgets everything', () => {
+    const [a, b, c] = docs(3) as [LabelDoc, LabelDoc, LabelDoc]
+    const h = createHistory(a)
+    h.push(b)
+    h.reset(c)
+    expect(h.canUndo).toBe(false)
+    expect(h.canRedo).toBe(false)
+    expect(h.undo()).toBeUndefined()
+  })
+
+  it('pushing the present again is a no-op', () => {
+    const [a] = docs(1) as [LabelDoc]
+    const h = createHistory(a)
+    h.push(a)
+    expect(h.canUndo).toBe(false)
+  })
+})
+
+describe('validateDoc', () => {
+  it('rejects things that are not schema-1 labels', () => {
+    for (const raw of [null, 42, 'x', [], {}, { schema: 2, items: [] }, { schema: 1 }, { schema: 1, items: {} }]) {
+      const v = validateDoc(raw)
+      expect(v.ok, JSON.stringify(raw)).toBe(false)
+      if (!v.ok) expect(v.problems[0]).toMatch(/not a ptouch label document/)
+    }
+  })
+
+  it('fills a minimal document with defaults', () => {
+    const v = validateDoc({ schema: 1, items: [] })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.doc).toMatchObject({ tape: { widthMm: 24 }, length: { mode: 'auto' }, marginsMm: { start: 2, end: 2 }, layout: { mode: 'flow', gapMm: 3, align: 'center' }, print: { copies: 1, autoCut: true, threshold: 128 } })
+    expect(v.doc.id).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('clamps numbers and repairs enums with readable notices', () => {
+    const d = createDoc({ items: [] }) as unknown as Record<string, unknown>
+    const v = validateDoc({
+      ...d,
+      tape: { widthMm: 13 },
+      length: { mode: 'fixed', mm: 5000 },
+      print: { copies: 500, autoCut: 'yes', chain: false, mirror: false, threshold: -4 },
+      items: [
+        { id: 'c', kind: 'code', symbology: 'pdf417', data: 123, moduleDots: 0, quietZone: true, ecc: 'Z', showText: false },
+        { id: 't', kind: 'text', text: 'Hi', fontFamily: 'Comic Sans', fontWeight: 650, italic: false, size: { mode: 'mm', mm: 999 }, align: 'middle', lineHeight: 'x', invert: false },
+      ],
+    })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.doc.tape.widthMm).toBe(12)
+    expect(v.doc.length).toEqual({ mode: 'fixed', mm: 1000 })
+    expect(v.doc.print).toEqual({ copies: 99, autoCut: true, chain: false, mirror: false, threshold: 0 })
+    expect(v.doc.items[0]).toMatchObject({ kind: 'code', symbology: 'qr', data: '123', moduleDots: 1, ecc: 'M' })
+    expect(v.doc.items[1]).toMatchObject({ kind: 'text', fontFamily: 'fira-sans', fontWeight: 600, size: { mode: 'mm', mm: 100 }, align: 'center', lineHeight: 1.1 })
+    const all = v.notices.join('\n')
+    expect(all).toMatch(/tape: width 13 mm is not a TZe width; using 12 mm/)
+    expect(all).toMatch(/print: copies 500 out of range; clamped to 99/)
+    expect(all).toMatch(/item 1 \(code\): symbology "pdf417" is not supported/)
+    expect(all).toMatch(/item 2 \(text\): fontFamily "Comic Sans" is not supported/)
+  })
+
+  it('drops unknown kinds and fixes duplicate ids', () => {
+    const d = createDoc({ items: [] }) as unknown as Record<string, unknown>
+    const v = validateDoc({ ...d, items: [{ id: 'a', kind: 'spacer', widthMm: 4 }, { id: 'a', kind: 'spacer', widthMm: 4 }, { id: 'z', kind: 'hologram' }, 'junk'] })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.doc.items).toHaveLength(2)
+    expect(v.doc.items[0]?.id).toBe('a')
+    expect(v.doc.items[1]?.id).not.toBe('a')
+    expect(v.notices.join('\n')).toMatch(/unknown kind "hologram"; dropped/)
+    expect(v.notices.join('\n')).toMatch(/item 4 is not an object; dropped/)
+  })
+
+  it('keeps inlined image data URLs, drops anything else', () => {
+    const d = createDoc({ items: [] }) as unknown as Record<string, unknown>
+    const img = { ...createItem('image'), blobRef: 'sha-1' }
+    const v = validateDoc({ ...d, items: [{ ...img, dataUrl: 'data:image/png;base64,AAAA' }, { ...img, id: 'x', dataUrl: 'javascript:alert(1)' }] })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.doc.items[0]).toMatchObject({ dataUrl: 'data:image/png;base64,AAAA' })
+    expect(v.doc.items[1]).not.toHaveProperty('dataUrl')
+  })
+
+  it('returns a new object and strips unknown fields', () => {
+    const raw = { ...createDoc(), extra: true } as unknown
+    const v = validateDoc(raw)
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.doc).not.toBe(raw)
+    expect(v.doc).not.toHaveProperty('extra')
+  })
+})
+
+describe('validateDoc: untrusted documents', () => {
+  const base = () => ({ ...createDoc(), items: [] as unknown[] }) as Record<string, unknown>
+
+  it('caps the number of blocks and the total text', () => {
+    const many = { ...base(), items: Array.from({ length: 37_000 }, () => ({ kind: 'text', text: 'x' })) }
+    const r = validateDoc(many)
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.doc.items.length).toBe(200)
+      expect(r.notices.join(' ')).toMatch(/first 200/)
+    }
+    const long = { ...base(), items: Array.from({ length: 50 }, () => ({ kind: 'text', text: 'y'.repeat(4000) })) }
+    const r2 = validateDoc(long)
+    expect(r2.ok && r2.doc.items.length).toBe(10)
+  })
+
+  it('rejects oversized ids, media ids, timestamps and non-colour strings', () => {
+    const doc = { ...base(), id: 'i'.repeat(100_000), createdAt: 'c'.repeat(50_000), tape: { widthMm: 24, mediaId: 'm'.repeat(70_000), colors: { tape: 'url(x);'.repeat(1000), ink: 'expression()' } } }
+    const r = validateDoc(doc)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.doc.id.length).toBeLessThanOrEqual(64)
+    expect(r.doc.createdAt.length).toBeLessThanOrEqual(40)
+    expect(r.doc.tape.mediaId).toBeUndefined()
+    expect(r.doc.tape.colors).toBeUndefined()
+    const ok = validateDoc({ ...base(), tape: { widthMm: 12, mediaId: 'tze231-12', colors: { tape: '#FFD400', ink: '#000' } } })
+    expect(ok.ok && ok.doc.tape).toEqual({ widthMm: 12, mediaId: 'tze231-12', colors: { tape: '#FFD400', ink: '#000' } })
+  })
+})

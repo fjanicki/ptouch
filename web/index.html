@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' blob: data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'"
+    />
+    <meta name="description" content="Design and print labels on Brother P-touch printers from your browser. No install, no account, works offline." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#12161f" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="%BASE_URL%favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="%BASE_URL%icons/apple-touch-icon.png" />
+    <title>ptouch studio</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript>ptouch studio needs JavaScript and WebAssembly to design and print labels.</noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

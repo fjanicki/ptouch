@@ -13,10 +13,11 @@ The goal is a browser-based label print studio, hosted on GitHub Pages, that tal
 | [`crates/ptouch`](crates/ptouch) | The protocol core. Sans-IO, `#![no_std]` + `alloc`, builds for WebAssembly. Model and media tables, status parsing, bitmaps and dithering, raster encoding with PackBits, the print session state machine, and a virtual printer for tests. |
 | [`crates/ptouch-transport`](crates/ptouch-transport) | Native byte transports: serial ports (`/dev/cu.*`, `COMn`, `/dev/rfcommN`), Bluetooth RFCOMM (macOS IOBluetooth, Linux sockets), USB, raw TCP, and an in-process virtual printer. Device discovery. |
 | [`crates/ptouch-cli`](crates/ptouch-cli) | The `ptouch` command-line tool, used for development and hardware testing. |
+| [`crates/ptouch-wasm`](crates/ptouch-wasm) | WebAssembly bindings of the core for the browser (bindings only, no protocol logic). |
 | `xtask` | Repository tooling (`cargo xtask gen-models` regenerates the model table from [`docs/models.toml`](docs/models.toml)). |
-| `web/` (planned) | The browser studio (Web Serial). |
+| [`web/`](web) | The browser print studio (Svelte + Vite; Web Serial / WebUSB), see [Web studio](#web-studio). |
 
-The library is kept strictly separate from any UI: the CLI (and later the web and TUI front ends) depend on the library, never the reverse.
+The library is kept strictly separate from any UI: the CLI and the web studio (and later a TUI) depend on the library, never the reverse.
 
 Design documents: [`docs/PROTOCOL.md`](docs/PROTOCOL.md) (the normative protocol spec), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/HARDWARE-TESTS.md`](docs/HARDWARE-TESTS.md).
 
@@ -102,6 +103,44 @@ ptouch --device virtual:24 print --text "Hello"              # full print agains
 `--dry-run` writes the byte-exact job, then checks it twice: it decodes the bytes offline, and it prints them through the real print session against a simulated printer. It reports whether the result matches the rendered label and lists any protocol violations.
 
 Exit codes: 0 on success, 1 on a printer, transport or rendering error (with a one-line hint for common problems), 2 on a usage error.
+
+## Web studio
+
+**https://fjanicki.github.io/ptouch/** is a label editor that prints straight from the browser. Nothing to install, no account. The protocol runs in the same Rust core as the CLI, compiled to WebAssembly; the page itself only edits, renders and moves bytes.
+
+| Browser | Printing |
+|---|---|
+| Chrome / Edge 117+ on macOS, Windows, Linux, ChromeOS | Bluetooth (Web Serial), plus USB on macOS/Linux/ChromeOS |
+| Chrome on Android 138+ | Bluetooth |
+| Firefox 151+ | Serial ports only. On macOS the `/dev/cu.*` port of a Bluetooth printer stops answering after its first use, so use Chrome or Edge there |
+| Safari, any browser on iOS | Not possible (no Web Serial). You can still design labels and export or share them |
+
+To print over Bluetooth:
+
+1. Pair the printer in your system's Bluetooth settings (it shows up as `PT-P710BTxxxx`).
+2. Open the studio in Chrome or Edge and click **Connect printer → Bluetooth**, then pick the printer in the browser's list. If it is not listed, use **Choose port…**, which shows every serial port the browser can see.
+3. Design the label and click **Print**. Tape width and colours are read from the printer.
+
+On macOS the first connection after the printer has been idle often fails while it wakes up (the browser reports "Failed to open serial port" after about 10 s). The studio retries automatically and shows *Waking printer…*; the second attempt usually connects in under half a second. Chrome remembers the printer, so later visits reconnect without asking.
+
+**Privacy.** Everything stays in your browser. Labels are saved in the browser's IndexedDB, preferences in `localStorage`. The page makes no network requests after it has loaded (enforced by its Content Security Policy), and share links carry the label in the URL fragment (`#d=…`), which browsers never send to a server. After the first visit the studio also works offline and can be installed as an app.
+
+**Labels** autosave as you edit. *Export* writes a self-contained `.ptlabel.json` (images included); *Share link* puts the label into a link (images over 32 KB are left out).
+
+**Diagnostics** (top bar, or `…/ptouch/#diagnostics`) shows what the browser supports, probes the link by every connection path (status request, open/close ×3) with a hex packet log, prints orientation and ruler test labels, and encodes jobs against a virtual printer so you can download the exact bytes. *Copy diagnostics* produces a bug report with device names and addresses masked.
+
+Running it locally (Node 24.18+, plus the Rust toolchain and wasm-pack 0.15.0):
+
+```sh
+cd web
+npm ci
+npm run wasm          # build the wasm bindings into src/wasm/pkg
+npm run dev           # http://localhost:5173/
+npm test              # unit tests; `npm run e2e` runs the Playwright suite against a production build
+BASE_PATH=/ptouch/ npm run build && npx vite preview --base /ptouch/   # the site as GitHub Pages serves it
+```
+
+Bundled third-party code, fonts and icons are listed in [`web/THIRD_PARTY.md`](web/THIRD_PARTY.md). CI tests the web app on every push and pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml) via [`web.yml`](.github/workflows/web.yml)), and [`.github/workflows/pages.yml`](.github/workflows/pages.yml) re-runs those checks and deploys the site on every push to `main`.
 
 ## Using the library
 
