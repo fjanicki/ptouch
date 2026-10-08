@@ -1,0 +1,80 @@
+[workspace]
+resolver = "3"
+members = ["crates/ptouch", "crates/ptouch-transport", "crates/ptouch-cli", "xtask"]
+default-members = ["crates/ptouch", "crates/ptouch-transport", "crates/ptouch-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/fjanicki/ptouch"
+authors = ["Frederic Portaria-Janicki"]
+keywords = ["brother", "p-touch", "label-printer", "ptouch", "bluetooth"]
+categories = ["hardware-support", "no-std"]
+
+# Every version is pinned exactly (`=`) so that parallel implementers and CI resolve the same graph.
+# Versions per docs/ARCHITECTURE.md §10 (verified 2026-10-08); clap/proptest/toml/png/libc are
+# "latest at scaffold time".
+[workspace.dependencies]
+# --- internal ---
+ptouch = { path = "crates/ptouch", version = "0.1.0", default-features = false }
+ptouch-transport = { path = "crates/ptouch-transport", version = "0.1.0", default-features = false }
+
+# --- core (no_std-compatible) ---
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "alloc"] }
+
+# --- native crates ---
+thiserror = "=2.0.21"
+serialport = { version = "=4.10.1", default-features = false }
+nusb = "=0.2.7"
+libc = "=0.2.190"
+objc2 = "=0.6.5"
+block2 = "=0.6.2"
+dispatch2 = "=0.3.1"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSArray", "NSDate", "NSObject"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFRunLoop", "CFDate", "CFString"] }
+objc2-io-bluetooth = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "objc2",
+    "objc2-foundation",
+    "Bluetooth",
+    "IOBluetoothObject",
+    "IOBluetoothDevice",
+    "IOBluetoothDevicePair",
+    "IOBluetoothRFCOMMChannel",
+    "IOBluetoothSDPServiceRecord",
+    "IOBluetoothSDPUUID",
+    "IOBluetoothSDPDataElement",
+    "IOBluetoothDeviceInquiry",
+    "IOBluetoothUserLib",
+] }
+
+# --- CLI ---
+clap = { version = "=4.6.7", features = ["derive", "env"] }
+fontdue = "=0.9.4"
+png = "=0.18.1"
+ctrlc = "=3.5.2"
+
+# --- tooling / tests ---
+toml = "=1.1.7"
+proptest = "=1.11.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"            # FFI backends in ptouch-transport opt out per module
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "allow"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "allow"      # bounds are checked by construction; prefer .get() on input-derived offsets
+dbg_macro = "warn"
+print_stdout = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "debuginfo"

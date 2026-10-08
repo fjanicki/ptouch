@@ -262,6 +262,10 @@ pub struct ModelProfile {
     pub max_length_dots: u32,               // 7086 (1 m)
     pub media: &'static [TapeSpec],
 }
+/// Send order of a page's raster lines (PROTOCOL.md §5.3): `LastColumnFirst` (first line received
+/// = right end of the label when read; [HW] PT-P710BT) for every model; `FirstColumnFirst` is unused.
+pub enum FeedOrder { LastColumnFirst, FirstColumnFirst }
+impl ModelProfile { pub const fn feed_order(&self) -> FeedOrder; }
 pub fn profiles() -> &'static [ModelProfile];
 pub fn profile_by_codes(series: u8, model: u8) -> Option<&'static ModelProfile>;
 pub fn profile_by_usb_pid(pid: u16) -> Option<&'static ModelProfile>;
@@ -661,13 +665,23 @@ CLI text rendering uses `fontdue 0.9.4` (test labels only; the studio renders te
 - The renderer works in **canvas coordinates where x = length (dots) and y = across the tape**. Canvas
   height = `TapeSpec::print_pins` for the loaded tape (PT-P710BT: 24/32/50/70/112/128 for
   3.5/6/9/12/18/24 mm); canvas width = label length in dots (180 dpi = 7.087 dots/mm).
-- `Bitmap` is stored line-major (line x = canvas column x); the encoder writes line bits into a
-  16-byte head line starting at pin `left_margin_pins` (linear bit index from the MSB of byte 0 =
-  margin + y). Two independent prior implementations agree on that mapping for 128-pin heads; Brother
-  D1 places the first byte at the "right margin" end, which is symmetric for 128-pin tables.
-  **UNCERTAIN** which physical edge and feed end correspond to canvas top/left, and whether the result
-  is mirrored: the mapping is one `PinMap` per profile and is fixed by the **orientation test label**
-  (arrow + "START" + asymmetric glyphs) in Phase 0. The UI never thinks in rotated space.
+- `Bitmap` is stored line-major (line x = canvas column x); the encoder writes canvas row y to pin
+  `left_margin_pins + y`, i.e. transmitted bit `right_margin_pins + (print_pins − 1 − y)` counted
+  MSB-first from byte 0 (transmitted bit t drives pin `head_pins − 1 − t`; PROTOCOL.md §5.1,
+  `encode::line::head_line`). On a 128-pin head pin 0 is the LSB of byte 15, so on 24 mm tape
+  (margins 0/0) canvas row 0 is the LSB of byte 15, not the MSB of byte 0.
+- **Verified on PT-P710BT** with the **orientation test label** (arrow + "START" + asymmetric glyphs;
+  [HW] orientation test label, PT-P710BT, 24 mm, 2026-10-08; PROTOCOL.md §5.1, §5.3): canvas row 0 is
+  the **top edge** of upright text (the PROTOCOL.md §5.1 pin mapping described above is correct as
+  is), and the printer puts the **first raster line it receives at the right end** of the label when
+  read. The core therefore sends
+  every page **last canvas column first**: `ModelProfile::feed_order()` = `FeedOrder::LastColumnFirst`,
+  applied inside `encode_job`, undone by the virtual printer / `decode_job`. A `Bitmap` is always the
+  label as it reads (column 0 = left end), so the preview, the job and the decoded job show the same
+  image; the software mirror (`prepare_pages`) pads a short canvas to the model minimum, then
+  reverses it, and so prints the exact mirror image (padding included).
+  All PT models use the same order (same mechanism); only the P710BT is hardware-verified, and a model
+  that differs would get its own `feed_order`. The UI never thinks in rotated or reversed space.
 - Length: auto = content extent + margins, or fixed mm. The encoder enforces 31 ≤ lines ≤ 7086.
   The printer feeds at least ~24.5 mm regardless (cutter position) and adds the `ESC i d` feed margin
   (default 14 dots = 2 mm) at both ends; the editor shows both.
@@ -1021,6 +1035,7 @@ jobs:
 | serialport / nusb | 4.10.1 / 0.2.7 |
 | objc2 / objc2-io-bluetooth (v1, macOS) | 0.6.5 / 0.3.2 |
 | fontdue (CLI) | 0.9.4 |
+| ctrlc (CLI, Ctrl-C → orderly cancel and link teardown) | 3.5.2 |
 | clap, proptest, cargo-fuzz | latest at scaffold time, recorded in `Cargo.lock` (not verified in research) |
 
 **JavaScript** (exact pins in `web/package.json`; Node 24.18.0, npm 11.16.0)
@@ -1066,7 +1081,10 @@ Runner: ubuntu-latest = ubuntu-24.04 (Chrome + matching ChromeDriver preinstalle
   it survive close/reopen ×3 (Ircama#3 "works once"; a macOS 27 native probe got no RFCOMM link)?
 - **H3 — Completion signalling.** Which frames does the P710BT push during/after a print with
   `ESC i ! 00`, how many, and is "printing completed" always sent? Does chain mode hold the last label?
-- **H4 — Orientation/mirroring** of the pin map (test label).
+- **H4 — Orientation/mirroring** of the pin map (test label). *Answered on PT-P710BT 24 mm
+  (2026-10-08)*: pin axis correct, first raster line = right end when reading; the encoder now sends
+  the last canvas column first (§5.1, PROTOCOL.md §5.3). Re-print to confirm the fixed output reads
+  correctly; 12 mm and other models still open.
 - **H5 — WebUSB on macOS** with this printer while CUPS/P-touch Editor are installed.
 - H6 — Windows 11 + Chrome: direct-RFCOMM entry and COM-port grant persistence.
 - H7 — Android Chrome 138+: RFCOMM print and disconnect detection without `connected`.

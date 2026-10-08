@@ -1,0 +1,83 @@
+# Rust CI: formatting, lints, tests on Linux and macOS, and the no_std / wasm guards of the
+# sans-IO core (docs/ARCHITECTURE.md §8.1, action versions per §10). Hardware tests are
+# `#[ignore]`d and never run here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # Must match rust-toolchain.toml.
+  RUST_TOOLCHAIN: "1.97.1"
+
+jobs:
+  lint:
+    name: fmt + clippy + docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: rustdoc
+        run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: generated model table is up to date
+        run: cargo xtask gen-models --check
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --workspace
+      - name: core without default features
+        run: cargo test -p ptouch --no-default-features --lib --tests
+
+  no-std:
+    name: wasm + no_std core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown, thumbv7em-none-eabihf
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: wasm32 (default features)
+        run: cargo check -p ptouch --target wasm32-unknown-unknown
+      - name: wasm32 (all features)
+        run: cargo check -p ptouch --all-features --target wasm32-unknown-unknown
+      - name: no_std + alloc (thumbv7em-none-eabihf)
+        run: cargo build -p ptouch --no-default-features --target thumbv7em-none-eabihf
+      - name: clippy on wasm32
+        run: cargo clippy -p ptouch --all-features --target wasm32-unknown-unknown -- -D warnings

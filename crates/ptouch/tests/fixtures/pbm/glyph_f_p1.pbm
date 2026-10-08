@@ -1,0 +1,10 @@
+P1
+# Asymmetric test glyph: an 'F' and a diagonal (orientation checks).
+12 7
+1 1 1 1 1 0 0 0 0 0 0 1
+1 0 0 0 0 0 0 0 0 0 1 1
+1 0 0 0 0 0 0 0 0 1 0 1
+1 1 1 1 0 0 0 0 1 0 0 1
+1 0 0 0 0 0 0 1 0 0 0 1
+1 0 0 0 0 0 1 0 0 0 0 1
+1 0 0 0 0 1 0 0 0 0 0 1

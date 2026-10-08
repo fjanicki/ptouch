@@ -22,7 +22,7 @@ This document is normative for the `ptouch` crate. "MUST/SHOULD/MAY" are used in
 | [SDK] | Both [MacSDK] and [AndroidSDK], when they agree. They share the same C++ engine. |
 | [PTD] | Per-model printer description JSON in P-touch Editor (`ptd.bundle/*.json`). |
 | [INI] | `ptemct.ini`, P-touch Editor's media colour table. |
-| [HW] | Live test against the user's PT-P710BT (name `PT-P710BTxxxx`), macOS 26/27. Only status requests were sent. |
+| [HW] | Live test against the user's PT-P710BT (name `PT-P710BTxxxx`), macOS 26/27. Status requests, plus printed labels where a result names the label (e.g. "[HW] orientation test label, PT-P710BT", 24 mm TZe, 2026-10-08). |
 | [ptouch-print], [esp32-ptouch], [zakx], [teip], [labelpi], [vowstar], [Ircama], [labellab], [nbuchwitz], [stecman], [robby], [treideme], [rust-ptouch], [labelo], [obwat], [labelartor], [OpenSCQ30] | Community implementations. See §9.3. [esp32-ptouch] (P710BT), [zakx] and [teip] (E560BT), and [labelpi] and [vowstar] (P300BT) report hardware-verified prints. |
 
 ---
@@ -99,7 +99,7 @@ Applies to every Bluetooth P-touch model except PT-N25BT, which is BLE-only (§2
 
 ### 2.2 macOS (IOBluetooth)
 
-Brother's own transport [MacSDK `BSMBluetoothDevice`], with the deviations this spec adopts marked as such. A Rust prototype on macOS 27.0.1 against the P710BT [HW] verified **only** steps 4–8 (cache/SDP channel lookup, sync/async open, `writeSync`, delegate read, `closeChannel`), and it has only ever written 5 bytes (`1B 40 1B 69 53`). Steps 2, 3, 9 and 10 and the close/retry logic are **UNVERIFIED in Rust**. For multi-KB, MTU-chunked `writeSync` on the main thread, the evidence is [obwat] `scripts/hardware-debug/print_job.swift`, which printed a real label on a P710BT on macOS 26 this way.
+Brother's own transport [MacSDK `BSMBluetoothDevice`], with the deviations this spec adopts marked as such. A Rust prototype on macOS 27.0.1 against the P710BT [HW] verified **only** steps 4–8 (cache/SDP channel lookup, sync/async open, `writeSync`, delegate read, `closeChannel`), and that prototype only ever wrote 5 bytes (`1B 40 1B 69 53`). Since then the `ptouch` CLI has printed a complete job on the P710BT ([HW] orientation test label, PT-P710BT, 24 mm TZe, 2026-10-08), but the [HARDWARE-TESTS.md](HARDWARE-TESTS.md) log does not record which transport it used; until it does, this section does not count that print as evidence for any step below. Steps 2, 3, 9 and 10 and the close/retry logic are **UNVERIFIED in Rust**. For multi-KB, MTU-chunked `writeSync` on the main thread, the evidence is [obwat] `scripts/hardware-debug/print_job.swift`, which printed a real label on a P710BT on macOS 26 this way.
 
 1. **Discovery:**
    - First enumerate `+[IOBluetoothDevice pairedDevices]`, with no CoD filter.
@@ -659,7 +659,7 @@ Image mapping:
 
 - Let image pixel `p` (0 ≤ p < print) be the p-th pixel of the current image column across the tape.
 - The SDK puts pixel `p` at pin `left + p`, i.e. transmitted bit `right + (print − 1 − p)` [AndroidSDK].
-- Which physical tape edge pin 0 faces, relative to the text baseline, is **UNVERIFIED**. Decide it with the hardware test in §9.1.
+- Physical edge (**verified on PT-P710BT**, [HW] orientation test label, PT-P710BT, 24 mm TZe, 2026-10-08): image pixel `p = 0` (pin `left`; pin 0 on 24 mm) is the **top edge** of upright text, and `p = print − 1` the bottom edge. So a canvas row `y` (row 0 at the top) is image pixel `p = y`, and no flip across the tape is needed. The other models are assumed to match (same mechanism family) but have not been tested.
 
 Content outside the print area must be zero. [vowstar] rejects P300BT data outside bytes 4–11. Data outside the area may trigger `st[9] = 0x01` [ptouch-print #21, UNVERIFIED].
 
@@ -696,10 +696,13 @@ Head-pin margins for every tape, model and head are in [models.toml](models.toml
 
 ### 5.3 Orientation, mirror and feed direction
 
-- Lines are sent in feed order. The first `G`/`Z` line is printed first, at the leading edge of the label.
-- The bit reversal in §5.1 is part of normal encoding. It is unrelated to `ESC i M 0x80`, which is a user-selectable mirror (for printing on the back of clear tape).
-- On models without SDK `MIRROR` (the D4/D-series 128-pin models), mirror in software.
-- Which end of the label (text start or end) is printed first is **UNVERIFIED**. See §9.1.
+- **First raster line = right end of the label when reading** (normative; hardware-verified on PT-P710BT only: [HW] orientation test label, PT-P710BT, 24 mm TZe, 2026-10-08). Lines are printed in the order received, and the first `G`/`Z` line of a page ends up at the **right-hand** end of the label held with the text upright (the end where reading stops); the last line is the left-hand end.
+  - Evidence: the §9.1 orientation label was sent with canvas column 0 ("START", start of the arrow) as the first raster line. The pin axis was correct (row-0 line and short thick bar on the top edge, "START" above "F R 7", bottom bar at the bottom), but along the tape it was mirrored: "START" read mirrored at the right end and the arrow pointed left.
+  - Consequence: to print a normal left-to-right image, send its columns **last column first**. The `ptouch` core does this in the encoder (`ModelProfile::feed_order()` = `FeedOrder::LastColumnFirst`), so pages handed to it are plain left-to-right canvases; the virtual printer and `decode` undo the order, so a decoded page reads like the printed label.
+  - Every PT model in [models.toml](models.toml) uses the same convention: they share the mechanism (head across the tape, tape fed past the head towards the cutter), but only the P710BT has been tested. If another model is found to differ, give it its own `feed_order`; nothing else changes.
+  - Short pages are padded at the canvas end (§5.6), i.e. at the right end of the label, so the padding lines are the first lines sent.
+- The bit reversal in §5.1 is part of normal encoding. It is unrelated to `ESC i M 0x80`, which is a user-selectable mirror (for printing on the back of clear tape). With the order above, `ESC i M 0x80` gives the mirror image of the readable label.
+- On models without SDK `MIRROR` (the D4/D-series 128-pin models), mirror in software: pad a page shorter than the minimum (§5.6) at its end first, then reverse the canvas left↔right before encoding. With the order above, the lines then go out in canvas order and the label is the exact mirror image of the readable one, with the padding at the left end. (Reversing before padding would leave the padding at the right end in both prints, which is not a mirror; the `ptouch` core's `prepare_pages` pads first.)
 
 ### 5.4 Resolution
 
@@ -750,7 +753,7 @@ Head-pin margins for every tape, model and head are in [models.toml](models.toml
 - **Resolution:**
   - `min_length_mm` in [models.toml](models.toml) holds this Brother/SDK minimum. Where it is unknown (no Brother doc and SDK 0, e.g. P300BT, N25BT, E720BT), use **4.8 mm**, the largest documented value.
   - Minimum raster lines: `min_lines = max(1, ceil((min_length_mm − 2 × margin_mm) × feed_dpi / 25.4))`, where `margin_mm` is the `ESC i d` value actually sent, converted to mm (the default 14 dots at 180 dpi ≈ 2.0 mm, the SDK's `MinMargin`). With the default 14-dot margin: 3 lines for 4.4 mm and 6 lines for 4.8 mm at 180 dpi; on 560-pin heads 14 dots at 360 dpi is only ≈ 1 mm per margin, so 4.0 mm needs `ceil((4.0 − 2 × 0.99) × 360 / 25.4)` = 29 lines. With margin 0, the whole minimum must be raster lines (31 / 34 / 57).
-  - Pad short pages with blank lines up to `min_lines`. A conservative mode MAY pad to the full documented dot count (31 / 34 lines at 180 dpi), as [zakx] does for the E560BT (34 lines); this only adds about 4 mm of blank tape.
+  - Pad short pages with blank lines up to `min_lines` (the `ptouch` encoder pads at the canvas end, i.e. the right end of the label, which is sent first; §5.3). A conservative mode MAY pad to the full documented dot count (31 / 34 lines at 180 dpi), as [zakx] does for the E560BT (34 lines); this only adds about 4 mm of blank tape.
   - `editor_min_label_mm` (PTD) is P-touch Editor's UI limit. On P300BT (25 mm) and N25BT (26 mm) it includes the ~25 mm leader; it MUST NOT be used to pad raster data, or short labels come out at roughly twice the expected length.
 - Physical minimum label: the tape between head and cutter is always fed: ≈ 24.5 mm (128-pin), 27 mm (560-pin), 24.7 mm (D4) [D1–D4]. Data shorter than that still produces a label of that length.
 - P300BT: ~25 mm leader before the print and ~1 mm after; max printable length 0.499 m [vowstar, Ircama; PTD max 500 mm].
@@ -802,7 +805,7 @@ The order below follows Brother's driver dumps [D1, D2, D4]. The SDK orders `ESC
 [1B 69 43 01 FF FF FF]                  protocol gate §3.3
 1B 69 64 <margin16>                     §3.2.4
 4D <02|00>                              §5.5
-<raster lines: 47 nL nH data | 5A>      exactly <lines32> lines
+<raster lines: 47 nL nH data | 5A>      exactly <lines32> lines, last canvas column first (§5.3)
 0C  (i < N)   or   1A  (i == N)
 -- after the last page has completed (§6.8) --
 [1B 69 61 FF]                           if sends_mode_reset_at_end (D4 dump; E/D series, N25BT). Both SDKs send it
@@ -1131,10 +1134,10 @@ Machine-readable details are in [models.toml](models.toml). The key behaviours:
 
 ### 9.1 Must be verified on hardware (P710BT first)
 
-1. **Physical orientation.**
-   - Which tape edge pin 0 faces, and whether the first raster line is the left or right end of normally read text.
-   - Test: print a 24 mm page with a solid bar on pins 0–7 only for lines 0–49, then a bar on pins 120–127 for lines 50–99. Record which edge and end each bar lands on.
-   - Repeat on 12 mm to confirm the print-area offsets (29/70/29) against [labelo]'s 80–81 px observation.
+1. **Physical orientation.** *Resolved for PT-P710BT on 24 mm* ([HW] orientation test label, PT-P710BT, 2026-10-08; §5.1, §5.3).
+   - Result: pin `left` (pin 0 on 24 mm) is the top edge of upright text, so the pin mapping of §5.1 needs no flip across the tape; the first raster line received is the **right** end of the label when reading, so a left-to-right image is sent last column first (§5.3).
+   - Test used: a 24 mm page with a solid bar on pins 0–7 for canvas columns 0–49, a bar on pins 120–127 for columns 50–99, a 1-dot line on pin 0, "START" and "F R 7" from column 0 and an arrow towards higher columns (`ptouch test-label orientation`), sent column 0 first. It printed with the bars and line correct across the tape and mirrored along it.
+   - Still open: confirm on hardware that the fixed encoder prints the same label readable (no mirroring); repeat on 12 mm to confirm the print-area offsets (29/70/29) against [labelo]'s 80–81 px observation; check other models (only the P710BT has been tested).
 2. P710BT completion frame sequence over BT with `ESC i ! 00`, and whether `1B 69 61 FF` is accepted or ignored.
 3. Whether `ESC i d 0E 00` vs `00 00` changes the physical margin on P710BT. Measure the label length for a known line count.
 4. P710BT high-res: whether n2 = `09` with n1 `0x02` is accepted, or `st[9] = 0x01` is returned.

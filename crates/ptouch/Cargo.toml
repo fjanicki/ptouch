@@ -1,0 +1,44 @@
+[package]
+name = "ptouch"
+description = "Sans-IO, no_std protocol core for Brother P-touch label printers (status, raster encoding, print session)"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["virtual"]
+## Convenience impls that need `std` (e.g. `From<Error> for std::io::Error`). Never required by the core.
+std = []
+## `serde::Serialize`/`Deserialize` derives on public data types (for ptouch-wasm / tsify and tooling).
+serde = ["dep:serde"]
+## Device-side test double (`virtual_printer`): consumes job bytes and emits status frames.
+virtual = []
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true, features = ["std"] }
+
+# Scripted conversations against the device-side test double need feature `virtual`.
+[[test]]
+name = "session"
+required-features = ["virtual"]
+
+[[test]]
+name = "virtual_printer"
+required-features = ["virtual"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

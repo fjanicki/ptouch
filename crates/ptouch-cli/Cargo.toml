@@ -1,0 +1,30 @@
+[package]
+name = "ptouch-cli"
+description = "Command-line tool for Brother P-touch label printers (status, print, test labels, decode)"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories = ["command-line-utilities", "hardware-support"]
+
+[[bin]]
+name = "ptouch"
+path = "src/main.rs"
+# The lib `ptouch` owns the doc name; documenting this bin too would collide (cargo#6313).
+doc = false
+
+[dependencies]
+ptouch = { workspace = true, features = ["std", "virtual"] }
+ptouch-transport = { workspace = true, features = ["usb", "macos-rfcomm", "linux-rfcomm", "virtual"] }
+clap = { workspace = true }
+ctrlc = { workspace = true }
+fontdue = { workspace = true }
+png = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

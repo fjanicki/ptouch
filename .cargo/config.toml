@@ -1,0 +1,6 @@
+[alias]
+# `cargo xtask gen-models [--check]` regenerates crates/ptouch/src/model/generated.rs from docs/models.toml.
+xtask = "run --package xtask --"
+# no_std / wasm guards (ARCHITECTURE.md §8.1)
+check-nostd = "build -p ptouch --no-default-features --target thumbv7em-none-eabihf"
+check-wasm = "check -p ptouch --target wasm32-unknown-unknown"

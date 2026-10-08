@@ -1,0 +1,43 @@
+[package]
+name = "ptouch-transport"
+description = "Native byte transports (serial, Bluetooth RFCOMM, USB, TCP 9100) for Brother P-touch printers"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories = ["hardware-support"]
+
+[features]
+default = ["usb", "macos-rfcomm", "linux-rfcomm"]
+## USB printer class via nusb (bulk OUT 0x02 / IN 0x81).
+usb = ["dep:nusb"]
+## macOS IOBluetooth RFCOMM backend (no-op on other targets).
+macos-rfcomm = ["dep:objc2", "dep:block2", "dep:dispatch2", "dep:objc2-foundation", "dep:objc2-core-foundation", "dep:objc2-io-bluetooth"]
+## Linux BlueZ raw RFCOMM socket backend (AF_BLUETOOTH via libc; no-op on other targets).
+linux-rfcomm = ["dep:libc"]
+## In-process transport backed by `ptouch::VirtualPrinter` (tests, `--device virtual:`).
+virtual = ["ptouch/virtual"]
+
+[dependencies]
+ptouch = { workspace = true }
+thiserror = { workspace = true }
+serialport = { workspace = true }
+nusb = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true, optional = true }
+block2 = { workspace = true, optional = true }
+dispatch2 = { workspace = true, optional = true }
+objc2-foundation = { workspace = true, optional = true }
+objc2-core-foundation = { workspace = true, optional = true }
+objc2-io-bluetooth = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true, optional = true }
+
+[lints]
+workspace = true
