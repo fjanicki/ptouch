@@ -4,8 +4,10 @@
 //
 // Codes and dithered images come from the core and must match exactly (tolerance 0). Text
 // rasterization differs slightly between OS font back ends (CoreText vs FreeType) and browser
-// versions, so text snapshots use a tolerance: same height, length within 2 dots, and at most
-// `tolerance` of the ink dots different at the best ±2-dot shift.
+// versions, so text snapshots are kept per OS (`<name>.<os>.pbm`: macos, linux, windows) and
+// compared with a tolerance: same height, length within 2 dots, and at most `tolerance` of the
+// ink dots different at the best ±2-dot shift. CI (Linux) checks the .linux files; record them
+// in the Playwright Linux image (see tests/browser/README.md).
 import { commands } from 'vitest/browser'
 import { expect } from 'vitest'
 import type { Bitmap1 } from '../../src/wasm'
@@ -53,9 +55,21 @@ export function diff(a: Pbm, b: Pbm, dx = 0): { differ: number; ink: number } {
   return { differ, ink }
 }
 
-/** Compares `bmp` with `__snapshots__/<name>.pbm` (written when missing). */
+/** Snapshot family of this OS (text rasterization differs between font back ends). */
+export function osKey(): 'macos' | 'linux' | 'windows' | 'other' {
+  const p = platform().toLowerCase()
+  if (p.includes('mac')) return 'macos'
+  if (p.includes('linux')) return 'linux'
+  if (p.includes('win')) return 'windows'
+  return 'other'
+}
+
+/**
+ * Compares `bmp` with `__snapshots__/<name>.pbm` (exact, `tolerance` 0) or, for text,
+ * `__snapshots__/<name>.<os>.pbm`. A missing file is written.
+ */
 export async function expectBitmapSnapshot(bmp: Bitmap1, name: string, tolerance = 0): Promise<void> {
-  const path = `tests/browser/__snapshots__/${name}.pbm`
+  const path = tolerance === 0 ? `tests/browser/__snapshots__/${name}.pbm` : `tests/browser/__snapshots__/${name}.${osKey()}.pbm`
   const actualText = toPbm(bmp)
   let expectedText: string | undefined
   try {

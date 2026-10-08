@@ -96,7 +96,7 @@ describe('text', () => {
       expect(box).toBeDefined()
       const [x0, y0, x1, y1] = box as [number, number, number, number]
       expect(y0).toBeLessThanOrEqual(2)
-      expect(y1).toBeGreaterThanOrEqual(125)
+      expect(y1).toBeGreaterThanOrEqual(123) // font back ends round the fitted size differently
       // Margins: 2 mm (14 dots) both ends, auto length.
       expect(x0).toBeGreaterThanOrEqual(13)
       expect(x0).toBeLessThanOrEqual(18)
