@@ -1,6 +1,7 @@
 // P2 — "New from template": the gallery opens from the Labels menu, shows live thumbnails,
 // is keyboard-navigable, marks templates that fit the loaded tape, works at 360 px, and opens
-// the chosen template as a new label (fresh history, main block selected).
+// the chosen template as a new label (fresh history, main block selected). P-size: each card
+// shows the printed length its thumbnail measured.
 import { expect, test, type Page } from '@playwright/test'
 
 const preview = (page: Page) => page.getByRole('region', { name: 'Label preview' })
@@ -32,13 +33,44 @@ test('pick “Wi-Fi sticker (12 mm)”: a new 12 mm label with a QR block and a 
   await expect(gallery(page)).toBeHidden()
   await expect(preview(page).getByText(/12 mm tape · printable/)).toBeVisible()
   await expect(blocks(page)).toHaveCount(2)
-  await expect(blocks(page).nth(1)).toContainText('{{ssid}}')
+  await expect(blocks(page).nth(1)).toContainText('Wi-Fi') // "Wi-Fi" over {{ssid}}
   // The Wi-Fi code is selected so its network can be entered right away.
   await expect(page.getByRole('heading', { name: /Code block 1\/2/ })).toBeVisible()
   // A new label with its own (empty) history.
   await expect(page.getByRole('button', { name: 'Undo' })).toBeDisabled()
   await expect(page.getByRole('region', { name: 'Blocks' })).not.toContainText('My old label')
   await expect(page.locator('[aria-live="polite"].visually-hidden')).toHaveText('New label: Wi-Fi sticker')
+})
+
+test('every card shows the label length the editor shows; the Wi-Fi stickers are small', async ({ page }) => {
+  await openGallery(page)
+  const lengthOf = async (name: string): Promise<number> => {
+    const c = card(page, name)
+    await c.scrollIntoViewIfNeeded()
+    await expect(c).toHaveAccessibleDescription(/[\d.]+ mm label/)
+    return Number(/([\d.]+) mm label/.exec((await c.locator('[data-length]').textContent()) ?? '')?.[1] ?? NaN)
+  }
+  // Label length = printed length + 2 × 2 mm feed (the 12 mm sticker prints ≤ 40 mm).
+  const small = await lengthOf('Wi-Fi sticker (12 mm)')
+  expect(small).toBeGreaterThanOrEqual(29)
+  expect(small).toBeLessThanOrEqual(44)
+  await expect(card(page, 'Wi-Fi sticker (12 mm)').locator('[data-length]')).toContainText('with a sample network')
+  const large = await lengthOf('Wi-Fi sticker (24 mm)')
+  expect(large).toBeLessThanOrEqual(84)
+  for (const name of ['Cable flag', 'Shelf or bin label (24 mm)', 'Drawer label (12 mm)', 'Gridfinity bin (12 mm)', 'Asset tag', 'Folder spine', 'Name tag']) {
+    expect(await lengthOf(name), name).toBeLessThanOrEqual(104)
+    await expect(card(page, name).locator('[data-length]'), name).not.toContainText('sample')
+  }
+  // Gridfinity: 32 mm printed + feed, as its description says (≈ 36 mm piece) and as the editor shows.
+  expect(await lengthOf('Gridfinity bin (12 mm)')).toBe(36)
+  for (const name of ['Gridfinity bin (12 mm)', 'Name tag']) {
+    if (!(await gallery(page).isVisible())) await openGallery(page)
+    const onCard = await lengthOf(name)
+    await card(page, name).click()
+    await expect(gallery(page)).toBeHidden()
+    await expect(preview(page)).toHaveAttribute('data-ready', 'true')
+    await expect(preview(page).locator('.readout strong').first()).toHaveText(`${onCard} mm`)
+  }
 })
 
 test('keyboard: arrows move between cards, Enter opens one', async ({ page }) => {

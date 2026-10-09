@@ -66,6 +66,7 @@
           </span>
           <span class="caption">{rowCaption(studio.doc, row)}</span>
           {#if info?.problem}<span class="problem"><Icon name="alert" size={12} />Can’t print: {info.problem}</span>{/if}
+          {#if info?.notice}<span class="notice"><Icon name="alert" size={12} />{info.notice}</span>{/if}
         </button>
       </li>
     {/each}
@@ -147,12 +148,16 @@
     font-weight: 400;
     color: var(--text-muted);
   }
-  .problem {
+  .problem,
+  .notice {
     display: flex;
     gap: 4px;
     align-items: flex-start;
     font-size: 11px;
     color: var(--danger);
+  }
+  .notice {
+    color: var(--warn);
   }
   .pager {
     display: flex;

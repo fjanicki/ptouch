@@ -20,7 +20,14 @@ export default defineConfig({
     { name: 'chromium', use: { ...devices['Desktop Chrome'], channel: process.env.PW_CHANNEL ?? 'chrome' } },
     // Unsupported-browser screen (no navigator.serial / navigator.usb) is tested in chromium
     // with the APIs deleted by an init script (e2e/fixtures/serial-stub.ts).
-    ...(process.env.PW_WEBKIT ? [{ name: 'webkit', testMatch: /iphone\.spec\.ts$/, use: { ...devices['iPhone 13'] } }] : []),
+    // The font picker's bottom sheet and the compact quick sizes are iPhone UI too: their
+    // "iPhone" describe blocks run in WebKit as well.
+    ...(process.env.PW_WEBKIT
+      ? [
+          { name: 'webkit', testMatch: /iphone\.spec\.ts$/, use: { ...devices['iPhone 13'] } },
+          { name: 'webkit-sheets', testMatch: /(font-picker|text-size)\.spec\.ts$/, grep: /iPhone/, use: { ...devices['iPhone 13'] } },
+        ]
+      : []),
   ],
   webServer: {
     command: `BASE_PATH=/ptouch npx vite build && npx vite preview --port ${PORT} --strictPort --base /ptouch/`,

@@ -9,14 +9,57 @@ describe('migrate()', () => {
     for (let n = 0; n < CURRENT_SCHEMA; n++) expect(MIGRATIONS[n], `step ${n} → ${n + 1}`).toBeTypeOf('function')
   })
 
-  it('accepts a current (schema 2) document unchanged', () => {
-    const raw = fixture('schema-2.json')
+  it('accepts a current (schema 3) document unchanged', () => {
+    const raw = fixture('schema-3.json')
     const r = migrate(raw)
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.readOnly).toBe(false)
     expect(r.migratedFrom).toBeUndefined()
     expect(r.doc).toEqual(raw)
+    // The schema-3 fields survive: point size, a library font, shrink to fit length.
+    expect(r.doc.items[1]).toMatchObject({ fontFamily: 'oswald', size: { mode: 'pt', pt: 10.5 } })
+    expect(r.doc.length).toEqual({ mode: 'fixed', mm: 36, shrink: true })
+  })
+
+  it('schema 2 → 3 marks fixed-size (mm) text clipTall, so it keeps v1’s clipping; fit text and other items are untouched', () => {
+    const text = (size: unknown) => ({ ...createItem('text'), size })
+    const fit = text({ mode: 'fit' })
+    const mm = text({ mode: 'mm', mm: 6 })
+    const legacy = text(6)
+    const icon = { ...createItem('icon'), size: { mode: 'mm', mm: 6 } }
+    const raw = { ...createDoc({ items: [] }), schema: 2, items: [fit, mm, legacy, icon] }
+    const r = migrate(raw)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.doc.items[0]).toEqual(fit)
+    expect(r.doc.items[1]).toEqual({ ...mm, clipTall: true })
+    expect(r.doc.items[2]).toMatchObject({ size: { mode: 'mm', mm: 6 }, clipTall: true })
+    expect(r.doc.items[3]).toEqual(icon)
+    // A schema-3 document keeps the flag through validation (share links, history, files).
+    const again = migrate(r.doc)
+    expect(again.ok && again.doc.items[1]).toEqual({ ...mm, clipTall: true })
+    // Only `true` is read; anything else is dropped.
+    const odd = migrate({ ...r.doc, items: [{ ...mm, clipTall: 'yes' }] })
+    expect(odd.ok && odd.doc.items[0]).toEqual(mm)
+  })
+
+  it('upgrades schema 2 by changing nothing but the version (renders pixel-identically)', () => {
+    const raw = fixture('schema-2.json') as Record<string, unknown>
+    const r = migrate(raw)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.migratedFrom).toBe(2)
+    expect(r.readOnly).toBe(false)
+    expect(r.doc).toEqual({ ...raw, schema: 3 })
+    // No `shrink` appears on a fixed length that did not have it.
+    expect(r.doc.length).toEqual({ mode: 'fixed', mm: 40 })
+  })
+
+  it('a schema-3 label opened by a schema-2 reader would be read-only (newer-version path)', () => {
+    const raw = { ...(fixture('schema-3.json') as Record<string, unknown>), schema: CURRENT_SCHEMA + 1 }
+    const r = migrate(raw)
+    expect(r.ok && r.readOnly).toBe(true)
   })
 
   it('upgrades schema 1 so it prints exactly as before', () => {
@@ -26,7 +69,7 @@ describe('migrate()', () => {
     if (!r.ok) return
     expect(r.migratedFrom).toBe(1)
     expect(r.readOnly).toBe(false)
-    expect(r.doc.schema).toBe(2)
+    expect(r.doc.schema).toBe(3)
     // Only code items change: quiet zone true → 'standard', content 'text', module size KEPT
     // (only new items default to 'auto').
     const [text, code] = r.doc.items
@@ -69,7 +112,7 @@ describe('migrate()', () => {
     if (!r.ok) return
     expect(r.migratedFrom).toBe(0)
     expect(r.readOnly).toBe(false)
-    expect(r.doc.schema).toBe(2)
+    expect(r.doc.schema).toBe(3)
     expect(r.doc.name).toBe('Prototype label')
     expect(r.doc.tape.widthMm).toBe(24)
     expect(r.doc.length).toEqual({ mode: 'auto' })

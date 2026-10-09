@@ -3,7 +3,8 @@
      ≥ 1180 px three columns, 860–1180 px two, below one column with the preview on top.
      Lead-owned since studio v1: the v1 packages' entry points (BatchPanel, DesignOnlyBanner and
      the dialogs) are mounted here and filled by their packages (docs/STUDIO-V1-PLAN.md); the
-     dialogs load on their first open. -->
+     dialogs load on their first open. The compact quick text sizes under the preview belong to
+     P-size (docs/FONTS-AND-SIZE-PLAN.md). -->
 <script lang="ts">
   import { onDestroy, onMount, type Component } from 'svelte'
   import { Studio, provideStudio, type StudioDialog } from './ui/state/studio.svelte'
@@ -22,6 +23,7 @@
   import Toasts from './ui/common/Toasts.svelte'
   import BatchPanel from './ui/batch/BatchPanel.svelte'
   import DesignOnlyBanner from './ui/handoff/DesignOnlyBanner.svelte'
+  import TextSizeQuick from './ui/editor/props/TextSizeQuick.svelte'
   // Diagnostics (probe, virtual printer runs, report) is a separate chunk: most visits never open it.
   const loadDiagnostics = () => import('./ui/diagnostics/Diagnostics.svelte')
   import UpdateToast from './pwa/UpdateToast.svelte'
@@ -94,6 +96,12 @@
           <ProblemBanner problem={showProblem} onaction={(a) => studio.handleProblemAction(a)} />
         {/if}
         <MediaBar />
+        {#if studio.selected?.kind === 'text'}
+          <!-- Desktop: right above the preview (never under the print bar); phones: right under it. -->
+          <div class="near-size">
+            <TextSizeQuick item={studio.selected} variant="compact" />
+          </div>
+        {/if}
         <Preview />
         <BatchPanel />
       </main>
@@ -190,13 +198,17 @@
       padding: var(--space-3);
       gap: var(--space-3);
     }
-    /* Phones/tablets: the tape preview comes first, right under any banner. */
+    /* Phones/tablets: the tape preview comes first, right under any banner, then the quick text
+       sizes, then the tape settings. */
     .center > :global(.preview) {
+      order: -2;
+    }
+    .center > .near-size {
       order: -1;
     }
     .center > :global(.banner),
     .center > .notice {
-      order: -2;
+      order: -3;
     }
   }
 </style>

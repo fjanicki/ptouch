@@ -14,8 +14,18 @@ export function addItem(doc: LabelDoc, kind: ItemKind, afterId?: string): [Label
 }
 
 /** Shallow-merges `patch` into item `id` (kind cannot change). */
+/** Patches item `id`. A new text size also drops `clipTall` (v1 clipping of an old label's
+ * text): from then on the text follows the current sizing rules. */
 export function updateItem<T extends Item>(doc: LabelDoc, id: string, patch: Partial<Omit<T, 'id' | 'kind'>>): LabelDoc {
-  return touch({ ...doc, items: doc.items.map((i) => (i.id === id ? ({ ...i, ...patch } as Item) : i)) })
+  return touch({
+    ...doc,
+    items: doc.items.map((i) => {
+      if (i.id !== id) return i
+      const next = { ...i, ...patch } as Item
+      if (next.kind === 'text' && next.clipTall && 'size' in patch) delete next.clipTall
+      return next
+    }),
+  })
 }
 
 export function removeItem(doc: LabelDoc, id: string): LabelDoc {

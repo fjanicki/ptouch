@@ -1,17 +1,43 @@
-<!-- W4 — PROPERTIES column: the selected block's editor (props/*.svelte) + label settings. -->
+<!-- W4 — PROPERTIES column: the selected block's editor (props/*.svelte) + label settings.
+     Entry-chunk budget (docs/FONTS-AND-SIZE-PLAN.md §2.8): only the text editor (the block every
+     label starts with) is in the entry chunk; the other editors load the first time a block of
+     their kind is selected and then stay cached (the service worker precaches their chunks). -->
 <script lang="ts">
+  import type { Component } from 'svelte'
+  import type { Item, ItemKind } from '../../doc/schema'
   import { getStudio } from '../state/studio.svelte'
   import Icon from '../common/Icon.svelte'
   import TextProps from './props/TextProps.svelte'
-  import IconProps from './props/IconProps.svelte'
-  import CodeProps from './props/CodeProps.svelte'
-  import ImageProps from './props/ImageProps.svelte'
-  import ShapeProps from './props/ShapeProps.svelte'
-  import SpacerProps from './props/SpacerProps.svelte'
   import LabelProps from './props/LabelProps.svelte'
   import { KIND_META } from '../state/view-model'
 
+  type Editor = Component<{ item: Item }>
+  const LAZY: Record<Exclude<ItemKind, 'text'>, () => Promise<{ default: unknown }>> = {
+    icon: () => import('./props/IconProps.svelte'),
+    code: () => import('./props/CodeProps.svelte'),
+    image: () => import('./props/ImageProps.svelte'),
+    shape: () => import('./props/ShapeProps.svelte'),
+    spacer: () => import('./props/SpacerProps.svelte'),
+  }
+
   const studio = getStudio()
+  let editors = $state<Partial<Record<ItemKind, Editor>>>({})
+  let failed = $state<ItemKind | null>(null)
+  const loading = new Set<ItemKind>()
+  $effect(() => {
+    const kind = studio.selected?.kind
+    if (!kind || kind === 'text' || editors[kind] || loading.has(kind)) return
+    loading.add(kind)
+    failed = null
+    LAZY[kind]()
+      .then((m) => {
+        editors[kind] = m.default as Editor
+      })
+      .catch(() => {
+        failed = kind
+      })
+      .finally(() => loading.delete(kind))
+  })
   const item = $derived(studio.selected)
   const warnings = $derived(item ? (studio.render?.warnings ?? []).filter((w) => w.itemId === item.id) : [])
   const index = $derived(item ? studio.doc.items.findIndex((i) => i.id === item.id) : -1)
@@ -38,11 +64,13 @@
     {#if !item}
       <p class="none">Select a block in the list or on the preview to edit it.</p>
     {:else if item.kind === 'text'}<TextProps {item} />
-    {:else if item.kind === 'icon'}<IconProps {item} />
-    {:else if item.kind === 'code'}<CodeProps {item} />
-    {:else if item.kind === 'image'}<ImageProps {item} />
-    {:else if item.kind === 'shape'}<ShapeProps {item} />
-    {:else if item.kind === 'spacer'}<SpacerProps {item} />
+    {:else if editors[item.kind]}
+      {@const Editor = editors[item.kind] as Editor}
+      <Editor {item} />
+    {:else if failed === item.kind}
+      <p class="none" role="alert">This editor could not be loaded. Check your connection and reload the page.</p>
+    {:else}
+      <p class="none" role="status">Loading…</p>
     {/if}
   </section>
   <section class="panel card" aria-labelledby="label-props-title">

@@ -3,6 +3,7 @@
 // the wasm/JS under a live session would abort the job mid-stream. Checks for updates hourly
 // while the tab is visible (Pages deploys are infrequent; the browser also checks on navigation).
 import { registerSW } from 'virtual:pwa-register'
+import { cacheLibraryFonts } from './font-cache'
 
 export interface UpdateState {
   /** A new version is installed and waiting. */
@@ -39,6 +40,8 @@ export function registerServiceWorker(): void {
     },
     onRegisterError: (e: unknown) => console.warn('service worker registration failed', e),
   })
+  // Library fonts used before the worker controls this page (first visit) go into its cache too.
+  cacheLibraryFonts()
 }
 
 export function onUpdateState(fn: Listener): () => void {

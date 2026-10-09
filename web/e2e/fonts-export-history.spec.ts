@@ -27,6 +27,14 @@ async function openFromLabels(page: Page, item: string, title: string) {
   return dialog
 }
 
+/** Picks a font in the font picker (FontPicker: the "Font" button opens a listbox). */
+async function pickFont(page: Page, name: string, group = 'Your fonts'): Promise<void> {
+  await page.getByLabel('Font', { exact: true }).click()
+  const picker = page.getByRole('dialog', { name: 'Choose a font' })
+  await picker.getByRole('group', { name: group }).getByRole('option', { name, exact: true }).click()
+  await expect(picker).toBeHidden()
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto('./')
   await settled(page)
@@ -49,8 +57,7 @@ test('upload a font, use it for a text block, keep it after a reload', async ({ 
   await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden()
 
-  const font = page.getByLabel('Font', { exact: true })
-  await font.selectOption({ label: 'E2E Box Sans' })
+  await pickFont(page, 'E2E Box Sans')
   await expect.poll(() => previewPixels(page)).not.toBe(before)
   await settled(page)
   await expect(page.getByText('From the font file')).toBeVisible()
@@ -60,7 +67,7 @@ test('upload a font, use it for a text block, keep it after a reload', async ({ 
   await expect.poll(() => savedLabelsJson(page)).toContain('"customFont"')
   await page.reload()
   await settled(page)
-  await expect(page.getByLabel('Font', { exact: true }).locator('option:checked')).toHaveText('E2E Box Sans')
+  await expect(page.getByLabel('Font', { exact: true })).toHaveText('E2E Box Sans')
   await expect.poll(() => previewPixels(page)).toBe(withFont)
 
   // Removing it: the block falls back to the built-in font and says so.
@@ -94,7 +101,7 @@ test('fonts from this computer: listed on request, missing ones fall back with a
   await dialog.getByRole('button', { name: 'Use fonts from this computer…' }).click()
   await expect(dialog.getByText('1 font available.', { exact: false })).toBeVisible()
   await page.keyboard.press('Escape')
-  await page.getByLabel('Font', { exact: true }).selectOption({ label: 'Ptouch E2E Missing' })
+  await pickFont(page, 'Ptouch E2E Missing', 'This computer (varies by machine)')
   await expect(page.getByText('“Ptouch E2E Missing” is not on this device — using Fira Sans.')).toBeVisible()
   await expect(preview(page).getByText(/not available on this device/)).toBeVisible()
 })

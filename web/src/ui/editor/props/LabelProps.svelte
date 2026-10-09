@@ -1,5 +1,6 @@
 <!-- W4 — label-level settings: flow gap/alignment, frame, threshold ("boldness"). Margins and
-     length live in the media bar; copies/cut/chain/mirror in the print bar. -->
+     length live in the media bar; copies/cut/chain/mirror in the print bar. With a fixed length,
+     "Shrink text to fit length" (`length.shrink`, docs/FONTS-AND-SIZE-PLAN.md §3.3, P-size). -->
 <script lang="ts">
   import type { Align } from '../../../doc/schema'
   import NumberField from '../../common/NumberField.svelte'
@@ -34,6 +35,16 @@
   />
 {:else}
   <p class="hint">This label uses free placement (made with a newer editor). Blocks keep their saved positions.</p>
+{/if}
+
+{#if doc.length.mode === 'fixed'}
+  {@const length = doc.length}
+  <Switch
+    label="Shrink text to fit length"
+    hint="Text that is too long for the {Math.round(length.mm)} mm label gets smaller instead of being cut off."
+    checked={!!length.shrink}
+    onchange={(on) => studio.updateDoc({ length: on ? { ...length, shrink: true } : { mode: 'fixed', mm: length.mm } })}
+  />
 {/if}
 
 <Slider

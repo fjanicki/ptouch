@@ -3,12 +3,16 @@
 import { describe, expect, it } from 'vitest'
 import { TAPE_WIDTHS_MM, validateDoc, type CodeItem, type LabelDoc, type SpacerItem, type TextItem } from '../../../src/doc/schema'
 import { iconById } from '../../../src/render/icons'
+import { mmToDots } from '../../../src/render/units'
+import { matchQuickSize } from '../../../src/render/text-size'
+import { FALLBACK_BAND_DOTS } from '../../../src/ui/state/text-defaults'
 import {
   CABLE_FLAG_DIAMETER_MM,
   CABLE_FLAG_WRAP_MM,
   CABLE_WRAP_DIAMETER_MM,
   CABLE_WRAP_OVERLAP_MM,
   GRIDFINITY_LENGTH_MM,
+  QUICK_M_MM,
   SAMPLE_WIFI,
   TEMPLATES,
   TEMPLATE_CATEGORIES,
@@ -79,7 +83,9 @@ describe('template catalogue', () => {
     const [qr] = codes(small)
     expect(qr).toMatchObject({ symbology: 'qr', content: 'wifi', quietZone: 'compact', ecc: 'L', moduleDots: 'auto' })
     expect(qr?.wifi).toEqual({ ssid: '', password: '', security: 'wpa', hidden: false })
-    expect(texts(small).map((t) => t.text)).toEqual(['{{ssid}}'])
+    // "Wi-Fi" over the network name, small and narrow so the sticker stays ≈ 3.5 cm long.
+    expect(texts(small).map((t) => t.text)).toEqual(['Wi-Fi\n{{ssid}}'])
+    expect(texts(small)[0]).toMatchObject({ fontFamily: 'archivo-narrow', size: { mode: 'mm', mm: 5.5 }, align: 'start' })
     expect(small.length).toEqual({ mode: 'auto' })
 
     const large = build('wifi-24')
@@ -87,6 +93,7 @@ describe('template catalogue', () => {
     expect(large.items.map((i) => i.kind)).toEqual(['icon', 'text', 'code'])
     expect(large.items[0]).toMatchObject({ kind: 'icon', iconId: 'wifi' })
     expect(texts(large)[0]?.text).toBe('Wi-Fi\n{{ssid}}')
+    expect(texts(large)[0]?.size).toEqual({ mode: 'mm', mm: QUICK_M_MM[24] })
     expect(codes(large)[0]).toMatchObject({ content: 'wifi', quietZone: 'standard', ecc: 'M' })
     expect(large.length).toEqual({ mode: 'auto' })
   })
@@ -108,7 +115,7 @@ describe('template catalogue', () => {
   it('cable wrap: repeated text along one turn plus overlap', () => {
     const doc = build('cable-wrap')
     expect([6, 9]).toContain(doc.tape.widthMm)
-    expect(doc.length).toEqual({ mode: 'fixed', mm: Math.round(Math.PI * CABLE_WRAP_DIAMETER_MM + CABLE_WRAP_OVERLAP_MM) })
+    expect(doc.length).toEqual({ mode: 'fixed', mm: Math.round(Math.PI * CABLE_WRAP_DIAMETER_MM + CABLE_WRAP_OVERLAP_MM), shrink: true })
     const [t] = texts(doc)
     const word = t?.text.split(' · ')[0] ?? ''
     expect(word.length).toBeGreaterThan(0)
@@ -126,7 +133,7 @@ describe('template catalogue', () => {
     expect(build('drawer-12').tape.widthMm).toBe(12)
     const grid = build('gridfinity-12')
     expect(grid.tape.widthMm).toBe(12)
-    expect(grid.length).toEqual({ mode: 'fixed', mm: GRIDFINITY_LENGTH_MM })
+    expect(grid.length).toEqual({ mode: 'fixed', mm: GRIDFINITY_LENGTH_MM, shrink: true })
     // The cut piece (≈ 2 mm feed margin at each end) stays within a 1-unit label tab (36–38 mm).
     expect(GRIDFINITY_LENGTH_MM + 4).toBeGreaterThanOrEqual(35)
     expect(GRIDFINITY_LENGTH_MM + 4).toBeLessThanOrEqual(37.8)
@@ -139,6 +146,23 @@ describe('template catalogue', () => {
     // Not 'fit': fitted text would fill the band and make each tag ~9 cm long.
     expect(texts(doc)[0]?.size).toEqual({ mode: 'mm', mm: 7 })
     expect(doc.batch).toEqual({ enabled: true, columns: [], rows: [], count: 10, counters: [{ name: 'id', start: 1, step: 1, pad: 4 }], dateFormat: 'iso' })
+  })
+
+  it('text has a fixed size (no tape-high words) except the name tag; fixed lengths shrink long text', () => {
+    for (const t of TEMPLATES) {
+      const doc = t.build()
+      for (const i of texts(doc)) expect(i.size.mode === 'fit', `${t.id}: ${i.text}`).toBe(t.id === 'name-tag')
+      if (doc.length.mode === 'fixed') expect(doc.length.shrink, t.id).toBe(true)
+    }
+  })
+
+  it('QUICK_M_MM is the quick size M of 12 and 24 mm tape, so the editor shows "M"', () => {
+    for (const w of [12, 24] as const) {
+      expect(matchQuickSize({ mode: 'mm', mm: QUICK_M_MM[w] }, FALLBACK_BAND_DOTS[w], 180)).toBe('m')
+      expect(mmToDots(QUICK_M_MM[w], 180)).toBe(Math.round(FALLBACK_BAND_DOTS[w] / 2))
+    }
+    expect(texts(build('drawer-12'))[0]?.size).toEqual({ mode: 'mm', mm: QUICK_M_MM[12] })
+    expect(texts(build('bin-24'))[0]?.size).toEqual({ mode: 'mm', mm: QUICK_M_MM[24] })
   })
 
   it('folder spine and name tag: 24 mm; the spine has a fixed length, the name tag two lines', () => {

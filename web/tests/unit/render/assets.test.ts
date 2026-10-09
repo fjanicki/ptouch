@@ -25,7 +25,7 @@ describe('bundled fonts', () => {
         expect(sources).toContain(`\`${file}\``)
       }
       expect(existsSync(`${FONT_DIR}${def.licenseFile}`)).toBe(true)
-      expect(readFileSync(`${FONT_DIR}${def.licenseFile}`, 'utf8')).toContain('SIL Open Font License')
+      expect(readFileSync(`${FONT_DIR}${def.licenseFile}`, 'utf8')).toContain(def.license === 'OFL-1.1' ? 'SIL Open Font License' : 'Apache License')
     }
   })
 

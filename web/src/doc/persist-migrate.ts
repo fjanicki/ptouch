@@ -57,6 +57,24 @@ export const MIGRATIONS: Readonly<Record<number, Migration>> = {
       : raw['items']
     return { ...raw, schema: 2, items }
   },
+  /**
+   * Schema 2 → 3 (fonts and size, docs/FONTS-AND-SIZE-PLAN.md). Everything new is optional or a
+   * new enum value (`TextSize` 'pt', more font families, `length.shrink`). One rendering rule
+   * changed: schema 3 reduces a fixed-size text block that is taller than the band to fit it,
+   * where v1 drew it at its size and cut it off. Fixed-size (mm) text of a schema-2 label is
+   * therefore marked `clipTall` (v1's rule), so every schema-2 label renders pixel-identically.
+   */
+  2: (raw) => {
+    const items = Array.isArray(raw['items'])
+      ? (raw['items'] as unknown[]).map((item) => {
+          if (!isObject(item) || item['kind'] !== 'text') return item
+          const size = item['size']
+          const fixed = typeof size === 'number' || (isObject(size) && size['mode'] === 'mm')
+          return fixed ? { ...item, clipTall: true } : item
+        })
+      : raw['items']
+    return { ...raw, schema: 3, items }
+  },
 }
 
 /** Schema version of a raw object (0 = unversioned), or a problem string. */

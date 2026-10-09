@@ -3,6 +3,11 @@
 // the gallery opens it with `studio.newFromTemplate`. Sizes follow the PT-P710BT at 180 dpi:
 // printable band 12 mm → 70 dots (9.9 mm), 24 mm → 128 dots (18.1 mm); the printer adds a
 // ≈ 2 mm feed margin at each end of every label (not counted in `length`).
+//
+// Fonts and size (docs/FONTS-AND-SIZE-PLAN.md §3.3, P-size): text has fixed sizes, so a sticker is
+// only as long as it needs to be (text that fits the band makes short words several cm long).
+// Where it fits the design, the size is the quick size M of that tape (`QUICK_M_MM`), so the
+// text properties show it as "M". Fixed-length templates shrink long text to fit the length.
 import { createBatch, createDoc, createItem, createWifi, type CodeItem, type IconItem, type Item, type LabelDoc, type SpacerItem, type TapeWidthMm, type TextItem } from '../../doc/schema'
 
 export type TemplateCategory = 'network' | 'cables' | 'storage' | 'office'
@@ -41,6 +46,10 @@ export const CABLE_WRAP_OVERLAP_MM = 15
  */
 export const GRIDFINITY_LENGTH_MM = 32
 
+/** Quick size M (half the printable band, render/text-size.ts) of 12 mm (35 dots) and 24 mm
+ * (64 dots) tape, in mm. */
+export const QUICK_M_MM = { 12: 4.94, 24: 9.03 } as const
+
 const text = (t: string, patch: Partial<TextItem> = {}): TextItem => ({ ...createItem('text'), text: t, ...patch })
 const icon = (iconId: string, patch: Partial<IconItem> = {}): IconItem => ({ ...createItem('icon'), iconId, ...patch })
 const spacer = (widthMm: number): SpacerItem => ({ ...createItem('spacer'), widthMm })
@@ -60,8 +69,13 @@ export const TEMPLATES: readonly TemplateDef[] = [
     category: 'network',
     tapeWidthMm: 12,
     // ECC L keeps a typical WPA payload at version 3 (29 modules): 2 dots per module on the 70-dot
-    // band, with the compact quiet zone using the unprinted tape edge.
-    build: () => label('Wi-Fi sticker', 12, [wifiQr({ quietZone: 'compact', ecc: 'L' }), text('{{ssid}}')], { marginsMm: { start: 1.5, end: 2 }, layout: { mode: 'flow', gapMm: 2, align: 'center' } }),
+    // band, with the compact quiet zone using the unprinted tape edge. "Wi-Fi" over the network
+    // name in Archivo Narrow, 5.5 mm for both lines (2.6 mm each): ≈ 34 mm with "MyHomeNetwork".
+    build: () =>
+      label('Wi-Fi sticker', 12, [wifiQr({ quietZone: 'compact', ecc: 'L' }), text('Wi-Fi\n{{ssid}}', { fontFamily: 'archivo-narrow', size: { mode: 'mm', mm: 5.5 }, align: 'start' })], {
+        marginsMm: { start: 1.5, end: 2 },
+        layout: { mode: 'flow', gapMm: 2, align: 'center' },
+      }),
   },
   {
     id: 'wifi-24',
@@ -69,8 +83,9 @@ export const TEMPLATES: readonly TemplateDef[] = [
     description: 'Larger sticker with a Wi-Fi icon, the network name and a QR code that phones join from.',
     category: 'network',
     tapeWidthMm: 24,
+    // Two lines at M (9 mm for both): ≈ 71 mm with "MyHomeNetwork" (it was 103 mm at Fit).
     build: () =>
-      label('Wi-Fi sticker', 24, [icon('wifi', { size: { mode: 'mm', mm: 9 } }), text('Wi-Fi\n{{ssid}}', { lineHeight: 1.15 }), wifiQr({ quietZone: 'standard', ecc: 'M' })], {
+      label('Wi-Fi sticker', 24, [icon('wifi', { size: { mode: 'mm', mm: 9 } }), text('Wi-Fi\n{{ssid}}', { lineHeight: 1.15, align: 'start', size: { mode: 'mm', mm: QUICK_M_MM[24] } }), wifiQr({ quietZone: 'standard', ecc: 'M' })], {
         layout: { mode: 'flow', gapMm: 2.5, align: 'center' },
       }),
   },
@@ -81,7 +96,7 @@ export const TEMPLATES: readonly TemplateDef[] = [
     category: 'cables',
     tapeWidthMm: 12,
     build: () =>
-      label('Cable flag', 12, [text('Cable name', { size: { mode: 'mm', mm: 5 } }), spacer(CABLE_FLAG_WRAP_MM), text('Cable name', { size: { mode: 'mm', mm: 5 } })], {
+      label('Cable flag', 12, [text('Cable name', { fontFamily: 'archivo-narrow', size: { mode: 'mm', mm: QUICK_M_MM[12] } }), spacer(CABLE_FLAG_WRAP_MM), text('Cable name', { fontFamily: 'archivo-narrow', size: { mode: 'mm', mm: QUICK_M_MM[12] } })], {
         marginsMm: { start: 1, end: 1 },
         layout: { mode: 'flow', gapMm: 2, align: 'center' },
       }),
@@ -94,7 +109,7 @@ export const TEMPLATES: readonly TemplateDef[] = [
     tapeWidthMm: 9,
     build: () =>
       label('Cable wrap', 9, [text('LAN 1 · LAN 1 · LAN 1', { fontFamily: 'archivo-narrow', size: { mode: 'mm', mm: 4 } })], {
-        length: { mode: 'fixed', mm: Math.round(Math.PI * CABLE_WRAP_DIAMETER_MM + CABLE_WRAP_OVERLAP_MM) },
+        length: { mode: 'fixed', mm: Math.round(Math.PI * CABLE_WRAP_DIAMETER_MM + CABLE_WRAP_OVERLAP_MM), shrink: true },
         marginsMm: { start: 0, end: 0 },
       }),
   },
@@ -104,7 +119,7 @@ export const TEMPLATES: readonly TemplateDef[] = [
     description: 'Icon and contents for shelves, boxes and bins. Pick another icon in the icon block.',
     category: 'storage',
     tapeWidthMm: 24,
-    build: () => label('Shelf label', 24, [icon('archive', { size: { mode: 'mm', mm: 14 } }), text('Contents')]),
+    build: () => label('Shelf label', 24, [icon('archive', { size: { mode: 'mm', mm: 14 } }), text('Contents', { size: { mode: 'mm', mm: QUICK_M_MM[24] } })]),
   },
   {
     id: 'drawer-12',
@@ -112,7 +127,7 @@ export const TEMPLATES: readonly TemplateDef[] = [
     description: 'Compact icon and contents for drawers and small boxes.',
     category: 'storage',
     tapeWidthMm: 12,
-    build: () => label('Drawer label', 12, [icon('package'), text('Contents')], { layout: { mode: 'flow', gapMm: 2, align: 'center' } }),
+    build: () => label('Drawer label', 12, [icon('package'), text('Contents', { size: { mode: 'mm', mm: QUICK_M_MM[12] } })], { layout: { mode: 'flow', gapMm: 2, align: 'center' } }),
   },
   {
     id: 'gridfinity-12',
@@ -122,7 +137,7 @@ export const TEMPLATES: readonly TemplateDef[] = [
     tapeWidthMm: 12,
     build: () =>
       label('Gridfinity label', 12, [icon('nut', { size: { mode: 'mm', mm: 8 } }), text('M3 × 8', { size: { mode: 'mm', mm: 6 } })], {
-        length: { mode: 'fixed', mm: GRIDFINITY_LENGTH_MM },
+        length: { mode: 'fixed', mm: GRIDFINITY_LENGTH_MM, shrink: true },
         marginsMm: { start: 1, end: 1 },
         layout: { mode: 'flow', gapMm: 1.5, align: 'center' },
       }),
@@ -146,10 +161,10 @@ export const TEMPLATES: readonly TemplateDef[] = [
   {
     id: 'folder-spine',
     name: 'Folder spine',
-    description: 'Large title for the spine of a binder or file box (100 mm long).',
+    description: 'Large title for the spine of a binder or file box (100 mm long); a long title gets smaller to fit.',
     category: 'office',
     tapeWidthMm: 24,
-    build: () => label('Folder spine', 24, [text('Folder title', { fontWeight: 700, size: { mode: 'mm', mm: 15 } })], { length: { mode: 'fixed', mm: 100 } }),
+    build: () => label('Folder spine', 24, [text('Folder title', { fontWeight: 700, size: { mode: 'mm', mm: 15 } })], { length: { mode: 'fixed', mm: 100, shrink: true } }),
   },
   {
     id: 'name-tag',

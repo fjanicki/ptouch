@@ -18,7 +18,13 @@ export interface RowInfo {
   lengthMm: number
   /** The label cannot be printed (first blocking warning). */
   problem?: string
+  /** It prints, but not as designed: text cut off or too small to read (first such warning). */
+  notice?: string
 }
+
+/** Non-blocking warnings worth flagging per batch row, most important first: a long value cut
+ * off, or shrunk too far to read. */
+const ROW_NOTICES = ['content-overflow', 'small-text'] as const
 
 /** Wait after an edit before rendering again (typing in a cell re-keys every keystroke). */
 const SETTLE_MS = 350
@@ -75,6 +81,12 @@ export class BatchMeasure {
   get problems(): [number, string][] {
     void this.#version
     return [...this.#rows].filter(([, r]) => r.problem).map(([i, r]) => [i, r.problem ?? ''])
+  }
+
+  /** Labels that print, but cut off or with text too small (0-based index → message). */
+  get notices(): [number, string][] {
+    void this.#version
+    return [...this.#rows].filter(([, r]) => !r.problem && r.notice).map(([i, r]) => [i, r.notice ?? ''])
   }
 
   /** Follow the studio's doc / target (call from an effect). Idempotent per key. */
@@ -156,7 +168,8 @@ export class BatchMeasure {
         try {
           if (ac.signal.aborted || this.#doc !== doc) return
           const w = r.blocking ? (r.warnings.find((x) => x.blocking) ?? r.warnings[0]) : undefined
-          this.#rows.set(i, { lengthMm: r.lengthMm, ...(r.blocking ? { problem: w?.message ?? 'Cannot be printed as designed.' } : {}) })
+          const n = r.blocking ? undefined : ROW_NOTICES.map((code) => r.warnings.find((x) => x.code === code)).find((x) => x !== undefined)
+          this.#rows.set(i, { lengthMm: r.lengthMm, ...(r.blocking ? { problem: w?.message ?? 'Cannot be printed as designed.' } : {}), ...(n ? { notice: n.message } : {}) })
           this.#feedMarginMm = r.feedMarginMm
           for (const p of this.#painters.get(i) ?? []) {
             if (this.#painted.get(p) === doc) continue

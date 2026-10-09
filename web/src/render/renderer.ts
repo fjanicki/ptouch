@@ -10,12 +10,13 @@ import type { CodeItem, IconItem, ImageItem, Item, LabelDoc, Rotation, ShapeItem
 import { canvasReadbackIsNoisy } from './antifp'
 import { context2d, createCanvas, rgbaBytes, type AnyCanvas, type Ctx2D } from './canvas'
 import { chooseModuleDots, codeMatrix, humanReadable, isLinear, padMatrix, quietModules, repeatRow, rotateMatrix, tapeMarginDots } from './codes'
-import { CODE_TEXT_FONT, ensureFonts, fontDef, isFaceReady, textFaceReady } from './fonts'
-import { ICON_STROKE, ICON_VIEWBOX, iconById, type IconDef } from './icons'
+import { CODE_TEXT_FONT, MIN_QUALITY_CAP_MM, activeCustomFamily, ensureFonts, fontDef, isFaceReady, resolveWeight, textFaceReady } from './fonts'
+import { loadIcons, loadedIcons } from './icon-set'
+import type { IconDef } from './icons'
 import { MAX_IMAGE_DOTS, decodeImage, imageSize, resolveImageBlob, type RgbaImage } from './images'
-import { layoutFlow, layoutFree, type FlowLayout, type FramedItem, type MeasuredItem } from './layout'
-import { canvasMeasure, drawTextBlock, faceMetrics, fitTextBlock, invertPadding, splitLines } from './text'
-import type { ItemBox, RenderOptions, RenderResult, RenderTarget, RenderWarning } from './types'
+import { contentLength, flowSettings, layoutFlow, layoutFree, type FlowLayout, type FramedItem, type MeasuredItem } from './layout'
+import { DEFAULT_CRISP_FACTOR, MIN_SHRINK, canvasMeasure, drawTextBlock, faceMetrics, fitTextBlock, lineHeightOf, pixelGrid, shrinkFactor, sizeTextBlock, splitLines } from './text'
+import type { ItemBox, RenderOptions, RenderResult, RenderTarget, RenderWarning, TextRenderInfo } from './types'
 import { dotsToMm, mmToDots } from './units'
 import { wifiWarnings } from './wifi'
 
@@ -57,6 +58,8 @@ interface Prepared {
   prerotated?: boolean
   /** A linear code with `moduleDots: 'auto'` (sized to a fixed label length when there is one). */
   autoLinear?: boolean
+  /** A non-empty text block: how it was sized (`RenderResult.texts`). */
+  text?: TextRenderInfo
 }
 
 interface Ctx {
@@ -72,8 +75,6 @@ interface Ctx {
   autoLinearW?: number
 }
 
-const mmPx = (mm: number, dpi: number, f: number): number => (mm * dpi * f) / 25.4
-
 // ------------------------------------------------------------------------------------------
 // Measuring canvas (shared, tiny)
 // ------------------------------------------------------------------------------------------
@@ -88,52 +89,74 @@ function measuring(): Ctx2D {
 // Items
 // ------------------------------------------------------------------------------------------
 
-function prepareText(item: TextItem, band: number, c: Ctx, maxW?: number): Prepared {
+function prepareText(item: TextItem, band: number, c: Ctx, maxW?: number, scale = 1): Prepared {
   const lines = splitLines(item.text)
   if (lines.every((l) => l.trim() === '')) return { id: item.id, w: 0, h: 0 }
   const { f, dpi } = c
   const face = faceMetrics(c.mctx, item, textFaceReady(item))
   const measure = canvasMeasure(c.mctx, item)
-  const lh = Math.min(3, Math.max(0.5, Number.isFinite(item.lineHeight) ? item.lineHeight : 1.1))
-  const bandPx = band * f
-  const fit = item.size.mode === 'fit'
-  const padV = item.invert ? invertPadding(bandPx, 0, f).v : 0
-  const fitIn = (scale: number) =>
-    fit
-      ? fitTextBlock(lines, face, lh, item.align, measure, { fit: true, availPx: Math.max(f, bandPx - 2 * padV) * scale })
-      : fitTextBlock(lines, face, lh, item.align, measure, { fit: false, targetPx: mmPx(item.size.mode === 'mm' ? item.size.mm : 0, dpi, f) * scale })
-  let block = fitIn(1)
-  let padH = item.invert ? invertPadding(bandPx, block.lineBox, f).h : 0
-  // Free layout: also fit the frame's other side (shrink only).
-  if (maxW !== undefined && block.width + 2 * padH > maxW * f && block.width > 0) {
-    block = fitIn(Math.max(0.01, (maxW * f - 2 * padH) / block.width))
-    padH = item.invert ? invertPadding(bandPx, block.lineBox, f).h : 0
-  }
-  const wPx = block.width + 2 * padH
-  const hPx = item.invert ? (fit ? bandPx : block.height + 2 * padV) : block.height
-  const w = Math.ceil(wPx / f - 1e-6)
-  const h = Math.ceil(hPx / f - 1e-6)
+  const pixel = pixelGrid(item)
+  const sized = sizeTextBlock(lines, face, { size: item.size, align: item.align, invert: item.invert, lineHeight: lineHeightOf(item), ...(item.clipTall ? { clipTall: true } : {}) }, measure, {
+    bandPx: band * f,
+    f,
+    dpi,
+    pixel,
+    ...(scale < 1 ? { scale } : {}),
+    ...(maxW !== undefined ? { maxWPx: maxW * f } : {}),
+  })
+  const { block } = sized
+  const w = Math.ceil(sized.wPx / f - 1e-6)
+  const h = Math.ceil(sized.hPx / f - 1e-6)
   const lineMm = dotsToMm(block.lineBox / f, dpi)
   if (lineMm < SMALL_TEXT_MM) {
     c.warn({ code: 'small-text', itemId: item.id, message: `Text is only ${lineMm.toFixed(1)} mm tall and may be hard to read. Use fewer lines or wider tape.` })
   }
+  if (sized.reduced) c.warn({ code: 'content-overflow', itemId: item.id, message: 'Text is taller than the printable area of this tape and was reduced to fit.' })
   const tooTall = h > band
   if (tooTall) c.warn({ code: 'content-overflow', itemId: item.id, message: 'Text is taller than the printable area of this tape and will be cut off.' })
+  const capDots = (face.cap * block.fontPx) / f
+  qualityWarning(item, capDots, c)
   const slack = item.italic ? block.lineBox * 0.25 : 0
+  const grid = sized.pixelScale !== undefined ? f : undefined
+  const info: TextRenderInfo = {
+    itemId: item.id,
+    emDots: block.fontPx / f,
+    capDots,
+    widthDots: w,
+    ...(scale < 1 ? { shrink: scale } : {}),
+    ...(sized.pixelScale !== undefined && !item.italic ? { pixelScale: sized.pixelScale } : {}),
+  }
   return {
     id: item.id,
     w,
     h,
     tooTall,
     clipSlack: slack,
+    text: info,
     crisp: (ctx, bw, bh) => {
       if (item.invert) {
         ctx.fillStyle = '#000'
         ctx.fillRect(0, 0, bw, bh)
       }
-      drawTextBlock(ctx, item, block, (bw - block.width) / 2, (bh - block.height) / 2, item.invert ? '#fff' : '#000')
+      drawTextBlock(ctx, item, block, (bw - block.width) / 2, (bh - block.height) / 2, item.invert ? '#fff' : '#000', grid)
     },
   }
+}
+
+/** `font-quality`: a thin or script library font (`FontDef.quality`) below a readable cap height.
+ * "Thin" families are only thin below semibold. Not for custom fonts (their own file is drawn). */
+function qualityWarning(item: TextItem, capDots: number, c: Ctx): void {
+  if (activeCustomFamily(item)) return
+  const def = fontDef(item.fontFamily)
+  if (!def.quality || (def.quality === 'thin' && resolveWeight(def, item.fontWeight) >= 600)) return
+  const capMm = dotsToMm(capDots, c.dpi)
+  if (!(capMm < MIN_QUALITY_CAP_MM)) return
+  const what = def.quality === 'thin' ? 'Thin strokes' : 'Script letters'
+  c.warn({
+    code: 'font-quality',
+    itemId: item.id,
+    message: `${what} of ${def.label} print poorly below ${MIN_QUALITY_CAP_MM} mm (this text is ${capMm.toFixed(1)} mm): make it larger (M or more) or choose a sturdier font.`,
+  })
 }
 
 const pathCache = new Map<string, Path2D[]>()
@@ -147,14 +170,17 @@ function iconPaths(icon: IconDef): Path2D[] {
 }
 
 function prepareIcon(item: IconItem, band: number, c: Ctx, maxW?: number): Prepared {
-  const icon = iconById(item.iconId) ?? iconById('question')
+  // renderLabel loads the catalogue before measuring a label that has icons.
+  const icons = loadedIcons()
+  const icon = icons ? (icons.iconById(item.iconId) ?? icons.iconById('question')) : undefined
   let side = item.size.mode === 'fit' ? Math.min(band, maxW ?? band) : mmToDots(item.size.mm, c.dpi)
   if (side > band) {
     c.warn({ code: 'content-overflow', itemId: item.id, message: 'The icon is larger than the printable area of this tape and was reduced.' })
     side = band
   }
   side = Math.max(1, side)
-  if (!icon) return { id: item.id, w: side, h: side }
+  if (!icons || !icon) return { id: item.id, w: side, h: side }
+  const { ICON_STROKE, ICON_VIEWBOX } = icons
   return {
     id: item.id,
     w: side,
@@ -353,6 +379,82 @@ function sizeAutoLinearCodes(doc: LabelDoc, prepared: Prepared[], items: Item[],
     const item = items[i]
     if (item?.kind === 'code') prepared[i] = prepareCode(item, band, { ...c, autoLinearW: Math.max(0, each) })
   }
+}
+
+/** A text block measured with its warnings held back (shrink to fit length measures it again). */
+function prepareTextHeld(item: TextItem, band: number, c: Ctx, scale: number): { p: Prepared; warnings: RenderWarning[] } {
+  const warnings: RenderWarning[] = []
+  return { p: prepareText(item, band, { ...c, warn: (w) => warnings.push(w) }, undefined, scale), warnings }
+}
+
+/**
+ * Shrinking keeps auto linear codes at their default module (2 dots) while the text needs no
+ * more than this factor; below it the codes may go down to 1 dot when that leaves the text larger.
+ */
+const KEEP_CODE_MODULE_SHRINK = 0.5
+
+/**
+ * "Shrink to fit length" (`length.shrink`, fixed length only): when the flow content is longer
+ * than the label, measure every flow text block again at one common scale (< 1, never larger)
+ * until it fits. Icons, images and fixed-module codes keep their size. Linear codes with
+ * `moduleDots: 'auto'` (sized afterwards by sizeAutoLinearCodes) count at their default 2-dot
+ * module, or at 1 dot when the text would otherwise have to shrink below
+ * `KEEP_CODE_MODULE_SHRINK` (or could not fit at all) and 1-dot codes leave it larger. The text
+ * never goes below `MIN_SHRINK`: when that is not enough, or the rest alone is too long, the
+ * layout reports the overflow. `held` maps flow indices of text blocks to their (replaced)
+ * warnings.
+ */
+function shrinkTextToLength(doc: LabelDoc, prepared: Prepared[], items: Item[], band: number, c: Ctx, limits: { insetDots: number }, held: Map<number, RenderWarning[]>): void {
+  if (doc.length.mode !== 'fixed' || !held.size) return
+  const { gap } = flowSettings(doc, c.dpi)
+  const ends = Math.max(0, mmToDots(doc.marginsMm.start, c.dpi)) + Math.max(0, mmToDots(doc.marginsMm.end, c.dpi)) + 2 * limits.insetDots
+  const avail = mmToDots(doc.length.mm, c.dpi) - ends
+  const texts = [...held.keys()]
+  const content = (): number => contentLength(prepared.map((p) => ({ itemId: p.id, w: p.w, h: p.h, ...(p.spacer ? { spacer: true } : {}) })), gap)
+
+  /** Shrink the text blocks (from their current size) until the content fits; the final scale. */
+  const run = (): { scale: number; fits: boolean } => {
+    let scale = 1
+    // Widths are whole dots (and pixel fonts move in whole font pixels): a few rounds settle it.
+    for (let round = 0; round < 8; round++) {
+      const textDots = texts.reduce((n, i) => n + (prepared[i]?.w ?? 0), 0)
+      const s = shrinkFactor(avail, content() - textDots, textDots)
+      if (s === undefined || s >= 1) break
+      const next = Math.max(MIN_SHRINK, scale * s * (round === 0 ? 1 : 0.995))
+      if (next >= scale) break
+      scale = next
+      for (const i of texts) {
+        const item = items[i]
+        if (item?.kind !== 'text') continue
+        const t = prepareTextHeld(item, band, c, scale)
+        prepared[i] = t.p
+        held.set(i, t.warnings)
+      }
+    }
+    return { scale, fits: content() <= avail }
+  }
+
+  const autos = prepared.flatMap((p, i) => (p.autoLinear && items[i]?.kind === 'code' ? [i] : []))
+  const snapshot = (): [number, Prepared, RenderWarning[] | undefined][] => [...texts, ...autos].map((i) => [i, prepared[i] as Prepared, held.get(i)])
+  const restore = (snap: [number, Prepared, RenderWarning[] | undefined][]): void => {
+    for (const [i, p, w] of snap) {
+      prepared[i] = p
+      if (w) held.set(i, w)
+    }
+  }
+  const original = autos.length ? snapshot() : []
+  const a = run()
+  if (!autos.length || (a.fits && a.scale >= KEEP_CODE_MODULE_SHRINK)) return
+  // Try again with the auto codes at 1 dot per module (their warnings come from sizeAutoLinearCodes).
+  const withDefault = snapshot()
+  restore(original)
+  const quiet: Ctx = { ...c, warn: () => {}, autoLinearW: 0 }
+  for (const i of autos) {
+    const item = items[i]
+    if (item?.kind === 'code') prepared[i] = prepareCode(item, band, quiet)
+  }
+  const b = run()
+  if (!(b.fits && (!a.fits || b.scale > a.scale))) restore(withDefault)
 }
 
 function clampInt(v: number, lo: number, hi: number, dflt: number): number {
@@ -577,8 +679,8 @@ function abortIfNeeded(signal: AbortSignal | undefined): void {
 }
 
 function oddFactor(f: number | undefined): number {
-  const v = Math.round(f ?? 3)
-  if (!Number.isFinite(v)) return 3
+  const v = Math.round(f ?? DEFAULT_CRISP_FACTOR)
+  if (!Number.isFinite(v)) return DEFAULT_CRISP_FACTOR
   return Math.max(1, Math.min(7, v))
 }
 
@@ -604,6 +706,10 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
 
   abortIfNeeded(signal)
   const fonts = await ensureFonts(doc, opts.loadFontBlob ? { loadFontBlob: opts.loadFontBlob } : {})
+  abortIfNeeded(signal)
+  if (doc.items.some((i) => i.kind === 'icon') && !(await loadIcons().catch(() => undefined))) {
+    warn({ code: 'icons-missing', blocking: true, message: 'The icons could not be loaded, so they would print blank. Reload the page while online to fix this.' })
+  }
   abortIfNeeded(signal)
   for (const fb of fonts.fallbacks) {
     warn({ code: 'font-fallback', message: `The font “${fb}” could not be loaded; a system font is used instead. Reload the page while online to fix this.` })
@@ -631,6 +737,9 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
   const free = doc.layout.mode === 'free'
   const flowItems: Prepared[] = []
   const flowSource: Item[] = []
+  // Shrink to fit length: flow text is measured with its warnings held back until its final size.
+  const shrinking = doc.length.mode === 'fixed' && !!doc.length.shrink
+  const held = new Map<number, RenderWarning[]>()
   const framed: { p: Prepared; x: number; y: number; w: number; h: number; rotation: Rotation }[] = []
   for (const item of doc.items) {
     const fr = free ? item.frame : undefined
@@ -646,6 +755,11 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
       const ph = p.prerotated || !quarter(rotation) ? p.h : p.w
       if (!p.spacer && (pw > bw || ph > bh)) warn({ code: 'content-overflow', itemId: item.id, message: 'This item is larger than its frame and is cut off at the frame edge.' })
       framed.push({ p, x: mmToDots(fr.xMm, dpi), y: mmToDots(fr.yMm, dpi), w: bw, h: bh, rotation: p.prerotated ? 0 : rotation })
+    } else if (shrinking && item.kind === 'text') {
+      const t = prepareTextHeld(item, inner, c, 1)
+      held.set(flowItems.length, t.warnings)
+      flowItems.push(t.p)
+      flowSource.push(item)
     } else {
       flowItems.push(await prepareItem(item, inner, c, 0))
       flowSource.push(item)
@@ -654,6 +768,10 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
   }
 
   const limits = { minLengthDots: target.area.minLengthDots, ...(target.area.maxLengthDots !== undefined ? { maxLengthDots: target.area.maxLengthDots } : {}), insetDots: reserve }
+  if (shrinking) {
+    shrinkTextToLength(doc, flowItems, flowSource, inner, c, limits, held)
+    for (const ws of held.values()) for (const w of ws) warn(w)
+  }
   sizeAutoLinearCodes(doc, flowItems, flowSource, inner, c, limits)
   const measured: MeasuredItem[] = flowItems.map((p) => ({ itemId: p.id, w: p.w, h: p.h, ...(p.spacer ? { spacer: true } : {}) }))
   let layout: FlowLayout = layoutFlow(doc, measured, band, dpi, limits)
@@ -678,7 +796,8 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
     warn({ code: 'length-clamped', message: `The label was shortened to the printer maximum of ${Math.round(dotsToMm(length, dpi))} mm.` })
   }
   if (layout.overflow) {
-    warn({ code: 'content-overflow', message: doc.length.mode === 'fixed' ? 'The content is longer than the fixed label length and will be cut off.' : 'The content does not fit on the label and will be cut off.' })
+    const hint = doc.length.mode === 'fixed' && !doc.length.shrink && flowSource.some((i) => i.kind === 'text') ? ' Turn on “Shrink text to fit length” or make the label longer.' : ''
+    warn({ code: 'content-overflow', message: doc.length.mode === 'fixed' ? `The content is longer than the fixed label length and will be cut off.${hint}` : 'The content does not fit on the label and will be cut off.' })
   }
 
   // Compose: tone → crisp → codes.
@@ -716,6 +835,7 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
       .map((pl) => (pl.p.spacer ? { itemId: pl.p.id, x: pl.x, y: reserve, w: Math.max(1, pl.w), h: inner } : { itemId: pl.p.id, x: pl.x, y: pl.y, w: pl.w, h: pl.h }))
     const blocking = warnings.some((w) => w.blocking)
     warnings.sort((a, b) => Number(!!b.blocking) - Number(!!a.blocking))
+    const texts = placed.flatMap((pl) => (pl.p.text ? [pl.p.text] : []))
     return {
       bitmap,
       lengthDots: length,
@@ -726,6 +846,7 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
       warnings,
       blocking,
       overflow: layout.overflow || placed.some((pl) => pl.p.tooTall),
+      texts,
     }
   } finally {
     if (!finished) raster.free()

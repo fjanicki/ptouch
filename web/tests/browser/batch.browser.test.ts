@@ -177,6 +177,22 @@ describe('BatchMeasure (background lengths + lazy thumbnails)', () => {
       m.sync(batchDoc([code({ symbology: 'ean13', data: '{{name}}', moduleDots: 2, quietZone: 'standard' })], [['400638133393'], ['oops']]), target(24), 0)
       await until(() => m.measured === 2)
       expect(m.problems.map(([i]) => i)).toEqual([1])
+      expect(m.notices).toEqual([])
+    } finally {
+      m.dispose()
+    }
+  })
+
+  it('flags rows that print cut off or too small (shrink to fit length with one very long value)', async () => {
+    const m = new BatchMeasure(fakeStudio)
+    try {
+      const doc = batchDoc([text('{{name}}')], [['Ada'], ['x'.repeat(400)], ['Grace']], 1, { length: { mode: 'fixed', mm: 20, shrink: true } })
+      m.sync(doc, target(12), 0)
+      await until(() => m.measured === 3)
+      expect(m.problems).toEqual([])
+      expect(m.notices.map(([i]) => i)).toEqual([1])
+      expect(m.row(1)?.notice).toMatch(/cut off/)
+      expect(m.row(0)?.notice).toBeUndefined()
     } finally {
       m.dispose()
     }

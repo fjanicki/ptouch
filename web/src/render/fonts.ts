@@ -1,6 +1,10 @@
-// W3 — bundled OFL fonts (web/public/fonts/*.woff2, listed in public/fonts/SOURCES.md and
+// W3 — bundled fonts (web/public/fonts/*.woff2, listed in public/fonts/SOURCES.md and
 // web/THIRD_PARTY.md). Loaded with the FontFace API from `import.meta.env.BASE_URL + 'fonts/…'`
-// so they work under /ptouch/ and offline (precached). Chosen for 180 dpi (ARCHITECTURE §6.2).
+// so they work under /ptouch/. Chosen for 180 dpi (ARCHITECTURE §6.2).
+//
+// Font library (docs/FONTS-AND-SIZE-PLAN.md): the core families are precached; every other
+// family loads on first use (`loadFamily`, or `ensureFonts` before a render) and is then cached
+// by the service worker (pwa.config.ts runtime rule for fonts/*.woff2), so it works offline too.
 //
 // Faces are registered under a private family name ("ptouch Fira Sans"…) so a copy of the same
 // family installed on the user's machine can never stand in for the bundled file: the preview
@@ -12,82 +16,14 @@
 // the one file is used for every weight and the canvas never synthesises bold. A custom font
 // that cannot be loaded is reported as `missing`; the item then draws with its bundled family.
 import type { FontFamilyId, FontSource, FontWeight, LabelDoc, TextItem } from '../doc/schema'
+import { CODE_TEXT_FONT, FONTS, findFont, type FontDef } from './font-catalog'
 
-export interface FontDef {
-  id: FontFamilyId
-  /** CSS family name registered with FontFace. */
-  family: string
-  label: string
-  /** Weights that have their own file (other weights use the nearest one, see `resolveWeight`). */
-  weights: FontWeight[]
-  /** File per weight, relative to `${BASE_URL}fonts/`. */
-  files: Partial<Record<FontWeight, string>>
-  license: 'OFL-1.1'
-  /** Licence text next to the files. */
-  licenseFile: string
-  /** Short description for the font picker. */
-  hint: string
-}
-
-export const FONTS: readonly FontDef[] = [
-  {
-    id: 'fira-sans',
-    family: 'ptouch Fira Sans',
-    label: 'Fira Sans',
-    weights: [400, 500, 600, 700, 800],
-    files: {
-      400: 'FiraSans-Regular.woff2',
-      500: 'FiraSans-Medium.woff2',
-      600: 'FiraSans-SemiBold.woff2',
-      700: 'FiraSans-Bold.woff2',
-      800: 'FiraSans-ExtraBold.woff2',
-    },
-    license: 'OFL-1.1',
-    licenseFile: 'OFL-FiraSans.txt',
-    hint: 'Clear, sturdy sans-serif',
-  },
-  {
-    id: 'archivo-narrow',
-    family: 'ptouch Archivo Narrow',
-    label: 'Archivo Narrow',
-    weights: [400, 500, 600, 700],
-    files: {
-      400: 'ArchivoNarrow-Regular.woff2',
-      500: 'ArchivoNarrow-Medium.woff2',
-      600: 'ArchivoNarrow-SemiBold.woff2',
-      700: 'ArchivoNarrow-Bold.woff2',
-    },
-    license: 'OFL-1.1',
-    licenseFile: 'OFL-ArchivoNarrow.txt',
-    hint: 'Condensed: more text per label',
-  },
-  {
-    id: 'jetbrains-mono',
-    family: 'ptouch JetBrains Mono',
-    label: 'JetBrains Mono',
-    weights: [400, 700],
-    files: { 400: 'JetBrainsMono-Regular.woff2', 700: 'JetBrainsMono-Bold.woff2' },
-    license: 'OFL-1.1',
-    licenseFile: 'OFL-JetBrainsMono.txt',
-    hint: 'Monospaced: serial numbers, codes',
-  },
-  {
-    id: 'atkinson-hyperlegible',
-    family: 'ptouch Atkinson Hyperlegible',
-    label: 'Atkinson Hyperlegible',
-    weights: [400, 700],
-    files: { 400: 'AtkinsonHyperlegible-Regular.woff2', 700: 'AtkinsonHyperlegible-Bold.woff2' },
-    license: 'OFL-1.1',
-    licenseFile: 'OFL-AtkinsonHyperlegible.txt',
-    hint: 'Designed for low vision: distinct 0/O, 1/l/I',
-  },
-]
-
-/** The family used for the human-readable line under linear barcodes. */
-export const CODE_TEXT_FONT: { id: FontFamilyId; weight: FontWeight } = { id: 'jetbrains-mono', weight: 400 }
+// The registry (types frozen by the lead, data by P-lib) lives in font-catalog.ts; re-exported
+// here so existing imports keep working.
+export { CODE_TEXT_FONT, FONT_CATEGORIES, FONTS, MIN_QUALITY_CAP_MM, coreFontFiles, findFont, type FontCategory, type FontDef, type FontLicense } from './font-catalog'
 
 export function fontDef(id: FontFamilyId): FontDef {
-  return FONTS.find((f) => f.id === id) ?? (FONTS[0] as FontDef)
+  return findFont(id) ?? (FONTS[0] as FontDef)
 }
 
 /** Nearest weight that has a file (ties go to the lighter weight). */
@@ -145,6 +81,26 @@ function fontSet(): FontSet | undefined {
 }
 
 const loading = new Map<string, Promise<boolean>>()
+/** Faces whose file loaded in this page ("id:weight"). `fonts.check()` alone is not enough: it
+ * also answers `true` for a family that was never registered (nothing to load). */
+const loaded = new Set<string>()
+
+type FileListener = (url: string) => void
+/** URLs of library (not precached) font files this page loaded, for the service worker cache. */
+const libraryFiles = new Set<string>()
+const fileListeners = new Set<FileListener>()
+
+/**
+ * Calls `fn` with the URL of every library font file this page has loaded, now and from then on
+ * (pwa/font-cache.ts puts them into the service worker's font cache, so a font used on the very
+ * first visit, before the worker controls the page, also works offline later). Core files are
+ * precached and never reported. Returns an unsubscribe function.
+ */
+export function onLibraryFontFile(fn: FileListener): () => void {
+  fileListeners.add(fn)
+  for (const url of libraryFiles) fn(url)
+  return () => fileListeners.delete(fn)
+}
 
 /** Loads one face (once per page); resolves `true` when it is usable. */
 function loadFace(def: FontDef, weight: FontWeight): Promise<boolean> {
@@ -155,16 +111,33 @@ function loadFace(def: FontDef, weight: FontWeight): Promise<boolean> {
     const set = fontSet()
     const file = def.files[weight]
     if (!set || !file || typeof FontFace === 'undefined') return false
+    // One face per weight, even when weights share a file (Quicksand's variable font): the
+    // browser then sets the `wght` axis from the requested weight.
+    let face: FontFace | undefined
     try {
-      const face = new FontFace(def.family, `url("${fontUrl(file)}") format("woff2")`, {
+      face = new FontFace(def.family, `url("${fontUrl(file)}") format("woff2")`, {
         weight: String(weight),
         style: 'normal',
         display: 'block',
       })
       set.add(face)
       await face.load()
+      loaded.add(key)
+      if (!def.core) {
+        const url = fontUrl(file)
+        if (!libraryFiles.has(url)) {
+          libraryFiles.add(url)
+          for (const fn of fileListeners) fn(url)
+        }
+      }
       return true
     } catch {
+      // Unregister the failed face so the generic fallback draws and a retry starts clean.
+      try {
+        if (face) set.delete(face)
+      } catch {
+        // not in the set
+      }
       return false
     }
   })()
@@ -177,11 +150,34 @@ function loadFace(def: FontDef, weight: FontWeight): Promise<boolean> {
 }
 
 /**
+ * Loads the face of family `id` that `weight` resolves to (nearest file, `resolveWeight`): once
+ * per page, concurrent calls share one request, a failure is retried on the next call. Resolves
+ * `true` when the face is usable. The picker calls it for previews and to show a spinner; the
+ * renderer goes through `ensureFonts`, which uses the same cache.
+ */
+export function loadFamily(id: FontFamilyId, weight: number = 400): Promise<boolean> {
+  const def = fontDef(id)
+  return loadFace(def, resolveWeight(def, weight))
+}
+
+/** `true` if the face `loadFamily(id, weight)` loads is ready now (synchronous; no request). */
+export function familyReady(id: FontFamilyId, weight: number = 400): boolean {
+  const def = fontDef(id)
+  return isFaceReady(def, resolveWeight(def, weight))
+}
+
+/** `true` while that face is being fetched (picker spinner). */
+export function familyLoading(id: FontFamilyId, weight: number = 400): boolean {
+  const def = fontDef(id)
+  return loading.has(`${def.id}:${resolveWeight(def, weight)}`) && !isFaceReady(def, resolveWeight(def, weight))
+}
+
+/**
  * CSS `font` shorthand that selects the bundled face, with a generic fallback of the same kind
- * (`sans-serif` / `monospace`) so a face that failed to load never turns into Times.
+ * (`def.generic`: `sans-serif`, `monospace`…) so a face that failed to load never turns into Times.
  */
 export function faceCss(def: FontDef, weight: FontWeight, px: number, italic = false): string {
-  return `${exactFaceCss(def, weight, px, italic)}, ${def.id === 'jetbrains-mono' ? 'monospace' : 'sans-serif'}`
+  return `${exactFaceCss(def, weight, px, italic)}, ${def.generic}`
 }
 
 /** Only the bundled face (no fallback): for `fonts.check()`. */
@@ -213,7 +209,7 @@ function checkFace(css: string): boolean {
 /** `true` if the face is loaded and will be used for drawing. */
 export function isFaceReady(def: FontDef, weight: FontWeight): boolean {
   const set = fontSet()
-  if (!set) return false
+  if (!set || !loaded.has(`${def.id}:${resolveWeight(def, weight)}`)) return false
   try {
     return set.check(exactFaceCss(def, weight, 16))
   } catch {
@@ -334,7 +330,8 @@ export function forgetCustomFont(src: FontSource): void {
   }
 }
 
-/** Loads every bundled face (font picker previews, diagnostics). */
+/** Loads every bundled face, the whole library included (about 1.4 MB): tests and diagnostics
+ * only; the app loads library families on first use (`loadFamily`, `ensureFonts`). */
 export async function preloadAllFonts(): Promise<FontReport> {
   const all = FONTS.flatMap((def) => def.weights.map((w) => ({ def, w })))
   const res = await Promise.all(all.map(async ({ def, w }) => ((await loadFace(def, w)) ? undefined : `${def.label} ${w}`)))

@@ -2,8 +2,32 @@
 // may throw). Never store printer-identifying data beyond what getPorts()/getDevices() already
 // hold (the transport kind/label used to pick the right granted port). Values are sanitized
 // on load, so a corrupt or hand-edited entry falls back to defaults field by field.
+//
+// Fonts and size (docs/FONTS-AND-SIZE-PLAN.md, lead-owned): the default font and text size for
+// new text blocks, favourite and recently used fonts (font picker).
+import { CONTENT_REF_RE, FONT_FAMILY_IDS, LIMITS, type FontFamilyId, type FontWeight } from './schema'
 
 export type ConnectPathPref = 'bluetooth' | 'serial-port' | 'usb' | 'virtual'
+
+/**
+ * Size of a NEW text block (existing blocks never change):
+ * - 'auto': fit the tape on narrow tape (≤ 9 mm), half the printable height on 12 mm and wider
+ *   (ui/state/text-defaults.ts; the reasoning is in docs/FONTS-AND-SIZE-PLAN.md §3);
+ * - 'fit' / 'half' / 'third': fit, or that fraction of the printable height (quick sizes M / S);
+ * - `{pt}`: a fixed point size.
+ */
+export type DefaultTextSize = 'auto' | 'fit' | 'half' | 'third' | { pt: number }
+
+/**
+ * A font in the picker's favourites / recent lists, same encoding as the picker's values:
+ * `b:<FontFamilyId>` (bundled), `u:<content ref>` (uploaded), `l:<PostScript name>` (this
+ * computer). Uploaded/local keys may point at fonts that are gone; the picker skips those.
+ */
+export type FontKey = string
+
+/** Most favourites / recent fonts kept. */
+export const MAX_FAVORITE_FONTS = 50
+export const MAX_RECENT_FONTS = 8
 
 export interface Prefs {
   /** Last successful connect path, for "Reconnect" and auto-reconnect on load. */
@@ -23,6 +47,13 @@ export interface Prefs {
   singleKeyShortcuts: boolean
   /** Unsupported browser: the user chose to design labels anyway (skip the blocking screen). */
   designAnyway: boolean
+  /** Font of new text blocks (bundled only: a custom font may be missing on another device). */
+  defaultFont: { family: FontFamilyId; weight: FontWeight }
+  defaultTextSize: DefaultTextSize
+  /** Starred fonts, in the order they were starred. */
+  favoriteFonts: FontKey[]
+  /** Recently picked fonts, most recent first (≤ MAX_RECENT_FONTS). */
+  recentFonts: FontKey[]
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -33,6 +64,10 @@ export const DEFAULT_PREFS: Prefs = {
   usbOnWindows: false,
   singleKeyShortcuts: true,
   designAnyway: false,
+  defaultFont: { family: 'fira-sans', weight: 600 },
+  defaultTextSize: 'auto',
+  favoriteFonts: [],
+  recentFonts: [],
 }
 
 export const PREFS_KEY = 'ptouch.prefs.v1'
@@ -50,6 +85,31 @@ function defaultStorage(): PrefsStorage | undefined {
 
 const PATHS: readonly ConnectPathPref[] = ['bluetooth', 'serial-port', 'usb', 'virtual']
 const THEMES: readonly Prefs['theme'][] = ['system', 'light', 'dark']
+const WEIGHTS: readonly FontWeight[] = [400, 500, 600, 700, 800]
+const SIZE_WORDS: readonly DefaultTextSize[] = ['auto', 'fit', 'half', 'third']
+
+/** `true` for a well-formed `FontKey` (a known bundled id, a content ref, a safe local name). */
+export function isFontKey(v: unknown): v is FontKey {
+  if (typeof v !== 'string') return false
+  const rest = v.slice(2)
+  if (v.startsWith('b:')) return (FONT_FAMILY_IDS as readonly string[]).includes(rest)
+  if (v.startsWith('u:')) return CONTENT_REF_RE.test(rest)
+  if (v.startsWith('l:')) return /^[\x20-\x7e]{1,100}$/.test(rest) && !/["'\\]/.test(rest)
+  return false
+}
+
+/** Well-formed, deduplicated keys, at most `max`. */
+function fontKeys(v: unknown, max: number): FontKey[] {
+  if (!Array.isArray(v)) return []
+  return [...new Set(v.filter(isFontKey))].slice(0, max)
+}
+
+function defaultTextSize(v: unknown): DefaultTextSize | undefined {
+  if (SIZE_WORDS.includes(v as DefaultTextSize)) return v as DefaultTextSize
+  const pt = typeof v === 'object' && v !== null ? (v as Record<string, unknown>)['pt'] : undefined
+  if (typeof pt === 'number' && Number.isFinite(pt)) return { pt: Math.min(LIMITS.sizePt.max, Math.max(LIMITS.sizePt.min, pt)) }
+  return undefined
+}
 
 /** Keeps only well-typed fields; anything else falls back to the default. */
 export function sanitizePrefs(raw: unknown): Prefs {
@@ -68,6 +128,13 @@ export function sanitizePrefs(raw: unknown): Prefs {
   if (typeof r['usbOnWindows'] === 'boolean') p.usbOnWindows = r['usbOnWindows']
   if (typeof r['singleKeyShortcuts'] === 'boolean') p.singleKeyShortcuts = r['singleKeyShortcuts']
   if (typeof r['designAnyway'] === 'boolean') p.designAnyway = r['designAnyway']
+  const f = r['defaultFont'] as Record<string, unknown> | undefined
+  if (f && typeof f === 'object' && (FONT_FAMILY_IDS as readonly unknown[]).includes(f['family']) && WEIGHTS.includes(f['weight'] as FontWeight)) {
+    p.defaultFont = { family: f['family'] as FontFamilyId, weight: f['weight'] as FontWeight }
+  }
+  p.defaultTextSize = defaultTextSize(r['defaultTextSize']) ?? DEFAULT_PREFS.defaultTextSize
+  p.favoriteFonts = fontKeys(r['favoriteFonts'], MAX_FAVORITE_FONTS)
+  p.recentFonts = fontKeys(r['recentFonts'], MAX_RECENT_FONTS)
   return p
 }
 

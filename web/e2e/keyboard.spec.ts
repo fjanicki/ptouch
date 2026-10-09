@@ -55,6 +55,16 @@ test('deleting a block keeps the keyboard place; single keys do not act on a swi
   expect(await activeTag(page)).not.toBe('BODY')
 
   const zoom = page.getByRole('button', { name: /^Zoom \d+ %/ })
+  // "Fit to window" follows the label length: let the render after the deletes land first.
+  const preview = page.getByRole('region', { name: 'Label preview' })
+  await expect(preview).toHaveAttribute('data-ready', 'true')
+  await expect(preview.getByText('Updating')).toHaveCount(0)
+  const steady = async (): Promise<boolean> => {
+    const a = await zoom.getAttribute('aria-label')
+    await page.waitForTimeout(200)
+    return a === (await zoom.getAttribute('aria-label'))
+  }
+  await expect.poll(steady).toBe(true)
   const before = await zoom.getAttribute('aria-label')
   await page.getByRole('switch').first().focus()
   await page.keyboard.press('1')

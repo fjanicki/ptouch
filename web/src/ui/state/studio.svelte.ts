@@ -13,8 +13,12 @@
 // time), previewRow/batchCount/batchProgress (P1), newFromTemplate (P2), requestShare/
 // createShareUrl/copyShareLink/exportFile with ShareActionOptions (P3, P5), fonts/fontsChanged,
 // printHistory, usage/resetUsage (P4), tapeLeader.
+//
+// Fonts and size (docs/FONTS-AND-SIZE-PLAN.md, frozen for P-lib/P-picker/P-size): updatePrefs
+// (favourite/recent fonts, default font and size), textDefaults (what a new text block gets);
+// insert('text') and new labels apply the user's default font and size.
 import { getContext, setContext, untrack } from 'svelte'
-import { TAPE_WIDTHS_MM, createDoc, newId, type Item, type ItemKind, type LabelDoc, type TapeWidthMm } from '../../doc/schema'
+import { TAPE_WIDTHS_MM, createDoc, createItem, newId, type Item, type ItemKind, type LabelDoc, type TapeWidthMm, type TextItem } from '../../doc/schema'
 import { addItem, duplicateItem, moveItem, removeItem, updateDoc, updateItem } from '../../doc/ops'
 import { createHistory, type History } from '../../doc/history'
 import { loadPrefs, savePrefs, type Prefs } from '../../doc/persist-prefs'
@@ -40,9 +44,10 @@ import {
   type ProblemAction,
   type SupportInfo,
 } from '../../printer'
-import { buildPrintJob, ensureFonts, estimateTape, renderLabel, thumbnailPng, type RenderResult, type RenderTarget } from '../../render'
+import { buildPrintJob, ensureFonts, estimateTape, itemSizingBand, renderLabel, thumbnailPng, type RenderResult, type RenderTarget } from '../../render'
 import { isPtouchError, listModels, loadWasm, mediaForWidth, printArea, type Job, type ModelInfo } from '../../wasm'
 import { inShortcutScope, matchShortcut, isEditableTarget, type ShortcutAction } from './shortcuts'
+import { FALLBACK_BAND_DOTS, newTextDefaults, retapeTextSize } from './text-defaults'
 import { clampCopies, docIsEmpty, fitScale, mediaMismatch, previewColors, printBlockReason, realScale, tapeText, themeColorMedia, zoomStep, type Zoom } from './view-model'
 
 export type View = 'studio' | 'diagnostics'
@@ -100,7 +105,7 @@ export class Studio {
   view = $state<View>(location.hash === '#diagnostics' ? 'diagnostics' : 'studio')
   wasm = $state<WasmState>('loading')
   /** Immutable; replace via setDoc / openDoc. */
-  doc = $state.raw<LabelDoc>(createDoc())
+  doc = $state.raw<LabelDoc>(this.#freshDoc(24))
   /** Doc opened from a newer schema: the first edit forks it into a copy. */
   readOnly = $state(false)
   selectedId = $state<string | null>(null)
@@ -311,7 +316,7 @@ export class Studio {
           // width and gets the mismatch banner with a one-click switch instead.
           const pristine = this.doc.createdAt === this.doc.updatedAt && !this.canUndo && !this.readOnly
           if (pristine && isTapeWidth(media.widthMm)) {
-            this.setDoc(updateDoc(this.doc, { tape: { ...this.doc.tape, widthMm: media.widthMm, mediaId: media.id } }))
+            this.setDoc(this.#retaped({ ...this.doc.tape, widthMm: media.widthMm, mediaId: media.id }, true))
             this.toast('info', `Switched to the loaded ${media.widthMm} mm tape`, undefined, { label: 'Undo', run: () => this.undo() })
           }
         })
@@ -469,10 +474,70 @@ export class Studio {
     if (opts.save !== false && !this.readOnly) this.autosave.schedule(doc)
   }
 
+  /** A new label on `widthMm` tape whose text block has the user's default font and size. */
+  #freshDoc(widthMm: TapeWidthMm, mediaId?: string): LabelDoc {
+    const doc = createDoc({ tape: { widthMm, ...(mediaId ? { mediaId } : {}) } })
+    const text = { ...createItem('text'), ...this.textDefaults(doc) }
+    return { ...doc, items: [text] }
+  }
+
+  /**
+   * Font and size a new text block in `doc` gets (prefs `defaultFont` / `defaultTextSize`,
+   * ui/state/text-defaults.ts), sized in the band of the current print area when it matches the
+   * doc's tape, else the PT-P710BT band of that width.
+   */
+  textDefaults(doc: LabelDoc = this.doc): Pick<TextItem, 'fontFamily' | 'fontWeight' | 'size'> {
+    const { bandDots, dpi } = this.#sizingBand(doc, createItem('text'))
+    return newTextDefaults(this.prefs, doc.tape.widthMm, bandDots, dpi)
+  }
+
+  /** The band `item` is sized in on `doc`'s tape: the current print area when it matches the
+   * tape, else the area of that width for this model, else the PT-P710BT band of that width. */
+  #sizingBand(doc: LabelDoc, item: Item): { bandDots: number; dpi: number } {
+    const width = doc.tape.widthMm
+    // `target` is derived from the current doc; it may not exist yet (wasm loading, constructor).
+    const t = this.wasm === 'ready' && this.target.ok ? this.target.target : null
+    let area = t && Math.abs(t.media.widthMm - width) < 0.01 ? t.area : null
+    if (!area && this.wasm === 'ready') {
+      try {
+        area = printArea(this.model, mediaForWidth(this.model, width).id)
+      } catch {
+        area = null
+      }
+    }
+    return area ? { bandDots: itemSizingBand(doc, item, area).bandDots, dpi: area.dpi } : { bandDots: FALLBACK_BAND_DOTS[width as TapeWidthMm] ?? 70, dpi: 180 }
+  }
+
+  /**
+   * The current doc on `tape`: quick sizes of text blocks follow the new band (M stays M,
+   * `retapeTextSize`); `fresh` (an untouched label) also gives its default-size text the new
+   * tape's default. Free-layout frames keep their own band.
+   */
+  #retaped(tape: LabelDoc['tape'], fresh = false): LabelDoc {
+    const doc = this.doc
+    const next = updateDoc(doc, { tape })
+    const defaults = fresh ? { from: this.textDefaults(doc).size, to: this.textDefaults(next).size } : undefined
+    const items = doc.items.map((item) => {
+      if (item.kind !== 'text' || (doc.layout.mode === 'free' && item.frame)) return item
+      const from = this.#sizingBand(doc, item)
+      const size = retapeTextSize(item.size, from.bandDots, this.#sizingBand(next, item).bandDots, from.dpi, defaults)
+      if (size === item.size) return item
+      const { clipTall: _v1, ...rest } = item
+      void _v1
+      return { ...rest, size }
+    })
+    return { ...next, items }
+  }
+
+  /** Saves preference fields (font picker favourites/recent, default font and size). */
+  updatePrefs(patch: Partial<Prefs>): void {
+    this.prefs = savePrefs(patch)
+  }
+
   newLabel(): void {
     void this.autosave.flush().catch(() => {})
     const loaded = this.conn.media && isTapeWidth(this.conn.media.widthMm) ? this.conn.media : null
-    const doc = createDoc({ tape: { widthMm: loaded ? (loaded.widthMm as TapeWidthMm) : this.doc.tape.widthMm, ...(loaded ? { mediaId: loaded.id } : {}) } })
+    const doc = this.#freshDoc(loaded ? (loaded.widthMm as TapeWidthMm) : this.doc.tape.widthMm, loaded?.id)
     this.openDoc(doc)
     this.announce('New label')
   }
@@ -500,10 +565,12 @@ export class Studio {
     this.selectedId = id
   }
 
-  /** Insert a new block after the selection; `patch` customises it (one undo step). */
+  /** Insert a new block after the selection; `patch` customises it (one undo step). A text
+   * block gets the user's default font and size first (`textDefaults`). */
   insert<K extends ItemKind>(kind: K, patch?: Partial<Omit<Extract<Item, { kind: K }>, 'id' | 'kind'>>): string {
     const [added, id] = addItem(this.doc, kind, this.selectedId ?? undefined)
-    const doc = patch ? updateItem(added, id, patch) : added
+    const full = kind === 'text' ? { ...this.textDefaults(), ...patch } : patch
+    const doc = full ? updateItem(added, id, full) : added
     this.setDoc(doc)
     this.selectedId = id
     this.announce(`Added ${kind} block`)
@@ -567,7 +634,7 @@ export class Studio {
     const { mediaId: _drop, ...tape } = this.doc.tape
     void _drop
     const loaded = this.conn.media && Math.abs(this.conn.media.widthMm - widthMm) < 0.01 ? { mediaId: this.conn.media.id } : {}
-    this.updateDoc({ tape: { ...tape, ...loaded, widthMm } })
+    this.setDoc(this.#retaped({ ...tape, ...loaded, widthMm }))
   }
 
   /** "Use loaded 12 mm tape" (problem action `switch-tape`, mismatch banner). */
@@ -579,7 +646,7 @@ export class Studio {
       this.toast('info', `The loaded ${media.widthMm} mm media can’t be designed for yet`, 'Load a TZe tape cassette (3.5–24 mm).')
       return
     }
-    this.updateDoc({ tape: { ...this.doc.tape, widthMm: media.widthMm, mediaId: media.id } })
+    this.setDoc(this.#retaped({ ...this.doc.tape, widthMm: media.widthMm, mediaId: media.id }))
     this.toast('ok', `Label switched to ${media.widthMm} mm tape`)
   }
 

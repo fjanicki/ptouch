@@ -8,15 +8,60 @@
 // nothing (layering rule: `doc` depends on nothing).
 
 /** 2 (studio v1): code content modes (Wi-Fi), DataMatrix, quiet-zone modes, automatic module
- * size, custom fonts, batch data. Schema-1 documents are upgraded by persist-migrate.ts. */
-export const SCHEMA_VERSION = 2 as const
+ * size, custom fonts, batch data.
+ * 3 (fonts and size, docs/FONTS-AND-SIZE-PLAN.md): text sizes in points (`TextSize` mode 'pt'),
+ * the font library (more `FontFamilyId`s) and "shrink to fit length" on fixed-length labels.
+ * Older documents are upgraded by persist-migrate.ts (2 → 3 marks fixed-size text `clipTall`,
+ * which keeps v1's clipping of text taller than the band, so they render pixel-identically); an
+ * older app opens a schema-3 label read-only instead of
+ * silently turning a point size or a new font into something else. */
+export const SCHEMA_VERSION = 3 as const
 
 /** Nominal TZe tape widths (PT-P710BT). 3.5 mm reports width byte 4 in the status. */
 export type TapeWidthMm = 3.5 | 6 | 9 | 12 | 18 | 24
 export const TAPE_WIDTHS_MM: readonly TapeWidthMm[] = [3.5, 6, 9, 12, 18, 24]
 
-/** Bundled OFL families (web/public/fonts, render/fonts.ts). */
-export type FontFamilyId = 'fira-sans' | 'archivo-narrow' | 'jetbrains-mono' | 'atkinson-hyperlegible'
+/**
+ * Bundled families (web/public/fonts, registry in render/font-catalog.ts). The first four are the
+ * core families (precached); the rest is the font library (schema 3), loaded on first use. The
+ * list is frozen: removing an id would turn labels that use it into Fira Sans.
+ */
+export const FONT_FAMILY_IDS = [
+  'fira-sans',
+  'archivo-narrow',
+  'jetbrains-mono',
+  'atkinson-hyperlegible',
+  // condensed / bold
+  'oswald',
+  'bebas-neue',
+  'barlow-condensed',
+  'anton',
+  // industrial
+  'barlow',
+  'b612',
+  // rounded
+  'nunito',
+  'fredoka',
+  'quicksand',
+  // handwritten
+  'caveat',
+  'permanent-marker',
+  'pacifico',
+  // stencil
+  'big-shoulders-stencil',
+  'saira-stencil-one',
+  // typewriter / slab
+  'special-elite',
+  'courier-prime',
+  'roboto-slab',
+  // pixel
+  'silkscreen',
+  'vt323',
+  'pixelify-sans',
+  // accessible
+  'lexend',
+] as const
+export type FontFamilyId = (typeof FONT_FAMILY_IDS)[number]
 export type FontWeight = 400 | 500 | 600 | 700 | 800
 
 export type Align = 'start' | 'center' | 'end'
@@ -49,7 +94,11 @@ export interface TapeSettings {
   colors?: { tape: string; ink: string }
 }
 
-export type LengthSettings = { mode: 'auto' } | { mode: 'fixed'; mm: number }
+/**
+ * Label length. `shrink` (schema 3, fixed length only): text blocks scale down by one common
+ * factor (never up) until the content fits the length, instead of overflowing. Absent = false.
+ */
+export type LengthSettings = { mode: 'auto' } | { mode: 'fixed'; mm: number; shrink?: boolean }
 
 export type LayoutSettings =
   | { mode: 'flow'; gapMm: number; align: Align }
@@ -139,6 +188,14 @@ export interface ItemFrame {
 /** Size along the tape: fill the printable band ("fit") or a fixed height in mm. */
 export type ItemSize = { mode: 'fit' } | { mode: 'mm'; mm: number }
 
+/**
+ * Size of a text block (schema 3): an `ItemSize`, or the font size in points
+ * (`{mode:'pt', pt}`): the em size, as in P-touch Editor or a word processor
+ * (1 pt = 1/72 in = 2.5 dots at 180 dpi), so one line's height depends on the font. Only text
+ * items have a point size.
+ */
+export type TextSize = ItemSize | { mode: 'pt'; pt: number }
+
 interface ItemBase {
   id: string
   frame?: ItemFrame
@@ -165,13 +222,21 @@ export interface TextItem extends ItemBase {
   customFont?: FontSource
   fontWeight: FontWeight
   italic: boolean
-  /** Cap-to-descender height of the text block; 'fit' = largest size that fits the band. */
-  size: ItemSize
+  /** 'mm': cap-to-descender height of the text block; 'pt': em size of each line; 'fit' =
+   * largest size that fits the band. */
+  size: TextSize
   align: Align
   /** Line height multiplier (1.0–2.0). */
   lineHeight: number
   /** White text on a black block. */
   invert: boolean
+  /**
+   * Labels from schema ≤ 2 (set by the 2 → 3 migration on fixed-size text): a fixed size taller
+   * than the band is drawn at its size and cut off, as studio v1 did, instead of being reduced to
+   * the band, so old labels print pixel-identically. Dropped as soon as the size is changed
+   * (doc/ops.ts updateItem).
+   */
+  clipTall?: true
 }
 
 export interface IconItem extends ItemBase {
@@ -338,6 +403,8 @@ export const LIMITS = {
   marginMm: { min: 0, max: 100 },
   gapMm: { min: 0, max: 100 },
   sizeMm: { min: 0.5, max: 100 },
+  /** Text size in points (em; 1 pt = 2.5 dots at 180 dpi). */
+  sizePt: { min: 4, max: 144 },
   lineHeight: { min: 0.5, max: 3 },
   moduleDots: { min: 1, max: 20 },
   widthMm: { min: 0, max: 1000 },
@@ -397,7 +464,7 @@ export function shortJson(v: unknown, max = 40): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s
 }
 
-const FONT_FAMILIES: readonly FontFamilyId[] = ['fira-sans', 'archivo-narrow', 'jetbrains-mono', 'atkinson-hyperlegible']
+const FONT_FAMILIES: readonly FontFamilyId[] = FONT_FAMILY_IDS
 const FONT_WEIGHTS: readonly FontWeight[] = [400, 500, 600, 700, 800]
 const ALIGNS: readonly Align[] = ['start', 'center', 'end']
 const ROTATIONS: readonly Rotation[] = [0, 90, 180, 270]
@@ -488,6 +555,13 @@ function readSize(r: Reader, o: Obj, key = 'size'): ItemSize {
   if (typeof v === 'number') return { mode: 'mm', mm: r.num(o, key, LIMITS.sizeMm.min, LIMITS.sizeMm.max, 6) }
   if (v !== undefined) r.note(`${key} was malformed; fit to tape`)
   return { mode: 'fit' }
+}
+
+/** A text size: an `ItemSize` or a point size (schema 3). */
+function readTextSize(r: Reader, o: Obj): TextSize {
+  const v = o['size']
+  if (isObj(v) && v['mode'] === 'pt') return { mode: 'pt', pt: r.num(v, 'pt', LIMITS.sizePt.min, LIMITS.sizePt.max, 12) }
+  return readSize(r, o)
 }
 
 function nearestWeight(v: unknown): FontWeight | undefined {
@@ -623,10 +697,11 @@ function readItem(r: Reader, o: Obj, id: string): Item | undefined {
         ...(customFont ? { customFont } : {}),
         fontWeight: weight ?? 600,
         italic: r.bool(o, 'italic', false),
-        size: readSize(r, o),
+        size: readTextSize(r, o),
         align: r.oneOf(o, 'align', ALIGNS, 'center'),
         lineHeight: r.num(o, 'lineHeight', LIMITS.lineHeight.min, LIMITS.lineHeight.max, 1.1),
         invert: r.bool(o, 'invert', false),
+        ...(o['clipTall'] === true ? { clipTall: true as const } : {}),
       }
     }
     case 'icon':
@@ -720,8 +795,13 @@ export function validateDoc(raw: unknown): { ok: true; doc: LabelDoc; notices: s
   } else if (colors !== undefined) tr.note('tape colours are not #rrggbb colours; using the defaults')
 
   const lengthIn = r.obj(raw, 'length')
-  const length: LengthSettings =
-    lengthIn['mode'] === 'fixed' ? { mode: 'fixed', mm: r.at('length').num(lengthIn, 'mm', LIMITS.lengthMm.min, LIMITS.lengthMm.max, 50) } : { mode: 'auto' }
+  let length: LengthSettings = { mode: 'auto' }
+  if (lengthIn['mode'] === 'fixed') {
+    const lr = r.at('length')
+    length = { mode: 'fixed', mm: lr.num(lengthIn, 'mm', LIMITS.lengthMm.min, LIMITS.lengthMm.max, 50) }
+    // Only written when on, so labels without it keep their exact JSON.
+    if (lengthIn['shrink'] !== undefined && lr.bool(lengthIn, 'shrink', false)) length.shrink = true
+  }
 
   const m = r.obj(raw, 'marginsMm')
   const mr = r.at('margins')

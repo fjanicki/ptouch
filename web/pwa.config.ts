@@ -3,6 +3,12 @@
 // deploy is a new cache version; outdated caches are cleaned up). scope/start_url default to
 // Vite's `base` (/ptouch/ on Pages). registerType 'prompt' + src/pwa/: a new version is only
 // activated when the user reloads from the toast, never under a running print.
+//
+// Fonts (docs/FONTS-AND-SIZE-PLAN.md): only the four core families are precached. The font
+// library loads each family on first use; the runtime rule below then keeps it CacheFirst, so a
+// font used once also works offline (on the first visit, before the worker controls the page,
+// src/pwa/font-cache.ts sends the files to this rule). Lazily loaded files never change content under the same
+// name (public/fonts/SOURCES.md), which is what makes CacheFirst safe without revisions.
 import type { VitePWAOptions } from 'vite-plugin-pwa'
 
 export const pwaOptions: Partial<VitePWAOptions> = {
@@ -32,9 +38,28 @@ export const pwaOptions: Partial<VitePWAOptions> = {
     ],
   },
   workbox: {
-    // Shell (html/js/css), the wasm core, fonts and icons. Source maps are not
-    // precached (they are fetched only by devtools).
-    globPatterns: ['**/*.{js,css,html,wasm,woff2,svg,png}'], // the manifest is added by the plugin
+    // Shell (html/js/css), the wasm core, the core fonts and icons. Source maps are not
+    // precached (they are fetched only by devtools). The font glob must list exactly the core
+    // families of render/font-catalog.ts (tests/unit/render/font-catalog.test.ts checks it).
+    globPatterns: ['**/*.{js,css,html,wasm,svg,png}', 'fonts/{FiraSans,ArchivoNarrow,JetBrainsMono,AtkinsonHyperlegible}-*.woff2'], // the manifest is added by the plugin
+    runtimeCaching: [
+      {
+        // Same-origin font library files (any base path). Precached core files never reach this
+        // route: the precache route answers them first.
+        urlPattern: /\/fonts\/[A-Za-z0-9_-]+\.woff2$/,
+        handler: 'CacheFirst',
+        options: {
+          cacheName: 'ptouch-fonts',
+          // ~25 families × 1–3 weights; old entries go first if the library ever grows.
+          expiration: { maxEntries: 100 },
+          cacheableResponse: { statuses: [200] },
+          // Same-origin files that never change content: a response's `Vary` (e.g. Origin) must
+          // not make a request without that header miss, such as the one the worker makes itself
+          // for a font a first-visit page sent it (src/pwa/font-cache.ts, `CACHE_URLS`).
+          matchOptions: { ignoreVary: true },
+        },
+      },
+    ],
     globIgnores: ['**/*.map'],
     cacheId: 'ptouch-studio',
     cleanupOutdatedCaches: true,

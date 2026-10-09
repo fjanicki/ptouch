@@ -1,7 +1,9 @@
 <!-- P2 — live thumbnail of one template: the exact 1-bit dots (renderLabel with sample Wi-Fi
      data and resolved placeholders) on a to-scale piece of tape. Rendered once the card scrolls
      into view, through the gallery's bounded queue; aborted on unmount; the bitmap is freed as
-     soon as it is painted. Decorative (the card button carries the name and description). -->
+     soon as it is painted. Decorative (the card button carries the name and description); the
+     label length it measured (printed length + 2 × feed, as the editor shows it) goes to the card
+     through `onrender`. -->
 <script lang="ts">
   import { onDestroy } from 'svelte'
   import { resolveDoc } from '../../doc/variables'
@@ -10,7 +12,13 @@
   import { withSampleData, type TemplateDef } from './templates'
   import type { TaskQueue } from './gallery'
 
-  let { template, model, colors, queue }: { template: TemplateDef; model: string; colors: PreviewColors; queue: TaskQueue } = $props()
+  let {
+    template,
+    model,
+    colors,
+    queue,
+    onrender,
+  }: { template: TemplateDef; model: string; colors: PreviewColors; queue: TaskQueue; onrender?: (labelMm: number) => void } = $props()
 
   /** CSS px per mm of tape (24 mm tape → 48 px tall; labels up to ≈ 120 mm keep this scale). */
   const PX_PER_MM = 2
@@ -41,6 +49,8 @@
       paintPreview(canvas, r.bitmap, colors)
       rendered = { lengthMm: r.lengthMm, bandMm: (r.heightDots * 25.4) / area.dpi }
       phase = 'ready'
+      // The editor's headline: the cut label, printed length plus the feed margin at both ends.
+      onrender?.(r.lengthMm + 2 * r.feedMarginMm)
     } finally {
       release(r.bitmap)
     }

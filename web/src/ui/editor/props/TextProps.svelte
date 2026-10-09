@@ -1,13 +1,12 @@
 <!-- W4 — properties of a text block. Edits go through Studio.updateItem (doc/ops.updateItem).
-     P4 — the Font list also offers "Your fonts" (uploaded, studio.fonts), "This computer"
-     (local fonts, once listed from the font manager) and "Manage fonts…"; a custom font is
-     stored as `customFont` next to the bundled `fontFamily`, which stays the fallback. -->
+     P4 — a custom font is stored as `customFont` next to the bundled `fontFamily`, which stays
+     the fallback. Fonts and size (docs/FONTS-AND-SIZE-PLAN.md): the font control is
+     ui/fonts/FontPicker (P-picker), the quick sizes ui/editor/props/TextSizeQuick (P-size). -->
 <script lang="ts">
-  import type { FontFamilyId, FontWeight, TextItem } from '../../../doc/schema'
-  import type { UserFontInfo } from '../../../doc/persist-fonts'
-  import { FONTS, fontDef } from '../../../render'
+  import type { FontWeight, TextItem } from '../../../doc/schema'
+  import { fontDef, itemSizingBand } from '../../../render'
   import { customFontMissing } from '../../../render/fonts'
-  import { localFonts } from '../../fonts/local-fonts.svelte'
+  import FontPicker from '../../fonts/FontPicker.svelte'
   import Icon from '../../common/Icon.svelte'
   import Segmented from '../../common/Segmented.svelte'
   import SizeField from '../../common/SizeField.svelte'
@@ -15,6 +14,9 @@
   import Switch from '../../common/Switch.svelte'
   import { getStudio } from '../../state/studio.svelte'
   import VariableHint from '../../batch/VariableHint.svelte'
+  import TextSizeQuick from './TextSizeQuick.svelte'
+  import { defaultSizeOf, measureTextAt } from '../../../render/text-size'
+  import { FALLBACK_BAND_DOTS } from '../../state/text-defaults'
 
   let { item }: { item: TextItem } = $props()
   const studio = getStudio()
@@ -24,53 +26,23 @@
   const WEIGHT_NAMES: Record<FontWeight, string> = { 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Extra bold' }
   const weights = $derived(fontDef(item.fontFamily).weights)
 
-  function setFamily(fontFamily: FontFamilyId) {
-    const ws = fontDef(fontFamily).weights
-    const fontWeight = ws.includes(item.fontWeight) ? item.fontWeight : ws.reduce((a, b) => (Math.abs(b - item.fontWeight) < Math.abs(a - item.fontWeight) ? b : a), ws[0] ?? 400)
-    set({ fontFamily, fontWeight, customFont: undefined })
+  /** Size of new text blocks (prefs.defaultTextSize, applied by the Studio): a word or {pt}. */
+  const newSize = $derived(studio.prefs.defaultTextSize)
+  /** "Use for new text": Fit, M and S stay relative to the next label's tape; any other size is
+   * stored as its point size (render/text-size.ts `defaultSizeOf`). */
+  function useForNew(): void {
+    const t = studio.target
+    const band = t.ok ? itemSizingBand(studio.doc, item, t.target.area).bandDots : FALLBACK_BAND_DOTS[studio.doc.tape.widthMm]
+    const dpi = t.ok ? t.target.area.dpi : 180
+    studio.updatePrefs({ defaultTextSize: defaultSizeOf(item.size, band, dpi, measureTextAt(item, item.size, band, dpi).emDots) })
+    studio.announce('New text blocks will get this size')
   }
 
-  // Uploaded fonts, reloaded when the font manager changes them.
-  let userFonts = $state<UserFontInfo[]>([])
-  $effect(() => {
-    void studio.fontsVersion
-    let live = true
-    studio.fonts.list().then(
-      (l) => live && (userFonts = l),
-      () => {},
-    )
-    return () => (live = false)
-  })
-
-  /** Font list value: `b:<bundled id>`, `u:<ref>`, `l:<postscript name>`. */
-  const fontValue = $derived(item.customFont ? (item.customFont.kind === 'user' ? `u:${item.customFont.ref}` : `l:${item.customFont.postscriptName}`) : `b:${item.fontFamily}`)
-  /** The custom font is not in the lists (opened from a share link, removed, other computer). */
-  const customListed = $derived(
-    !item.customFont ||
-      (item.customFont.kind === 'user' ? userFonts.some((f) => f.ref === (item.customFont as { ref: string }).ref) : localFonts.fonts.some((f) => f.postscriptName === (item.customFont as { postscriptName: string }).postscriptName)),
-  )
   /** The custom font could not be loaded on this device (re-checked after every render). */
   const customMissing = $derived.by(() => {
     void studio.render
     return !!item.customFont && customFontMissing(item.customFont)
   })
-
-  function pickFont(value: string, select: HTMLSelectElement) {
-    if (value === 'manage') {
-      select.value = fontValue
-      studio.openDialog('fonts')
-      return
-    }
-    const rest = value.slice(2)
-    if (value.startsWith('b:')) setFamily(rest as FontFamilyId)
-    else if (value.startsWith('u:')) {
-      const f = userFonts.find((u) => u.ref === rest)
-      if (f) set({ customFont: { kind: 'user', ref: f.ref, family: f.family } })
-    } else if (value.startsWith('l:')) {
-      const f = localFonts.fonts.find((l) => l.postscriptName === rest)
-      if (f) set({ customFont: { kind: 'local', postscriptName: f.postscriptName, family: f.name } })
-    }
-  }
 </script>
 
 <div class="field">
@@ -83,26 +55,7 @@
 <div class="field-row">
   <div class="field">
     <label class="field-label" for="{id}-font">Font</label>
-    <!-- `selected` per option (not the select's value): the lists load asynchronously, and a
-         stand-in option is replaced by the real one with the same value. -->
-    <select id="{id}-font" class="select" aria-describedby={customMissing ? `${id}-font-missing` : undefined} onchange={(e) => pickFont(e.currentTarget.value, e.currentTarget)}>
-      <optgroup label="Built in">
-        {#each FONTS as f (f.id)}<option value="b:{f.id}" selected={fontValue === `b:${f.id}`}>{f.label}</option>{/each}
-      </optgroup>
-      {#if userFonts.length || (item.customFont?.kind === 'user' && !customListed)}
-        <optgroup label="Your fonts">
-          {#each userFonts as f (f.ref)}<option value="u:{f.ref}" selected={fontValue === `u:${f.ref}`}>{f.family}</option>{/each}
-          {#if item.customFont?.kind === 'user' && !customListed}<option value={fontValue} selected>{item.customFont.family} (not on this device)</option>{/if}
-        </optgroup>
-      {/if}
-      {#if localFonts.fonts.length || (item.customFont?.kind === 'local' && !customListed)}
-        <optgroup label="This computer (varies by machine)">
-          {#if item.customFont?.kind === 'local' && !customListed}<option value={fontValue} selected>{item.customFont.family}{customMissing ? ' (not on this device)' : ''}</option>{/if}
-          {#each localFonts.fonts as f (f.postscriptName)}<option value="l:{f.postscriptName}" selected={fontValue === `l:${f.postscriptName}`}>{f.name}</option>{/each}
-        </optgroup>
-      {/if}
-      <option value="manage">Manage fonts…</option>
-    </select>
+    <FontPicker {item} id="{id}-font" describedby={customMissing ? `${id}-font-missing` : undefined} onchange={(patch) => set(patch)} />
   </div>
   <div class="field">
     {#if item.customFont && !customMissing}
@@ -124,7 +77,21 @@
   </div>
 {/if}
 
-<SizeField label="Text size" value={item.size} onchange={(size) => set({ size }, 'size')} maxMm={studio.doc.tape.widthMm} fixedLabel="Cap height" />
+<TextSizeQuick {item} />
+<SizeField label="Text size" value={item.size} onchange={(size) => set({ size }, 'size')} maxMm={studio.doc.tape.widthMm} fixedLabel="Cap height" allowPt />
+<div class="new-size">
+  <div class="field">
+    <label class="field-label" for="{id}-new-size">Size of new text</label>
+    <select id="{id}-new-size" class="select" value={typeof newSize === 'object' ? 'pt' : newSize} onchange={(e) => e.currentTarget.value !== 'pt' && studio.updatePrefs({ defaultTextSize: e.currentTarget.value as 'auto' })}>
+      <option value="auto">Auto: Fit below 12 mm, else M</option>
+      <option value="fit">Fit tape</option>
+      <option value="half">Half height (M)</option>
+      <option value="third">Third (S)</option>
+      <option value="pt" hidden={typeof newSize !== 'object'}>{typeof newSize === 'object' ? newSize.pt : 12} pt</option>
+    </select>
+  </div>
+  <button type="button" class="btn" onclick={useForNew}>Use for new text</button>
+</div>
 
 <Segmented
   label="Alignment"
@@ -175,5 +142,16 @@
   .toggles {
     display: grid;
     gap: var(--space-2);
+  }
+  .new-size {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-2);
+  }
+  /* The select gets the whole width (its options explain themselves); the button goes below. */
+  .new-size .field {
+    flex: 1 1 100%;
+    min-width: 0;
   }
 </style>

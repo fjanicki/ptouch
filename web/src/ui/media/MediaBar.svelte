@@ -68,7 +68,7 @@
     {#if doc.length.mode === 'fixed'}
       <!-- The printer feeds ~2 mm before and after the printed part: say so, so "50 mm" isn't a
            surprise when the cut label measures 54 mm. -->
-      <NumberField label="Printed length" unit="mm" min={5} max={maxLen} step={1} value={doc.length.mm} onchange={(mm) => studio.updateDoc({ length: { mode: 'fixed', mm } }, 'doc:length')} />
+      <NumberField label="Printed length" unit="mm" min={5} max={maxLen} step={1} value={doc.length.mm} onchange={(mm) => studio.updateDoc({ length: { mode: 'fixed', mm, ...(doc.length.mode === 'fixed' && doc.length.shrink ? { shrink: true } : {}) } }, 'doc:length')} />
       {#if studio.render}
         <p class="length-hint">Cut label ≈ {formatMm(doc.length.mm + 2 * studio.render.feedMarginMm)} with the printer’s feed</p>
       {/if}

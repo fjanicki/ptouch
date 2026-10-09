@@ -1,6 +1,6 @@
 // W3 — schema factories, ops immutability, history (undo/redo/coalesce), validateDoc.
 import { describe, expect, it } from 'vitest'
-import { createBatch, createDoc, createItem, LIMITS, SCHEMA_VERSION, validateDoc, type ItemKind, type LabelDoc, type TextItem } from '../../../src/doc/schema'
+import { createBatch, createDoc, createItem, FONT_FAMILY_IDS, LIMITS, SCHEMA_VERSION, validateDoc, type ItemKind, type LabelDoc, type TextItem } from '../../../src/doc/schema'
 import { addItem, duplicateItem, moveItem, removeItem, updateDoc, updateItem } from '../../../src/doc/ops'
 import { COALESCE_MS, createHistory } from '../../../src/doc/history'
 
@@ -45,6 +45,17 @@ describe('ops', () => {
     expect(removeItem(d, textId).items).toHaveLength(0)
     expect(updateDoc(d, { name: 'x' }).name).toBe('x')
     expect(d.name).toBe('Untitled label')
+  })
+
+  it('updateItem drops clipTall (v1 clipping) when the text size changes, and only then', () => {
+    const t: TextItem = { ...(createItem('text') as TextItem), size: { mode: 'mm', mm: 9 }, clipTall: true }
+    const d = frozen(createDoc({ items: [t] }))
+    expect(updateItem<TextItem>(d, t.id, { text: 'Hi' }).items[0]).toMatchObject({ clipTall: true })
+    expect(updateItem<TextItem>(d, t.id, { fontFamily: 'oswald' }).items[0]).toMatchObject({ clipTall: true })
+    const resized = updateItem<TextItem>(d, t.id, { size: { mode: 'mm', mm: 4 } }).items[0]
+    expect(resized).toMatchObject({ size: { mode: 'mm', mm: 4 } })
+    expect(resized && 'clipTall' in resized).toBe(false)
+    expect(d.items[0]).toMatchObject({ clipTall: true })
   })
 
   it('addItem inserts after the given item', () => {
@@ -146,7 +157,7 @@ describe('history', () => {
 
 describe('validateDoc', () => {
   it('rejects things that are not current-schema labels', () => {
-    for (const raw of [null, 42, 'x', [], {}, { schema: 1, items: [] }, { schema: 3, items: [] }, { schema: 2 }, { schema: 2, items: {} }]) {
+    for (const raw of [null, 42, 'x', [], {}, { schema: 1, items: [] }, { schema: 2, items: [] }, { schema: 4, items: [] }, { schema: 3 }, { schema: 3, items: {} }]) {
       const v = validateDoc(raw)
       expect(v.ok, JSON.stringify(raw)).toBe(false)
       if (!v.ok) expect(v.problems[0]).toMatch(/not a ptouch label document/)
@@ -246,6 +257,68 @@ describe('validateDoc: untrusted documents', () => {
     expect(r.doc.tape.colors).toBeUndefined()
     const ok = validateDoc({ ...base(), tape: { widthMm: 12, mediaId: 'tze231-12', colors: { tape: '#FFD400', ink: '#000' } } })
     expect(ok.ok && ok.doc.tape).toEqual({ widthMm: 12, mediaId: 'tze231-12', colors: { tape: '#FFD400', ink: '#000' } })
+  })
+})
+
+describe('validateDoc (schema 3 fields)', () => {
+  const base = () => createDoc({ items: [] }) as unknown as Record<string, unknown>
+
+  it('keeps point sizes, every library font and shrink to fit length', () => {
+    const items = FONT_FAMILY_IDS.map((fontFamily, i) => ({ ...createItem('text'), id: `t${i}`, fontFamily, size: { mode: 'pt', pt: 4 + i * 5.5 } }))
+    const v = validateDoc({ ...base(), length: { mode: 'fixed', mm: 40, shrink: true }, items })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.notices).toEqual([])
+    expect(v.doc.items).toEqual(items)
+    expect(v.doc.length).toEqual({ mode: 'fixed', mm: 40, shrink: true })
+  })
+
+  it('clamps point sizes and repairs a malformed one', () => {
+    const v = validateDoc({
+      ...base(),
+      items: [
+        { ...createItem('text'), id: 'a', size: { mode: 'pt', pt: 1 } },
+        { ...createItem('text'), id: 'b', size: { mode: 'pt', pt: 1000 } },
+        { ...createItem('text'), id: 'c', size: { mode: 'pt', pt: 'huge' } },
+        { ...createItem('text'), id: 'd', size: { mode: 'em', em: 2 } },
+      ],
+    })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.doc.items.map((i) => (i.kind === 'text' ? i.size : null))).toEqual([
+      { mode: 'pt', pt: LIMITS.sizePt.min },
+      { mode: 'pt', pt: LIMITS.sizePt.max },
+      { mode: 'pt', pt: 12 },
+      { mode: 'fit' },
+    ])
+    expect(v.notices).toHaveLength(4)
+  })
+
+  it('accepts a point size only on text blocks', () => {
+    const v = validateDoc({ ...base(), items: [{ ...createItem('icon'), id: 'i', size: { mode: 'pt', pt: 12 } }] })
+    expect(v.ok && v.doc.items[0]).toMatchObject({ size: { mode: 'fit' } })
+    expect(v.ok && v.notices.join()).toMatch(/size was malformed/)
+  })
+
+  it('an unknown font family falls back to Fira Sans with a notice', () => {
+    const v = validateDoc({ ...base(), items: [{ ...createItem('text'), id: 'a', fontFamily: 'comic-sans' }] })
+    expect(v.ok && v.doc.items[0]).toMatchObject({ fontFamily: 'fira-sans' })
+    expect(v.ok && v.notices.join()).toMatch(/fontFamily "comic-sans" is not supported/)
+  })
+
+  it('shrink is only kept on a fixed length, and only when on', () => {
+    const read = (length: unknown) => {
+      const v = validateDoc({ ...base(), length })
+      return v.ok ? v.doc.length : null
+    }
+    expect(read({ mode: 'fixed', mm: 30, shrink: false })).toEqual({ mode: 'fixed', mm: 30 })
+    expect(read({ mode: 'fixed', mm: 30 })).toEqual({ mode: 'fixed', mm: 30 })
+    expect(read({ mode: 'auto', shrink: true })).toEqual({ mode: 'auto' })
+    expect(read({ mode: 'fixed', mm: 30, shrink: 'yes' })).toEqual({ mode: 'fixed', mm: 30 })
+  })
+
+  it('new text items still default to fit (the studio applies the user default on insert)', () => {
+    expect(createItem('text').size).toEqual({ mode: 'fit' })
   })
 })
 

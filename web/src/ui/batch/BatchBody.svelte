@@ -199,6 +199,10 @@
           {@const [row, message] = measure.problems[0] ?? [0, '']}
           <p class="hint error"><Icon name="alert" size={12} />{measure.problems.length === 1 ? '1 label can’t' : `${measure.problems.length} labels can’t`} be printed. Label {row + 1}: {message}</p>
         {/if}
+        {#if measure.notices.length}
+          {@const [row, message] = measure.notices[0] ?? [0, '']}
+          <p class="hint warn"><Icon name="alert" size={12} />{measure.notices.length === 1 ? '1 label doesn’t' : `${measure.notices.length} labels don’t`} print as designed. Label {row + 1}: {message}</p>
+        {/if}
         <BatchPreviews {total} />
       </div>
     {/if}

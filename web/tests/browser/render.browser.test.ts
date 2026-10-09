@@ -148,6 +148,20 @@ describe('text', () => {
     expect(y1 - y0 + 1).toBeLessThanOrEqual(60)
   })
 
+  it('size in points: the em size (1 pt = 2.5 dots), so 24 pt is twice 12 pt', async () => {
+    const capDots = async (pt: number) => {
+      const r = await render(label([text('HHH', { size: { mode: 'pt', pt } })]))
+      const [, y0, , y1] = inkBox(r.bitmap) ?? [0, 0, 0, 0]
+      r.bitmap.free()
+      return y1 - y0 + 1
+    }
+    const [h12, h24] = [await capDots(12), await capDots(24)]
+    // Fira Sans caps are 0.689 em: 12 pt = 30 dots em → ≈ 20.7 dots of cap height.
+    expect(h12).toBeGreaterThanOrEqual(20)
+    expect(h12).toBeLessThanOrEqual(22)
+    expect(Math.abs(h24 - 2 * h12)).toBeLessThanOrEqual(2)
+  })
+
   it('multiline auto-fit keeps every line inside the band and aligns lines', async () => {
     const doc = label([text('Left\nX', { align: 'start', lineHeight: 1.1 })])
     const r = await render(doc)

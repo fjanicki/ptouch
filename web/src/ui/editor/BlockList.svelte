@@ -2,13 +2,18 @@
      buttons), duplicate, delete. Focus follows a moved block. -->
 <script lang="ts">
   import { tick } from 'svelte'
-  import { iconById } from '../../render'
+  import { loadIcons, loadedIcons, type IconSet } from '../../render'
   import Icon from '../common/Icon.svelte'
   import { getStudio } from '../state/studio.svelte'
   import { KIND_META, itemSummary } from '../state/view-model'
 
   const studio = getStudio()
   const items = $derived(studio.doc.items)
+  // Icon names for the summaries; the catalogue is lazy (render/icon-set.ts).
+  let icons = $state<IconSet | undefined>(loadedIcons())
+  $effect(() => {
+    if (!icons && items.some((i) => i.kind === 'icon')) void loadIcons().then((m) => (icons = m), () => {})
+  })
   let list: HTMLOListElement | undefined = $state()
   let dragId = $state<string | null>(null)
   let dropAt = $state<number | null>(null)
@@ -93,7 +98,7 @@
   {:else}
     <ol class="blocks" bind:this={list} aria-describedby="blocks-help" data-shortcut-scope>
       {#each items as item, i (item.id)}
-        {@const s = itemSummary(item, (id) => iconById(id)?.label)}
+        {@const s = itemSummary(item, (id) => icons?.iconById(id)?.label)}
         {@const selected = studio.selectedId === item.id}
         {@const warn = warningsByItem.get(item.id)}
         <li class:selected class:drop-before={dropAt === i && dragId !== item.id} class:drop-after={dropAt === i + 1 && i === items.length - 1} class:dragging={dragId === item.id}>

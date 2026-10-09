@@ -1,7 +1,7 @@
 <!-- W4 — properties of an icon block: searchable icon picker (render/icons.ts) + size. -->
 <script lang="ts">
   import type { IconItem } from '../../../doc/schema'
-  import { ICONS, type IconDef } from '../../../render'
+  import { ICONS, type IconDef } from '../../../render/icons'
   import SizeField from '../../common/SizeField.svelte'
   import { getStudio } from '../../state/studio.svelte'
 

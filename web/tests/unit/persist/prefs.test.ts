@@ -1,6 +1,6 @@
 // W5 — preferences survive throwing / corrupt / missing localStorage.
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_PREFS, PREFS_KEY, loadPrefs, sanitizePrefs, savePrefs, type PrefsStorage } from '../../../src/doc/persist-prefs'
+import { DEFAULT_PREFS, MAX_FAVORITE_FONTS, MAX_RECENT_FONTS, PREFS_KEY, isFontKey, loadPrefs, sanitizePrefs, savePrefs, type PrefsStorage } from '../../../src/doc/persist-prefs'
 
 function memory(): PrefsStorage & { data: Map<string, string> } {
   const data = new Map<string, string>()
@@ -54,5 +54,53 @@ describe('prefs', () => {
   it('clamps the preview zoom', () => {
     expect(sanitizePrefs({ previewZoom: 1000 }).previewZoom).toBe(16)
     expect(sanitizePrefs({ previewZoom: 0 }).previewZoom).toBe(0.1)
+  })
+})
+
+describe('prefs: fonts and size (docs/FONTS-AND-SIZE-PLAN.md)', () => {
+  it('defaults: Fira Sans semibold, automatic size, no favourites or recent fonts', () => {
+    expect(DEFAULT_PREFS).toMatchObject({ defaultFont: { family: 'fira-sans', weight: 600 }, defaultTextSize: 'auto', favoriteFonts: [], recentFonts: [] })
+  })
+
+  it('keeps valid values', () => {
+    const p = sanitizePrefs({
+      defaultFont: { family: 'oswald', weight: 700 },
+      defaultTextSize: { pt: 14 },
+      favoriteFonts: ['b:caveat', 'u:sha256-0123456789abcdef0123456789abcdef', 'l:Helvetica-Bold'],
+      recentFonts: ['b:vt323', 'b:fira-sans'],
+    })
+    expect(p.defaultFont).toEqual({ family: 'oswald', weight: 700 })
+    expect(p.defaultTextSize).toEqual({ pt: 14 })
+    expect(p.favoriteFonts).toEqual(['b:caveat', 'u:sha256-0123456789abcdef0123456789abcdef', 'l:Helvetica-Bold'])
+    expect(p.recentFonts).toEqual(['b:vt323', 'b:fira-sans'])
+    for (const size of ['auto', 'fit', 'half', 'third'] as const) expect(sanitizePrefs({ defaultTextSize: size }).defaultTextSize).toBe(size)
+  })
+
+  it('repairs bad values field by field', () => {
+    const p = sanitizePrefs({
+      defaultFont: { family: 'comic-sans', weight: 700 },
+      defaultTextSize: 'huge',
+      favoriteFonts: ['b:nope', 'u:../../x', 'l:Evil")', 42, 'b:anton', 'b:anton'],
+      recentFonts: 'b:anton',
+    })
+    expect(p.defaultFont).toEqual(DEFAULT_PREFS.defaultFont)
+    expect(p.defaultTextSize).toBe('auto')
+    expect(p.favoriteFonts).toEqual(['b:anton'])
+    expect(p.recentFonts).toEqual([])
+    expect(sanitizePrefs({ defaultFont: { family: 'oswald', weight: 650 } }).defaultFont).toEqual(DEFAULT_PREFS.defaultFont)
+    expect(sanitizePrefs({ defaultTextSize: { pt: 1000 } }).defaultTextSize).toEqual({ pt: 144 })
+    expect(sanitizePrefs({ defaultTextSize: { pt: 'x' } }).defaultTextSize).toBe('auto')
+  })
+
+  it('caps the lists', () => {
+    const many = Array.from({ length: 80 }, (_, i) => `l:Font-${i}`)
+    const p = sanitizePrefs({ favoriteFonts: many, recentFonts: many })
+    expect(p.favoriteFonts).toHaveLength(MAX_FAVORITE_FONTS)
+    expect(p.recentFonts).toEqual(many.slice(0, MAX_RECENT_FONTS))
+  })
+
+  it('isFontKey', () => {
+    expect(['b:lexend', 'u:sha256-ffffffffffffffffffffffffffffffff', 'l:Menlo-Regular'].every(isFontKey)).toBe(true)
+    expect(['lexend', 'b:', 'x:lexend', 'u:sha256-xyz', "l:a'b", 'l:a\\b', `l:${'a'.repeat(101)}`, null].some(isFontKey)).toBe(false)
   })
 })

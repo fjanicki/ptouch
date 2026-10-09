@@ -1,13 +1,13 @@
 <!-- P2 (docs/STUDIO-V1-PLAN.md) — "New from template" gallery: Wi-Fi stickers (12/24 mm), cable
      flag, cable wrap, shelf/bin/drawer (Gridfinity 12 mm), asset tag, folder spine, name tag.
-     Cards are grouped by use, show a live to-scale thumbnail and the tape width, and say when
-     they fit the loaded tape. Arrow keys move between cards (Home/End too); choosing one opens a
+     Cards are grouped by use, show a live to-scale thumbnail, the tape width and the label
+     length as the editor shows it (measured by the thumbnail render), and say when they fit the loaded tape. Arrow keys move between cards (Home/End too); choosing one opens a
      new label (studio.newFromTemplate) with its main block selected. -->
 <script lang="ts">
   import Icon from '../common/Icon.svelte'
   import Modal from '../common/Modal.svelte'
   import { getStudio } from '../state/studio.svelte'
-  import { previewColors } from '../state/view-model'
+  import { formatMm, previewColors } from '../state/view-model'
   import { createTaskQueue, gridMove } from './gallery'
   import TemplateThumb from './TemplateThumb.svelte'
   import { TEMPLATES, TEMPLATE_CATEGORIES, fitsLoadedTape, primaryItemId, templatesIn, type TemplateDef } from './templates'
@@ -16,6 +16,11 @@
   const id = $props.id()
   /** Thumbnails render two at a time (each one is a full label render). */
   const queue = createTaskQueue(2)
+  /** Label length per template (mm, printed + 2 × feed: the editor's headline), once its
+   * thumbnail has rendered. */
+  let lengths = $state<Record<string, number>>({})
+  /** The thumbnail shows a sample network (Wi-Fi codes open empty in the editor). */
+  const sampled = (t: TemplateDef): boolean => t.build().items.some((i) => i.kind === 'code' && i.content === 'wifi')
 
   let grid: HTMLElement | undefined = $state()
   const open = $derived(studio.dialog === 'templates')
@@ -90,10 +95,11 @@
                 aria-describedby="{id}-{t.id}-tape {id}-{t.id}-desc"
                 onclick={() => choose(t)}
               >
-                <TemplateThumb template={t} model={studio.model} colors={colorsFor(t)} {queue} />
+                <TemplateThumb template={t} model={studio.model} colors={colorsFor(t)} {queue} onrender={(mm) => (lengths[t.id] = mm)} />
                 <span class="name" id="{id}-{t.id}-name">{t.name}</span>
                 <span class="chips" id="{id}-{t.id}-tape">
                   <span class="chip">{t.tapeWidthMm} mm tape</span>
+                  {#if lengths[t.id] !== undefined}<span class="chip" data-length>{formatMm(lengths[t.id] ?? 0)} label{sampled(t) ? ' with a sample network' : ''}</span>{/if}
                   {#if fits}<span class="chip ok"><Icon name="check" size={14} />Fits the loaded tape</span>{/if}
                 </span>
                 <span class="desc" id="{id}-{t.id}-desc">{t.description}</span>

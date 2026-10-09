@@ -91,6 +91,10 @@ jobs:
           grep -q 'Permission is hereby granted' licenses/MIT.txt
           grep -q 'Apache License' licenses/Apache-2.0.txt
           grep -q 'ISC License' licenses/ISC-Lucide.txt
+          # Every font licence the licences page links to ships next to the fonts.
+          links=$(grep -o 'href="\.\./fonts/[A-Za-z0-9-]*\.txt"' licenses/index.html | sed 's/^href="\.\.\///; s/"$//')
+          test -n "$links"
+          for f in $links; do grep -qE 'SIL OPEN FONT LICENSE|Apache License' "$f" || { echo "missing or wrong font licence: $f" >&2; exit 1; }; done
       - uses: actions/upload-pages-artifact@v5
         with:
           path: web/dist
