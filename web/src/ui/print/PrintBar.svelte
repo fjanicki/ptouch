@@ -1,20 +1,48 @@
 <!-- W4 — print bar: copies, cut each, chain, mirror, leader note, Print button (disabled with
-     the reason), progress by page/phase, cancel. Sticky at the bottom of the window. -->
+     the reason), progress by page/phase, cancel. Sticky at the bottom of the window.
+     P1 (docs/STUDIO-V1-PLAN.md): with a batch, "Print 25 labels" (copies are per label), the
+     tape estimate from BatchMeasure ("≈ … (estimated)" until every label was measured), a clear
+     "Cut each" (full cut; no half cut) and "Preparing label 12 of 25" while the batch renders.
+     Without a batch it behaves exactly as before. -->
 <script lang="ts">
   import { tick } from 'svelte'
   import Icon from '../common/Icon.svelte'
   import Switch from '../common/Switch.svelte'
   import { getStudio } from '../state/studio.svelte'
   import { MAX_COPIES } from '../../render'
-  import { clampCopies, formatMm, modKey, printButtonText, progressFraction, progressText } from '../state/view-model'
+  import { clampCopies, modKey, printButtonText, progressFraction, progressText } from '../state/view-model'
+  import { batchMeasure } from '../batch/batch-measure.svelte'
+  import { batchBlocker } from '../batch/batch-job'
+  import { batchPrintText, batchTape, formatTape, singleTapeNote } from '../batch/batch-model'
 
   const studio = getStudio()
   const print = $derived(studio.doc.print)
   const copies = $derived(print.copies)
   const caps = $derived(studio.modelInfo?.caps)
   const busy = $derived(studio.printing || studio.conn.state === 'printing' || studio.conn.state === 'cancelling')
-  const reason = $derived(studio.printBlocked)
-  const tapeUse = $derived(studio.render ? copies * (studio.render.lengthMm + 2 * studio.render.feedMarginMm) : null)
+  const measure = batchMeasure(studio)
+  /** Labels of the batch (0 = a plain label). */
+  const batchN = $derived(studio.batchCount)
+  const batchProblem = $derived.by(() => {
+    if (batchN === 0) return null
+    const why = batchBlocker(studio.doc)
+    if (why) return why
+    const [row, message] = measure.problems[0] ?? []
+    return row !== undefined ? `Label ${row + 1} can’t be printed: ${message}` : null
+  })
+  const reason = $derived(studio.printBlocked ?? batchProblem)
+  const singleNote = $derived(studio.render ? singleTapeNote(studio.render.lengthMm, studio.render.feedMarginMm, copies, studio.tapeLeader) : null)
+  const batchTapeUse = $derived(
+    batchN > 0 ? batchTape(measure.lengths, batchN, copies, measure.feedMarginMm || (studio.render?.feedMarginMm ?? 0), studio.tapeLeader, studio.render?.lengthMm ?? 0) : null,
+  )
+  const batchNote = $derived.by(() => {
+    const t = batchTapeUse
+    if (!t) return null
+    const what = `${batchN} ${batchN === 1 ? 'label' : 'labels'}${copies > 1 ? ` × ${copies}` : ''} in one job`
+    return `${what}: uses ${t.exact ? '' : 'about '}${formatTape(t.totalMm)} of tape${studio.tapeLeader ? ' incl. the ~24 mm leader' : ''}${t.exact ? '' : ' (estimated)'}.`
+  })
+  const preparing = $derived(studio.batchProgress)
+  const halfCut = $derived(caps?.halfCut === true)
   const mod = modKey(studio.isMac ? 'mac' : 'other')
   let barH = $state(72)
   let optionsOpen = $state(false)
@@ -57,20 +85,27 @@
     <div class="progress">
       <div class="progress-text" role="status" aria-live="polite">
         <span class="spin"><Icon name="printer" size={18} /></span>
-        <strong>{studio.conn.state === 'cancelling' ? 'Cancelling…' : progressText(studio.conn.progress)}</strong>
+        <strong>{studio.conn.state === 'cancelling' ? 'Cancelling…' : preparing ? `Preparing label ${Math.min(preparing.total, preparing.done + 1)} of ${preparing.total}…` : progressText(studio.conn.progress)}</strong>
       </div>
-      <div class="bar" role="progressbar" aria-label="Print progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(progressFraction(studio.conn.progress) * 100)}>
-        <span style:width="{Math.max(4, progressFraction(studio.conn.progress) * 100)}%"></span>
-      </div>
+      {#if preparing}
+        <div class="bar" role="progressbar" aria-label="Print progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round((preparing.done / Math.max(1, preparing.total)) * 100)}>
+          <span style:width="{Math.max(4, (preparing.done / Math.max(1, preparing.total)) * 100)}%"></span>
+        </div>
+      {:else}
+        <div class="bar" role="progressbar" aria-label="Print progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(progressFraction(studio.conn.progress) * 100)}>
+          <span style:width="{Math.max(4, progressFraction(studio.conn.progress) * 100)}%"></span>
+        </div>
+      {/if}
+      <!-- Nothing is sent while a batch is being prepared, so there is nothing to cancel yet. -->
       <button type="button" class="btn" bind:this={cancelBtn} aria-disabled={studio.conn.state === 'cancelling'} onclick={() => studio.conn.state !== 'cancelling' && studio.cancelPrint()}><Icon name="stop" size={16} />Cancel</button>
     </div>
   {:else}
     <button type="button" class="btn small options-toggle" aria-expanded={optionsOpen} aria-controls="print-options" onclick={() => (optionsOpen = !optionsOpen)}>
-      <Icon name="settings" size={16} />{copies === 1 ? '1 copy' : `${copies} copies`}<Icon name={optionsOpen ? 'chevron-down' : 'chevron-up'} size={14} />
+      <Icon name="settings" size={16} />{batchN > 0 ? `${batchN} × ${copies === 1 ? '1 copy' : `${copies} copies`}` : copies === 1 ? '1 copy' : `${copies} copies`}<Icon name={optionsOpen ? 'chevron-down' : 'chevron-up'} size={14} />
     </button>
     <div class="options" id="print-options" class:open={optionsOpen}>
       <div class="copies" role="group" aria-labelledby="copies-label">
-        <span id="copies-label" class="field-label">Copies</span>
+        <span id="copies-label" class="field-label">{batchN > 0 ? 'Copies of each' : 'Copies'}</span>
         <div class="stepper">
           <button type="button" class="btn icon small" aria-label="Fewer copies" disabled={copies <= 1} onclick={() => studio.setCopies(copies - 1)}><Icon name="minus" size={14} /></button>
           <input
@@ -87,14 +122,25 @@
         </div>
       </div>
       {#if caps?.autoCut !== false}
-        <Switch label="Cut each" checked={print.autoCut} onchange={(autoCut) => set({ autoCut })} />
+        {#if batchN > 0}
+          <Switch
+            label="Cut each"
+            checked={print.autoCut}
+            onchange={(autoCut) => set({ autoCut })}
+            hint={print.autoCut ? `Full cut after every label${halfCut ? '' : ' (this printer has no half cut)'}.` : 'Off: one strip; cut the labels apart yourself.'}
+          />
+        {:else}
+          <Switch label="Cut each" checked={print.autoCut} onchange={(autoCut) => set({ autoCut })} />
+        {/if}
       {/if}
       {#if caps?.chain !== false}
         <span title="Saves tape: the last label stays in the printer until the next print"><Switch label="Chain" checked={print.chain} onchange={(chain) => set({ chain })} /></span>
       {/if}
       <Switch label="Mirror" checked={print.mirror} onchange={(mirror) => set({ mirror })} />
       <p class="note">
-        {#if tapeUse !== null}Uses about {formatMm(tapeUse, 0)} of tape{print.chain ? '' : ' plus a ~24 mm leader once'}.{/if}
+        {#if batchNote}
+          {batchNote}
+        {:else if singleNote}{singleNote}{/if}
       </p>
     </div>
   {/if}
@@ -112,7 +158,7 @@
       title={reason ?? `Print (${mod}+P)`}
       onclick={() => void studio.print()}
     >
-      <Icon name="printer" />{printButtonText(copies)}
+      <Icon name="printer" />{batchN > 0 ? batchPrintText(batchN, copies) : printButtonText(copies)}
     </button>
   </div>
 </footer>
@@ -230,7 +276,9 @@
   .options-toggle {
     display: none;
   }
-  @media (max-width: 640px) {
+  /* Phones, also in landscape (667–932 px wide but only ~340–430 px tall): the options fold
+     behind the "1 copy" toggle so the sticky bar never covers the editor. */
+  @media (max-width: 640px), (max-height: 500px) {
     .printbar {
       gap: var(--space-2);
       padding: var(--space-2) var(--space-3);

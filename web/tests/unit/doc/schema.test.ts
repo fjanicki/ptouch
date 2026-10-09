@@ -1,6 +1,6 @@
 // W3 — schema factories, ops immutability, history (undo/redo/coalesce), validateDoc.
 import { describe, expect, it } from 'vitest'
-import { createDoc, createItem, SCHEMA_VERSION, validateDoc, type ItemKind, type LabelDoc, type TextItem } from '../../../src/doc/schema'
+import { createBatch, createDoc, createItem, LIMITS, SCHEMA_VERSION, validateDoc, type ItemKind, type LabelDoc, type TextItem } from '../../../src/doc/schema'
 import { addItem, duplicateItem, moveItem, removeItem, updateDoc, updateItem } from '../../../src/doc/ops'
 import { COALESCE_MS, createHistory } from '../../../src/doc/history'
 
@@ -145,8 +145,8 @@ describe('history', () => {
 })
 
 describe('validateDoc', () => {
-  it('rejects things that are not schema-1 labels', () => {
-    for (const raw of [null, 42, 'x', [], {}, { schema: 2, items: [] }, { schema: 1 }, { schema: 1, items: {} }]) {
+  it('rejects things that are not current-schema labels', () => {
+    for (const raw of [null, 42, 'x', [], {}, { schema: 1, items: [] }, { schema: 3, items: [] }, { schema: 2 }, { schema: 2, items: {} }]) {
       const v = validateDoc(raw)
       expect(v.ok, JSON.stringify(raw)).toBe(false)
       if (!v.ok) expect(v.problems[0]).toMatch(/not a ptouch label document/)
@@ -154,7 +154,7 @@ describe('validateDoc', () => {
   })
 
   it('fills a minimal document with defaults', () => {
-    const v = validateDoc({ schema: 1, items: [] })
+    const v = validateDoc({ schema: SCHEMA_VERSION, items: [] })
     expect(v.ok).toBe(true)
     if (!v.ok) return
     expect(v.doc).toMatchObject({ tape: { widthMm: 24 }, length: { mode: 'auto' }, marginsMm: { start: 2, end: 2 }, layout: { mode: 'flow', gapMm: 3, align: 'center' }, print: { copies: 1, autoCut: true, threshold: 128 } })
@@ -246,5 +246,76 @@ describe('validateDoc: untrusted documents', () => {
     expect(r.doc.tape.colors).toBeUndefined()
     const ok = validateDoc({ ...base(), tape: { widthMm: 12, mediaId: 'tze231-12', colors: { tape: '#FFD400', ink: '#000' } } })
     expect(ok.ok && ok.doc.tape).toEqual({ widthMm: 12, mediaId: 'tze231-12', colors: { tape: '#FFD400', ink: '#000' } })
+  })
+})
+
+describe('validateDoc (schema 2 fields)', () => {
+  const base = () => createDoc({ items: [] }) as unknown as Record<string, unknown>
+
+  it('keeps Wi-Fi, DataMatrix, quiet-zone modes, auto module size and custom fonts', () => {
+    const items = [
+      { id: 'w', kind: 'code', symbology: 'qr', content: 'wifi', data: '', wifi: { ssid: 'Home', password: 'pw;1', security: 'wep', hidden: true }, moduleDots: 'auto', quietZone: 'compact', ecc: 'Q', showText: false },
+      { id: 'd', kind: 'code', symbology: 'datamatrix', content: 'text', data: 'A-001', moduleDots: 4, quietZone: 'none', ecc: 'M', showText: false },
+      { ...createItem('text'), id: 'u', customFont: { kind: 'user', ref: 'sha256-0123456789abcdef0123456789abcdef', family: 'Inter' } },
+      { ...createItem('text'), id: 'l', customFont: { kind: 'local', postscriptName: 'Helvetica-Bold', family: 'Helvetica' } },
+    ]
+    const v = validateDoc({ ...base(), items })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.notices).toEqual([])
+    expect(v.doc.items).toEqual(items)
+  })
+
+  it('accepts a schema-1 style boolean quiet zone and repairs bad v2 values', () => {
+    const v = validateDoc({
+      ...base(),
+      items: [
+        { id: 'a', kind: 'code', symbology: 'qr', data: 'x', moduleDots: 'big', quietZone: false, ecc: 'M', showText: false },
+        { id: 'b', kind: 'code', symbology: 'qr', content: 'telepathy', data: 'x', moduleDots: 3, quietZone: 'wide', ecc: 'M', showText: false, wifi: { ssid: 's'.repeat(100), security: 'wpa9', hidden: 'no' } },
+        { ...createItem('text'), id: 'c', customFont: { kind: 'user', ref: '../../etc/passwd', family: 'X' } },
+        { ...createItem('text'), id: 'd', customFont: { kind: 'local', postscriptName: 'Evil") ; url(x', family: 'X' } },
+      ],
+    })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    const [a, b, c, d] = v.doc.items
+    expect(a).toMatchObject({ content: 'text', moduleDots: 3, quietZone: 'none' })
+    expect(b).toMatchObject({ content: 'text', quietZone: 'standard', wifi: { ssid: 's'.repeat(64), password: '', security: 'wpa', hidden: false } })
+    expect(c && 'customFont' in c).toBe(false)
+    expect(d && 'customFont' in d).toBe(false)
+    expect(v.notices.join('\n')).toMatch(/customFont was malformed/)
+  })
+
+  it('validates batch data: names, caps, counters', () => {
+    const rows = Array.from({ length: 600 }, (_, i) => [`r${i}`, i, { x: 1 }])
+    const v = validateDoc({
+      ...base(),
+      batch: {
+        enabled: true,
+        columns: ['room', 'room', '1bad', 'ok_2'],
+        rows,
+        count: 9999,
+        counters: [{ name: 'n', start: 5, step: 2, pad: 3 }, { name: 'room', start: 1, step: 1, pad: 0 }, { name: 'x y' }],
+        dateFormat: 'klingon',
+      },
+    })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    const b = v.doc.batch
+    expect(b?.columns).toEqual(['room', 'col2', 'col3', 'ok_2'])
+    expect(b?.rows).toHaveLength(LIMITS.batchRows)
+    expect(b?.rows[1]).toEqual(['r1', '1', '', ''])
+    expect(b?.count).toBe(LIMITS.batchCount.max)
+    expect(b?.counters).toEqual([{ name: 'n', start: 5, step: 2, pad: 3 }])
+    expect(b?.dateFormat).toBe('iso')
+    expect(b?.enabled).toBe(true)
+  })
+
+  it('a doc without batch data has no batch field', () => {
+    const v = validateDoc(base())
+    expect(v.ok && 'batch' in v.doc).toBe(false)
+    expect(createBatch()).toMatchObject({ enabled: false, columns: [], rows: [], counters: [{ name: 'n', start: 1, step: 1, pad: 0 }] })
+    const w = validateDoc({ ...base(), batch: createBatch() })
+    expect(w.ok && w.doc.batch).toEqual(createBatch())
   })
 })

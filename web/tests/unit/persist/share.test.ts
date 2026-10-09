@@ -1,9 +1,14 @@
 // W5 — share links: deflate-raw + base64url in `#d=`, round trip, image rules, size caps,
-// damaged links (CompressionStream is available in node 24).
+// damaged links (CompressionStream is available in node 24). P3: Wi-Fi passwords are left out
+// unless the user opts in; custom fonts are never embedded.
 import { describe, expect, it } from 'vitest'
-import { bytesToBase64Url } from '../../../src/doc/persist-codec'
+import { base64UrlToBytes, bytesToBase64Url } from '../../../src/doc/persist-codec'
 import { memoryBackend, openLabelStore } from '../../../src/doc/persist'
 import {
+  NOTICE_CUSTOM_FONTS,
+  NOTICE_WIFI_PASSWORD_OMITTED,
+  NOTICE_WIFI_PASSWORDS_OMITTED,
+  noticeWifiPasswordColumns,
   SHARE_IMAGE_LIMIT_BYTES,
   SHARE_MAX_FRAGMENT_CHARS,
   SHARE_PREFIX,
@@ -11,10 +16,14 @@ import {
   createShareLink,
   deflateRaw,
   encodeSharePayload,
+  inflateRaw,
   parseShareFragment,
   readShareFragment,
+  shareableDoc,
 } from '../../../src/doc/persist-share'
-import { createDoc, createItem, type ImageItem } from '../../../src/doc/schema'
+import { createBatch, createDoc, createItem, createWifi, type ImageItem, type Item, type LabelDoc } from '../../../src/doc/schema'
+import { INITIAL_SNAPSHOT, PacketLog, detectSupport } from '../../../src/printer'
+import { buildReport } from '../../../src/ui/diagnostics/report'
 import { PNG_1PX, noise, sampleDoc } from './helpers'
 
 const BASE = 'https://fjanicki.github.io/ptouch/'
@@ -138,5 +147,78 @@ describe('share links', () => {
     const parsed = await parseShareFragment(`#d=${payload}`)
     expect(parsed?.readOnly).toBe(true)
     expect(parsed?.notices[0]).toMatch(/newer version/)
+  })
+})
+
+describe('share links: privacy (P3)', () => {
+  const wifiDoc = (): LabelDoc =>
+    createDoc({
+      name: 'Guest Wi-Fi',
+      items: [
+        { ...createItem('code'), content: 'wifi', wifi: createWifi({ ssid: 'Guest', password: 'hunter2-secret' }) } as Item,
+        { ...createItem('text'), text: '{{ssid}}' } as Item,
+      ],
+    })
+  const decoded = async (url: string): Promise<string> => new TextDecoder().decode(await inflateRaw(base64UrlToBytes(hashOf(url).slice(SHARE_PREFIX.length))))
+
+  it('leaves Wi-Fi passwords out by default, with a notice; the SSID stays', async () => {
+    const { url, notices } = await createShareLink(wifiDoc(), BASE)
+    expect(notices).toEqual([NOTICE_WIFI_PASSWORD_OMITTED])
+    const json = await decoded(url)
+    expect(json).not.toContain('hunter2-secret')
+    const back = await readShareFragment(hashOf(url))
+    const code = back?.items.find((i) => i.kind === 'code')
+    expect(code?.kind === 'code' && code.wifi).toEqual({ ssid: 'Guest', password: '', security: 'wpa', hidden: false })
+  })
+
+  it('keeps them only when the user opts in', async () => {
+    const { url, notices } = await createShareLink(wifiDoc(), BASE, { includeWifiPasswords: true })
+    expect(notices).toEqual([])
+    expect(await decoded(url)).toContain('hunter2-secret')
+  })
+
+  it('also blanks the password of a code switched back to text, and counts several', async () => {
+    const doc = wifiDoc()
+    const two = { ...doc, items: [...doc.items, { ...(doc.items[0] as Item), id: 'other', content: 'text' } as Item] }
+    const { url, notices } = await createShareLink(two, BASE)
+    expect(notices).toEqual([NOTICE_WIFI_PASSWORDS_OMITTED])
+    expect(await decoded(url)).not.toContain('hunter2-secret')
+  })
+
+  it('leaves out passwords that come from a batch column ({{pw}}), with a notice naming it', async () => {
+    const doc = createDoc({
+      name: 'Guest stickers',
+      items: [{ ...createItem('code'), content: 'wifi', wifi: createWifi({ ssid: '{{net}}', password: '{{pw}}' }) } as Item],
+      batch: createBatch({ enabled: true, columns: ['net', 'pw'], rows: [['Guest1', 'S3cretPassw0rd!'], ['Guest2', 'Another-Secret-9']] }),
+    })
+    const { url, notices } = await createShareLink(doc, BASE)
+    expect(notices).toEqual([noticeWifiPasswordColumns(['pw'])])
+    expect(notices[0]).toMatch(/\{\{pw\}\} column/)
+    const json = await decoded(url)
+    expect(json).not.toMatch(/S3cretPassw0rd|Another-Secret-9/)
+    const back = await readShareFragment(hashOf(url))
+    expect(back?.batch?.rows).toEqual([['Guest1', ''], ['Guest2', '']])
+    // Opted in: everything stays.
+    expect(await decoded((await createShareLink(doc, BASE, { includeWifiPasswords: true })).url)).toContain('S3cretPassw0rd!')
+  })
+
+  it('shareableDoc returns the same doc when there is nothing to strip, and notes custom fonts', () => {
+    const plain = createDoc()
+    expect(shareableDoc(plain)).toEqual({ doc: plain, notices: [] })
+    expect(shareableDoc(plain).doc).toBe(plain)
+    const fonts = createDoc({ items: [{ ...createItem('text'), customFont: { kind: 'local', postscriptName: 'Inter-Regular', family: 'Inter' } } as Item] })
+    expect(shareableDoc(fonts).notices).toEqual([NOTICE_CUSTOM_FONTS])
+  })
+
+  it('the diagnostics report takes no document and never shows logged bytes as text', () => {
+    // buildReport(support, snapshot, packetLog, extras) has no access to the label. Even a
+    // packet that happened to carry a Wi-Fi payload would appear only as truncated hex.
+    const log = new PacketLog()
+    log.push('>>', new TextEncoder().encode('WIFI:T:WPA;S:Guest;P:hunter2-secret;;'))
+    const support = detectSupport({ userAgent: 'Mozilla/5.0 Chrome/154.0.0.0', serial: { requestPort() {}, getPorts() {} }, usb: {} })
+    const text = buildReport(support, INITIAL_SNAPSHOT, log, { now: new Date(0) })
+    expect(buildReport.length).toBe(3)
+    expect(text).not.toContain('hunter2')
+    expect(text).not.toContain('Guest')
   })
 })

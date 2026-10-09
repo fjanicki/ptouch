@@ -70,6 +70,7 @@
     type="button"
     class="btn ghost"
     id="{id}-btn"
+    aria-label={label}
     aria-haspopup="menu"
     aria-expanded={open}
     aria-controls="{id}-menu"

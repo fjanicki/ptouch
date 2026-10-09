@@ -3,8 +3,9 @@
 // (tests/browser/__snapshots__/*.pbm). The anti-fingerprinting probe is false in a clean browser.
 import { beforeAll, describe, expect, it } from 'vitest'
 import { encodeCode, loadWasm, printArea, mediaForWidth, version, type Bitmap1, type MediaInfo, type ModuleMatrix, type PrintArea } from '../../src/wasm'
-import { createDoc, createItem, DEFAULT_PRINT, type CodeItem, type IconItem, type ImageItem, type Item, type LabelDoc, type ShapeItem, type TextItem } from '../../src/doc/schema'
-import { buildPrintJob, canvasReadbackIsNoisy, ensureFonts, FONTS, mmToDots, paintPreview, renderLabel, thumbnailPng, type RenderResult, type RenderTarget } from '../../src/render'
+import { createDoc, createItem, createWifi, DEFAULT_PRINT, type CodeItem, type IconItem, type ImageItem, type Item, type LabelDoc, type ShapeItem, type TextItem } from '../../src/doc/schema'
+import { buildPrintJob, canvasReadbackIsNoisy, ensureFonts, FONTS, itemSizingBand, mmToDots, paintPreview, renderLabel, thumbnailPng, type ItemBox, type RenderResult, type RenderTarget } from '../../src/render'
+import { chooseModuleDots } from '../../src/render/codes'
 import { preloadAllFonts } from '../../src/render/fonts'
 import { expectBitmapSnapshot } from './snapshot'
 
@@ -254,7 +255,7 @@ describe('layout', () => {
   })
 
   it('free layout places items at their frames; 90° turns codes and text', async () => {
-    const qrItem = code({ symbology: 'qr', data: 'free', moduleDots: 3, quietZone: false, frame: { xMm: 30, yMm: 0, wMm: 18, hMm: 18, rotation: 90 } })
+    const qrItem = code({ symbology: 'qr', data: 'free', moduleDots: 3, quietZone: 'none', frame: { xMm: 30, yMm: 0, wMm: 18, hMm: 18, rotation: 90 } })
     const txt = text('UP', { frame: { xMm: 2, yMm: 0, wMm: 20, hMm: 18, rotation: 90 } })
     const r = await render(label([txt, qrItem], { layout: { mode: 'free' } }))
     try {
@@ -316,7 +317,7 @@ describe('layout', () => {
 
 describe('codes (painted by the core)', () => {
   it('QR on 24 mm: every module exactly, with a clear quiet zone (snapshot)', async () => {
-    const item = code({ symbology: 'qr', data: 'https://example.com', ecc: 'M', moduleDots: 4, quietZone: true })
+    const item = code({ symbology: 'qr', data: 'https://example.com', ecc: 'M', moduleDots: 4, quietZone: 'standard' })
     const r = await render(label([item]))
     try {
       expect(r.warnings).toEqual([])
@@ -346,7 +347,7 @@ describe('codes (painted by the core)', () => {
 
   it('a QR over a filled shape (free layout) gets its quiet zone cleared by the core', async () => {
     const shape: ShapeItem = { ...(createItem('shape') as ShapeItem), shape: 'rect', fill: true, widthMm: 40, frame: { xMm: 0, yMm: 0, wMm: 40, hMm: 18, rotation: 0 } }
-    const qr = code({ symbology: 'qr', data: 'hello', moduleDots: 3, quietZone: true, frame: { xMm: 10, yMm: 0, wMm: 18, hMm: 18, rotation: 0 } })
+    const qr = code({ symbology: 'qr', data: 'hello', moduleDots: 3, quietZone: 'standard', frame: { xMm: 10, yMm: 0, wMm: 18, hMm: 18, rotation: 0 } })
     const r = await render(label([shape, qr], { layout: { mode: 'free' } }))
     try {
       const m = encodeCode({ symbology: 'qr', data: 'hello', ecc: 'M' })
@@ -365,7 +366,7 @@ describe('codes (painted by the core)', () => {
   it('a QR filling the band keeps 4 modules of quiet zone across the tape (band + margin)', async () => {
     for (const w of [24, 18, 12]) {
       const t = target(w)
-      const r = await render(label([code({ symbology: 'qr', data: 'HELLO', moduleDots: 12, quietZone: true })]), w)
+      const r = await render(label([code({ symbology: 'qr', data: 'HELLO', moduleDots: 12, quietZone: 'standard' })]), w)
       try {
         const m = encodeCode({ symbology: 'qr', data: 'HELLO', ecc: 'M' })
         const md = (r.boxes[0]?.w ?? 0) / (m.width + 8)
@@ -380,7 +381,7 @@ describe('codes (painted by the core)', () => {
   })
 
   it('a linear code in a short free-layout frame shrinks to fit it (or warns), never spills', async () => {
-    const bar = code({ symbology: 'code128', data: 'ROT128', moduleDots: 2, quietZone: true, showText: false, frame: { xMm: 2, yMm: 0, wMm: 12, hMm: 18, rotation: 0 } })
+    const bar = code({ symbology: 'code128', data: 'ROT128', moduleDots: 2, quietZone: 'standard', showText: false, frame: { xMm: 2, yMm: 0, wMm: 12, hMm: 18, rotation: 0 } })
     const r = await render(label([bar, text('next', { frame: { xMm: 15, yMm: 0, wMm: 20, hMm: 18, rotation: 0 } })], { layout: { mode: 'free' } }))
     try {
       expect(r.warnings.map((w) => w.code)).toContain('code-too-small') // 101 modules can't fit 85 dots
@@ -388,7 +389,7 @@ describe('codes (painted by the core)', () => {
     } finally {
       r.bitmap.free()
     }
-    const fits = code({ symbology: 'code128', data: 'ROT128', moduleDots: 3, quietZone: true, showText: false, frame: { xMm: 2, yMm: 0, wMm: 40, hMm: 18, rotation: 90 } })
+    const fits = code({ symbology: 'code128', data: 'ROT128', moduleDots: 3, quietZone: 'standard', showText: false, frame: { xMm: 2, yMm: 0, wMm: 40, hMm: 18, rotation: 90 } })
     const r2 = await render(label([fits], { layout: { mode: 'free' } }))
     try {
       expect(r2.warnings.map((w) => w.code)).toContain('content-overflow') // reduced to fit the frame
@@ -406,7 +407,7 @@ describe('codes (painted by the core)', () => {
   })
 
   it('EAN-13: bars span the band at whole-dot modules (snapshot)', async () => {
-    const r = await render(label([code({ symbology: 'ean13', data: '590123412345', moduleDots: 2, quietZone: true, showText: false })]))
+    const r = await render(label([code({ symbology: 'ean13', data: '590123412345', moduleDots: 2, quietZone: 'standard', showText: false })]))
     try {
       expect(r.warnings).toEqual([])
       const m = encodeCode({ symbology: 'ean13', data: '590123412345' })
@@ -449,6 +450,163 @@ describe('codes (painted by the core)', () => {
     expect(bad.warnings[0]?.code).toBe('code-invalid')
     expect(bad.warnings[0]?.message).toMatch(/^EAN-13 barcode: /)
     bad.bitmap.free()
+  })
+})
+
+describe('P3 codes: DataMatrix, Wi-Fi, quiet-zone modes, automatic module size', () => {
+  const first = (r: RenderResult): ItemBox => r.boxes[0] as ItemBox
+
+  it('DataMatrix on 12 mm: every module exactly, a 1-module quiet zone, auto fills the band (snapshot)', async () => {
+    const r = await render(label([code({ symbology: 'datamatrix', data: 'A-0001' })]), 12)
+    try {
+      expect(r.warnings).toEqual([])
+      const m = encodeCode({ symbology: 'datamatrix', data: 'A-0001' })
+      const box = first(r)
+      const md = box.w / (m.width + 2)
+      expect(md).toBe(Math.floor(70 / m.height)) // 'auto': the largest whole-dot size
+      const sx = box.x + md
+      const sy = box.y + Math.floor((box.h - m.height * md) / 2)
+      expectModules(r.bitmap, m, sx, sy, md)
+      expect(inkCount(r.bitmap, box.x, 0, sx, 70)).toBe(0)
+      expect(inkCount(r.bitmap, sx + m.width * md, 0, box.x + box.w, 70)).toBe(0)
+      await expectBitmapSnapshot(r.bitmap, 'p3-datamatrix-12mm')
+    } finally {
+      r.bitmap.free()
+    }
+  })
+
+  it('itemSizingBand (the code editor\'s size hints) follows the renderer: framed band, no tape margin', async () => {
+    const qr = code({ data: 'HELLO', quietZone: 'compact' }) // 21 × 21
+    const m = encodeCode({ symbology: 'qr', data: 'HELLO', ecc: 'M' })
+    const area = target(6).area // 32-dot band
+    const plain = itemSizingBand(label([qr]), qr, area)
+    expect(plain).toEqual({ bandDots: 32, marginDots: (area.tapeWidthDots - 32) / 2, framed: false })
+    // A 0.5 mm frame line: 4 dots + 2 dots padding on each side leave 20 dots, too few for 21 modules.
+    const framedDoc = label([qr], { frame: { thicknessMm: 0.5, radiusMm: 0, insetMm: 0 } })
+    const framed = itemSizingBand(framedDoc, qr, area)
+    expect(framed).toEqual({ bandDots: 20, marginDots: 0, framed: false })
+    expect(chooseModuleDots(m, { moduleDots: 'auto', quietZone: 'compact', symbology: 'qr', ...framed }).max).toBe(0)
+    const r = await renderLabel(framedDoc, target(6))
+    try {
+      expect(r.warnings.some((w) => w.itemId === qr.id && w.code === 'code-too-small')).toBe(true)
+    } finally {
+      r.bitmap.free()
+    }
+    // A frame without a line (thickness 0) reserves nothing and keeps the tape margin.
+    expect(itemSizingBand(label([qr], { frame: { thicknessMm: 0, radiusMm: 0, insetMm: 0 } }), qr, area)).toEqual(plain)
+  })
+
+  it('compact QR on 12 mm is larger than standard: the symbol fills the band (snapshot)', async () => {
+    const m = encodeCode({ symbology: 'qr', data: 'HELLO', ecc: 'M' }) // 21 × 21
+    const std = await render(label([code({ data: 'HELLO', quietZone: 'standard' })]), 12)
+    const cmp = await render(label([code({ data: 'HELLO', quietZone: 'compact' })]), 12)
+    try {
+      const mdStd = first(std).w / (m.width + 8)
+      const mdCmp = first(cmp).w / (m.width + 4)
+      expect([mdStd, mdCmp]).toEqual([2, 3])
+      expect(cmp.warnings).toEqual([])
+      const box = first(cmp)
+      const sx = box.x + 2 * mdCmp
+      const sy = box.y + Math.floor((box.h - m.height * mdCmp) / 2)
+      expectModules(cmp.bitmap, m, sx, sy, mdCmp)
+      // 2 blank modules along the label on both sides.
+      expect(inkCount(cmp.bitmap, box.x, 0, sx, 70)).toBe(0)
+      expect(inkCount(cmp.bitmap, sx + m.width * mdCmp, 0, box.x + box.w, 70)).toBe(0)
+      await expectBitmapSnapshot(cmp.bitmap, 'p3-qr-compact-12mm')
+    } finally {
+      std.bitmap.free()
+      cmp.bitmap.free()
+    }
+  })
+
+  it('Wi-Fi QR prints the WIFI: payload module by module (snapshot)', async () => {
+    const item = code({ content: 'wifi', wifi: createWifi({ ssid: 'Guest', password: 'correct horse' }), ecc: 'L', quietZone: 'standard' })
+    const r = await render(label([item]))
+    try {
+      expect(r.warnings).toEqual([])
+      const m = encodeCode({ symbology: 'qr', data: 'WIFI:T:WPA;S:Guest;P:correct horse;;', ecc: 'L' })
+      const box = first(r)
+      const md = box.w / (m.width + 8)
+      expect(Number.isInteger(md) && md >= 3).toBe(true)
+      expectModules(r.bitmap, m, box.x + 4 * md, box.y + Math.floor((box.h - m.height * md) / 2), md)
+      await expectBitmapSnapshot(r.bitmap, 'p3-wifi-qr-24mm')
+    } finally {
+      r.bitmap.free()
+    }
+  })
+
+  it('Wi-Fi QR: no network name blocks printing; an odd WPA password only warns', async () => {
+    const none = await render(label([code({ content: 'wifi', wifi: createWifi({ password: 'secret123' }) })]))
+    expect(none.blocking).toBe(true)
+    expect(none.warnings[0]?.message).toMatch(/^QR code: Enter the network name/)
+    none.bitmap.free()
+    const short = await render(label([code({ content: 'wifi', wifi: createWifi({ ssid: 'Home', password: 'short' }) })]))
+    expect(short.blocking).toBe(false)
+    expect(short.warnings.map((w) => w.message)).toEqual([expect.stringMatching(/8 to 63 characters/)])
+    short.bitmap.free()
+  })
+
+  it('every mode keeps its zone clear over a filled shape (free layout)', async () => {
+    const shape: ShapeItem = { ...(createItem('shape') as ShapeItem), shape: 'rect', fill: true, widthMm: 60, frame: { xMm: 0, yMm: 0, wMm: 60, hMm: 18, rotation: 0 } }
+    const cases: [CodeItem['symbology'], 'standard' | 'compact' | 'none', number][] = [
+      ['qr', 'standard', 4],
+      ['qr', 'compact', 2],
+      ['datamatrix', 'standard', 1],
+      ['datamatrix', 'compact', 1],
+      ['qr', 'none', 0],
+    ]
+    for (const [symbology, quietZone, q] of cases) {
+      const item = code({ symbology, data: 'hello', moduleDots: 3, quietZone, frame: { xMm: 10, yMm: 0, wMm: 30, hMm: 18, rotation: 0 } })
+      const r = await render(label([shape, item], { layout: { mode: 'free' } }))
+      try {
+        const m = encodeCode(symbology === 'qr' ? { symbology, data: 'hello', ecc: 'M' } : { symbology, data: 'hello' })
+        const b = r.boxes[1] as ItemBox
+        expect(b.w, `${symbology} ${quietZone}`).toBe((m.width + 2 * q) * 3)
+        const sx = b.x + q * 3
+        const sy = b.y + Math.floor((b.h - m.height * 3) / 2)
+        expectModules(r.bitmap, m, sx, sy, 3)
+        const zone = inkCount(r.bitmap, sx - q * 3, sy - q * 3, sx, sy + (m.height + q) * 3)
+        expect(zone, `${symbology} ${quietZone}: ink in the left zone`).toBe(0)
+        const above = q ? inkCount(r.bitmap, sx, Math.max(0, sy - q * 3), sx + m.width * 3, sy) : 0
+        expect(above, `${symbology} ${quietZone}: ink above the symbol`).toBe(0)
+        if (q === 0) expect(inkCount(r.bitmap, sx - 3, sy, sx, sy + m.height * 3)).toBeGreaterThan(0) // the shape touches it
+      } finally {
+        r.bitmap.free()
+      }
+    }
+  })
+
+  it('linear auto: 2 dots on an auto-length label, the largest 1–4 that fits a fixed length', async () => {
+    const bar = (patch: Partial<CodeItem> = {}): CodeItem => code({ symbology: 'code128', data: 'ABC-12345', showText: false, quietZone: 'standard', ...patch })
+    const m = encodeCode({ symbology: 'code128', data: 'ABC-12345' })
+    const auto = await render(label([bar()]))
+    expect(first(auto).w).toBe((m.width + 20) * 2)
+    auto.bitmap.free()
+
+    // 80 mm minus 2 × 2 mm margins = 539 dots for the code alone.
+    const avail = mmToDots(80) - 2 * mmToDots(2)
+    const fixed = await render(label([bar()], { length: { mode: 'fixed', mm: 80 } }))
+    const md = first(fixed).w / (m.width + 20)
+    expect(md).toBe(Math.min(4, Math.floor(avail / (m.width + 20))))
+    expect(fixed.overflow ?? false).toBe(false)
+    fixed.bitmap.free()
+
+    // Shared with a text block (≈ 70 mm of auto-fit text on 24 mm): the code takes what is left
+    // and the label still fits.
+    const shared = await render(label([text('Shelf 3'), bar({ quietZone: 'compact' })], { length: { mode: 'fixed', mm: 140 } }))
+    const tb = shared.boxes[0] as ItemBox
+    const cb = shared.boxes[1] as ItemBox
+    const mdShared = cb.w / (m.width + 10)
+    const gap = cb.x - (tb.x + tb.w)
+    expect(mdShared).toBe(Math.min(4, Math.floor((mmToDots(140) - 2 * mmToDots(2) - tb.w - gap) / (m.width + 10))))
+    expect(mdShared).toBeGreaterThanOrEqual(2)
+    expect(shared.warnings.map((w) => w.code)).not.toContain('content-overflow')
+    shared.bitmap.free()
+
+    // A fixed module size is kept as is.
+    const fixedMd = await render(label([bar({ moduleDots: 3 })]))
+    expect(first(fixedMd).w).toBe((m.width + 20) * 3)
+    fixedMd.bitmap.free()
   })
 })
 

@@ -1,12 +1,15 @@
-// W3 owns this file, but its exported TYPES are a frozen contract shared by W3 (renderer),
-// W4 (editor UI) and W5 (persistence/migrations). Additive, optional fields only; anything else
-// bumps SCHEMA_VERSION and needs a migration in persist-migrate.ts (W5).
+// Lead-owned (docs/STUDIO-V1-PLAN.md): the exported TYPES, factories and LIMITS are a frozen
+// contract shared by every package (renderer, editor UI, persistence/migrations, batch,
+// templates, codes, fonts). Additive, optional fields only; anything else bumps SCHEMA_VERSION
+// and needs a migration in persist-migrate.ts.
 //
 // Editor-library-independent JSON. Geometry is in **mm** (device-independent); the renderer
 // snaps to the dot grid of the target printer (ARCHITECTURE.md §6.1). This module imports
 // nothing (layering rule: `doc` depends on nothing).
 
-export const SCHEMA_VERSION = 1 as const
+/** 2 (studio v1): code content modes (Wi-Fi), DataMatrix, quiet-zone modes, automatic module
+ * size, custom fonts, batch data. Schema-1 documents are upgraded by persist-migrate.ts. */
+export const SCHEMA_VERSION = 2 as const
 
 /** Nominal TZe tape widths (PT-P710BT). 3.5 mm reports width byte 4 in the status. */
 export type TapeWidthMm = 3.5 | 6 | 9 | 12 | 18 | 24
@@ -18,8 +21,23 @@ export type FontWeight = 400 | 500 | 600 | 700 | 800
 
 export type Align = 'start' | 'center' | 'end'
 export type Rotation = 0 | 90 | 180 | 270
-export type Symbology = 'qr' | 'code128' | 'ean13'
+export type Symbology = 'qr' | 'code128' | 'ean13' | 'datamatrix'
 export type QrEcc = 'L' | 'M' | 'Q' | 'H'
+/** What a code item encodes: its `data` verbatim, or a Wi-Fi network built from `wifi`. */
+export type CodeContent = 'text' | 'wifi'
+/** Wi-Fi security: 'wpa' = WPA/WPA2/WPA3 personal (`T:WPA`), 'wep' (`T:WEP`), 'open' (`T:nopass`). */
+export type WifiSecurity = 'wpa' | 'wep' | 'open'
+/**
+ * Quiet zone (blank margin scanners need):
+ * - 'standard': 4 modules around QR, 1 module around DataMatrix (ISO/IEC 16022), 10 modules
+ *   left/right of linear codes;
+ * - 'compact': 2-D codes get 2 modules along the label and may use the unprinted tape edge as
+ *   their whole vertical quiet zone (the symbol fills the printable band); linear codes 5;
+ * - 'none'.
+ */
+export type QuietZone = 'standard' | 'compact' | 'none'
+/** Dots per module: 'auto' = the largest whole-dot size that fits the tape, or a fixed size. */
+export type ModuleSize = 'auto' | number
 /** Same strings as the wasm `DitherKind`. */
 export type DitherKind = 'threshold' | 'floyd-steinberg' | 'atkinson' | 'bayer4' | 'bayer8'
 
@@ -57,6 +75,37 @@ export interface LabelFrame {
   insetMm: number
 }
 
+/** `{{n}}`-style counter of a batch: value of label i = start + i × step, zero-padded to `pad`. */
+export interface BatchCounter {
+  /** Variable name (letters, digits, `_`; e.g. "n"). */
+  name: string
+  start: number
+  step: number
+  /** Minimum digits (0 = no padding): pad 3 → 001. */
+  pad: number
+}
+
+/** Date formats for `{{today}}` / `{{today+30d}}` (local time). */
+export type DateFormat = 'iso' | 'dmy' | 'mdy' | 'long'
+
+/**
+ * Batch data (variables): one label per row, or `count` labels when there are no rows. Column
+ * names are the variable names (`{{name}}`); built-in variables (counters, `today`, `ssid`) are
+ * resolved by doc/variables.ts. Printed as ONE chained multi-page job.
+ */
+export interface BatchData {
+  /** Print every row (off: the label prints once, showing the preview row). */
+  enabled: boolean
+  /** Variable names from the header row (unique, ≤ LIMITS.batchColumns). */
+  columns: string[]
+  /** Cells by column index (≤ LIMITS.batchRows rows; short rows are padded with ''). */
+  rows: string[][]
+  /** Labels to print when `rows` is empty (counters only). */
+  count: number
+  counters: BatchCounter[]
+  dateFormat: DateFormat
+}
+
 export interface LabelDoc {
   schema: typeof SCHEMA_VERSION
   id: string
@@ -74,6 +123,8 @@ export interface LabelDoc {
   /** Order = flow order (left → right) / z-order (free). */
   items: Item[]
   print: PrintSettings
+  /** Variables + batch printing (absent = a plain label). */
+  batch?: BatchData
 }
 
 /** Placement for `layout.mode = 'free'` (mm from the top-left of the printable band). */
@@ -93,11 +144,25 @@ interface ItemBase {
   frame?: ItemFrame
 }
 
+/**
+ * A font that is not bundled. The renderer uses it when it is available on this device and
+ * otherwise falls back to the item's bundled `fontFamily` with a `font-missing` warning (shared
+ * labels, another computer). Font files are never put into share links or exported labels.
+ * - 'user': uploaded TTF/OTF/WOFF/WOFF2, stored in IndexedDB under its content ref
+ *   (`sha256-<32 hex>`, see persist-fonts.ts);
+ * - 'local': installed on this computer (`queryLocalFonts()`, Chromium desktop), loaded with
+ *   CSS `local()` by its PostScript name. "Varies by machine".
+ */
+export type FontSource = { kind: 'user'; ref: string; family: string } | { kind: 'local'; postscriptName: string; family: string }
+
 export interface TextItem extends ItemBase {
   kind: 'text'
-  /** Multiline (`\n`). */
+  /** Multiline (`\n`). May contain `{{variable}}` placeholders (batch, doc/variables.ts). */
   text: string
+  /** Bundled family; also the fallback when `customFont` is unavailable. */
   fontFamily: FontFamilyId
+  /** Optional non-bundled font (wins over `fontFamily` when it loads). */
+  customFont?: FontSource
   fontWeight: FontWeight
   italic: boolean
   /** Cap-to-descender height of the text block; 'fit' = largest size that fits the band. */
@@ -116,13 +181,30 @@ export interface IconItem extends ItemBase {
   size: ItemSize
 }
 
+/** Wi-Fi network for `CodeItem.content = 'wifi'` (QR `WIFI:` payload, render/wifi.ts). */
+export interface WifiSettings {
+  /** Network name (SSID). May contain `{{variable}}` placeholders. */
+  ssid: string
+  /** Kept locally only: share links and exported files omit it unless the user opts in
+   * (doc/secrets.ts). Ignored for 'open'. */
+  password: string
+  security: WifiSecurity
+  /** Hidden network (`H:true`). */
+  hidden: boolean
+}
+
 export interface CodeItem extends ItemBase {
   kind: 'code'
   symbology: Symbology
+  /** 'text': encode `data`. 'wifi': encode `wifi` (QR only; other symbologies ignore it). */
+  content: CodeContent
+  /** Payload for content 'text'. May contain `{{variable}}` placeholders. */
   data: string
-  /** Dots per module (integer; preflight blocks < 1). */
-  moduleDots: number
-  quietZone: boolean
+  /** Present when the item is or was a Wi-Fi code (kept when switching back to 'text'). */
+  wifi?: WifiSettings
+  /** 'auto' (new items) or a fixed integer 1–20 (schema-1 items keep their number). */
+  moduleDots: ModuleSize
+  quietZone: QuietZone
   /** QR only. */
   ecc: QrEcc
   /** Linear codes: print the human-readable text under the bars. */
@@ -215,9 +297,10 @@ export function createItem<K extends ItemKind>(kind: K): ItemOf<K> {
       id,
       kind: 'code',
       symbology: 'qr',
+      content: 'text',
       data: 'https://example.com',
-      moduleDots: 3,
-      quietZone: true,
+      moduleDots: 'auto',
+      quietZone: 'standard',
       ecc: 'M',
       showText: false,
     },
@@ -233,6 +316,16 @@ export function createItem<K extends ItemKind>(kind: K): ItemOf<K> {
     spacer: { id, kind: 'spacer', widthMm: 5 },
   }
   return items[kind] as ItemOf<K>
+}
+
+/** Default Wi-Fi block for a code switched to content 'wifi'. */
+export function createWifi(init: Partial<WifiSettings> = {}): WifiSettings {
+  return { ssid: '', password: '', security: 'wpa', hidden: false, ...init }
+}
+
+/** Default batch data (one `n` counter, no table, off). */
+export function createBatch(init: Partial<BatchData> = {}): BatchData {
+  return { enabled: false, columns: [], rows: [], count: 10, counters: [{ name: 'n', start: 1, step: 1, pad: 0 }], dateFormat: 'iso', ...init }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -262,7 +355,30 @@ export const LIMITS = {
   items: 200,
   /** Characters of text + code data across the whole label. */
   totalChars: 40_000,
+  /** Wi-Fi: SSID ≤ 32 bytes on air, but allow some room for placeholders; WPA passphrase ≤ 63
+   * (or 64 hex), WEP shorter. */
+  ssidChars: 64,
+  wifiPasswordChars: 64,
+  /** Batch: rows printed in one job, columns (variables), characters per cell, counters. */
+  batchRows: 500,
+  batchColumns: 20,
+  batchCellChars: 500,
+  batchCounters: 4,
+  /** Labels when a batch has no rows (counters only). */
+  batchCount: { min: 1, max: 500 },
+  /** |start|, |step| of a counter; pad digits. */
+  counterValue: 1_000_000_000,
+  counterPad: { min: 0, max: 12 },
+  /** Characters of a batch table across all cells (share links stay small). */
+  batchTotalChars: 200_000,
+  /** Custom font names. */
+  fontNameChars: 100,
 } as const
+
+/** Variable / column names: `{{name}}`. */
+export const VARIABLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,31}$/
+/** Content ref of a stored blob (persist-codec.ts `contentRef`). */
+export const CONTENT_REF_RE = /^sha256-[0-9a-f]{32}$/
 
 /** Untrusted short strings: ids, media ids, colours, timestamps (share links, imported files). */
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/
@@ -285,7 +401,11 @@ const FONT_FAMILIES: readonly FontFamilyId[] = ['fira-sans', 'archivo-narrow', '
 const FONT_WEIGHTS: readonly FontWeight[] = [400, 500, 600, 700, 800]
 const ALIGNS: readonly Align[] = ['start', 'center', 'end']
 const ROTATIONS: readonly Rotation[] = [0, 90, 180, 270]
-const SYMBOLOGIES: readonly Symbology[] = ['qr', 'code128', 'ean13']
+const SYMBOLOGIES: readonly Symbology[] = ['qr', 'code128', 'ean13', 'datamatrix']
+const CONTENTS: readonly CodeContent[] = ['text', 'wifi']
+const SECURITIES: readonly WifiSecurity[] = ['wpa', 'wep', 'open']
+const QUIET_ZONES: readonly QuietZone[] = ['standard', 'compact', 'none']
+const DATE_FORMATS: readonly DateFormat[] = ['iso', 'dmy', 'mdy', 'long']
 const ECCS: readonly QrEcc[] = ['L', 'M', 'Q', 'H']
 const DITHERS: readonly DitherKind[] = ['threshold', 'floyd-steinberg', 'atkinson', 'bayer4', 'bayer8']
 const SHAPES: readonly ShapeItem['shape'][] = ['rect', 'ellipse', 'line']
@@ -391,6 +511,102 @@ function readItemFrame(r: Reader, o: Obj): ItemFrame | undefined {
   }
 }
 
+function readFontSource(r: Reader, o: Obj): FontSource | undefined {
+  const v = o['customFont']
+  if (v === undefined) return undefined
+  const family = isObj(v) && typeof v['family'] === 'string' ? v['family'].trim().slice(0, LIMITS.fontNameChars) : ''
+  if (isObj(v) && family) {
+    if (v['kind'] === 'user' && typeof v['ref'] === 'string' && CONTENT_REF_RE.test(v['ref'])) return { kind: 'user', ref: v['ref'], family }
+    const ps = v['postscriptName']
+    if (v['kind'] === 'local' && typeof ps === 'string' && /^[\x20-\x7e]{1,100}$/.test(ps) && !/["'\\]/.test(ps)) return { kind: 'local', postscriptName: ps, family }
+  }
+  r.note('customFont was malformed; the bundled font is used')
+  return undefined
+}
+
+function readWifi(r: Reader, o: Obj): WifiSettings {
+  return {
+    ssid: r.str(o, 'ssid', '', LIMITS.ssidChars),
+    password: r.str(o, 'password', '', LIMITS.wifiPasswordChars),
+    security: r.oneOf(o, 'security', SECURITIES, 'wpa'),
+    hidden: r.bool(o, 'hidden', false),
+  }
+}
+
+/** Schema-2 modes; a schema-1 style boolean is accepted too (true → standard, false → none). */
+function readQuietZone(r: Reader, o: Obj): QuietZone {
+  const v = o['quietZone']
+  if (v === true) return 'standard'
+  if (v === false) return 'none'
+  return r.oneOf(o, 'quietZone', QUIET_ZONES, 'standard')
+}
+
+function readBatch(r: Reader, o: Obj): BatchData {
+  const names = new Set<string>()
+  const columns: string[] = []
+  const rawCols = Array.isArray(o['columns']) ? (o['columns'] as unknown[]) : []
+  if (o['columns'] !== undefined && !Array.isArray(o['columns'])) r.note('columns was malformed; removed')
+  for (const c of rawCols.slice(0, LIMITS.batchColumns)) {
+    const name = typeof c === 'string' ? c.trim() : ''
+    if (!VARIABLE_NAME_RE.test(name) || names.has(name)) {
+      r.note(`column ${shortJson(c)} is not a valid, unique variable name; renamed`)
+      let i = columns.length + 1
+      while (names.has(`col${i}`)) i++
+      columns.push(`col${i}`)
+      names.add(`col${i}`)
+      continue
+    }
+    names.add(name)
+    columns.push(name)
+  }
+  if (rawCols.length > LIMITS.batchColumns) r.note(`${rawCols.length} columns; only the first ${LIMITS.batchColumns} were kept`)
+
+  const rows: string[][] = []
+  let rawRows = Array.isArray(o['rows']) ? (o['rows'] as unknown[]) : []
+  if (o['rows'] !== undefined && !Array.isArray(o['rows'])) r.note('rows was malformed; removed')
+  if (rawRows.length > LIMITS.batchRows) {
+    r.note(`${rawRows.length} rows; only the first ${LIMITS.batchRows} were kept`)
+    rawRows = rawRows.slice(0, LIMITS.batchRows)
+  }
+  let chars = 0
+  for (const row of rawRows) {
+    const cells = Array.isArray(row) ? (row as unknown[]) : []
+    const out = columns.map((_, j) => {
+      const c = cells[j]
+      const v = typeof c === 'string' ? c : typeof c === 'number' && Number.isFinite(c) ? String(c) : ''
+      return v.length > LIMITS.batchCellChars ? v.slice(0, LIMITS.batchCellChars) : v
+    })
+    chars += out.reduce((n, c) => n + c.length, 0)
+    if (chars > LIMITS.batchTotalChars) {
+      r.note(`more than ${LIMITS.batchTotalChars} characters of batch data; rows from ${rows.length + 1} on were dropped`)
+      break
+    }
+    rows.push(out)
+  }
+
+  const counters: BatchCounter[] = []
+  const rawCounters = Array.isArray(o['counters']) ? (o['counters'] as unknown[]) : []
+  for (const c of rawCounters.slice(0, LIMITS.batchCounters)) {
+    if (!isObj(c) || typeof c['name'] !== 'string' || !VARIABLE_NAME_RE.test(c['name']) || names.has(c['name'])) {
+      r.note(`counter ${shortJson(c)} is malformed or its name is taken; dropped`)
+      continue
+    }
+    const rc = r.at(`counter ${c['name']}`)
+    const lim = LIMITS.counterValue
+    names.add(c['name'])
+    counters.push({ name: c['name'], start: rc.num(c, 'start', -lim, lim, 1, true), step: rc.num(c, 'step', -lim, lim, 1, true), pad: rc.num(c, 'pad', LIMITS.counterPad.min, LIMITS.counterPad.max, 0, true) })
+  }
+
+  return {
+    enabled: r.bool(o, 'enabled', false),
+    columns,
+    rows,
+    count: r.num(o, 'count', LIMITS.batchCount.min, LIMITS.batchCount.max, 10, true),
+    counters,
+    dateFormat: r.oneOf(o, 'dateFormat', DATE_FORMATS, 'iso'),
+  }
+}
+
 function readItem(r: Reader, o: Obj, id: string): Item | undefined {
   const frame = readItemFrame(r, o)
   const base = frame ? { id, frame } : { id }
@@ -398,11 +614,13 @@ function readItem(r: Reader, o: Obj, id: string): Item | undefined {
     case 'text': {
       const weight = nearestWeight(o['fontWeight'])
       if (weight === undefined && o['fontWeight'] !== undefined) r.note('fontWeight was malformed; using 600')
+      const customFont = readFontSource(r, o)
       return {
         ...base,
         kind: 'text',
         text: r.str(o, 'text', ''),
         fontFamily: r.oneOf(o, 'fontFamily', FONT_FAMILIES, 'fira-sans'),
+        ...(customFont ? { customFont } : {}),
         fontWeight: weight ?? 600,
         italic: r.bool(o, 'italic', false),
         size: readSize(r, o),
@@ -413,17 +631,21 @@ function readItem(r: Reader, o: Obj, id: string): Item | undefined {
     }
     case 'icon':
       return { ...base, kind: 'icon', iconId: r.str(o, 'iconId', 'bolt', 64), size: readSize(r, o) }
-    case 'code':
+    case 'code': {
+      const wifi = o['wifi'] === undefined ? undefined : readWifi(r.at('wifi'), r.obj(o, 'wifi'))
       return {
         ...base,
         kind: 'code',
         symbology: r.oneOf(o, 'symbology', SYMBOLOGIES, 'qr'),
+        content: r.oneOf(o, 'content', CONTENTS, 'text'),
         data: r.str(o, 'data', ''),
-        moduleDots: r.num(o, 'moduleDots', LIMITS.moduleDots.min, LIMITS.moduleDots.max, 3, true),
-        quietZone: r.bool(o, 'quietZone', true),
+        ...(wifi ? { wifi } : {}),
+        moduleDots: o['moduleDots'] === 'auto' ? 'auto' : r.num(o, 'moduleDots', LIMITS.moduleDots.min, LIMITS.moduleDots.max, 3, true),
+        quietZone: readQuietZone(r, o),
         ecc: r.oneOf(o, 'ecc', ECCS, 'M'),
         showText: r.bool(o, 'showText', false),
       }
+    }
     case 'image': {
       const adjust = r.obj(o, 'adjust')
       const ra = r.at('image adjust')
@@ -469,7 +691,7 @@ function readItem(r: Reader, o: Obj, id: string): Item | undefined {
  * Lenient by design: anything readable is repaired rather than rejected. Numbers are clamped to
  * `LIMITS`, unknown enum values fall back to defaults, items of unknown kinds are dropped and
  * duplicate/missing ids are regenerated; every repair is listed in `notices`. Only input that
- * is not a schema-1 label at all (wrong type, wrong `schema`, no `items` array) fails.
+ * is not a current-schema label at all (wrong type, wrong `schema`, no `items` array) fails.
  * The result is a fresh object (never the input), with unknown fields removed.
  */
 export function validateDoc(raw: unknown): { ok: true; doc: LabelDoc; notices: string[] } | { ok: false; problems: string[] } {
@@ -558,7 +780,7 @@ export function validateDoc(raw: unknown): { ok: true; doc: LabelDoc; notices: s
       r.note(`item ${i + 1} has unknown kind ${JSON.stringify(rawItem['kind'] ?? null)}; dropped`)
       return
     }
-    chars += item.kind === 'text' ? item.text.length : item.kind === 'code' ? item.data.length : 0
+    chars += item.kind === 'text' ? item.text.length : item.kind === 'code' ? item.data.length + (item.wifi ? item.wifi.ssid.length + item.wifi.password.length : 0) : 0
     if (chars > LIMITS.totalChars) {
       overBudget = true
       r.note(`more than ${LIMITS.totalChars} characters of text; blocks from ${i + 1} on were dropped`)
@@ -582,5 +804,6 @@ export function validateDoc(raw: unknown): { ok: true; doc: LabelDoc; notices: s
     items,
     print,
   }
+  if (raw['batch'] !== undefined && raw['batch'] !== null) doc.batch = readBatch(r.at('batch'), r.obj(raw, 'batch'))
   return { ok: true, doc, notices: r.notes }
 }

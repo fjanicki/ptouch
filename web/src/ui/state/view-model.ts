@@ -206,6 +206,10 @@ export interface PrintGate {
   hasRender: boolean
   blocking: { message: string } | null
   isEmpty: boolean
+  /** `{{name}}` placeholders nothing defines (doc/variables.ts missingVariables); they would print as written. */
+  missingVariables?: readonly string[]
+  /** Columns the label uses while the batch table has no rows (doc/variables.ts columnsWithoutData). */
+  columnsWithoutData?: readonly string[]
   conn: Pick<ConnectionSnapshot, 'state' | 'status' | 'media'> & Partial<Pick<ConnectionSnapshot, 'problem'>>
   mismatch: MediaMismatch | null
   /** false: this browser can't reach printers at all (design mode). Default true. */
@@ -220,6 +224,10 @@ export function printBlockReason(g: PrintGate): string | null {
   if (g.renderError) return 'The preview could not be rendered.'
   if (!g.hasRender) return 'Preparing the preview…'
   if (g.blocking) return g.blocking.message
+  const missing = g.missingVariables ?? []
+  if (missing.length) return `Unknown ${missing.length === 1 ? 'variable' : 'variables'} ${missing.map((n) => `{{${n}}}`).join(', ')}: add a column or counter with that name, or fix the spelling.`
+  const empty = g.columnsWithoutData ?? []
+  if (empty.length) return `The data table has no rows, so ${empty.map((n) => `{{${n}}}`).join(', ')} would print blank: paste data or add a row.`
   if (g.canPrint === false) return 'Printing needs Chrome or Edge on a computer or Android.'
   switch (g.conn.state) {
     case 'ready':
@@ -328,7 +336,7 @@ export const KIND_META: Record<ItemKind, { label: string; icon: string }> = {
   spacer: { label: 'Spacer', icon: 'space' },
 }
 
-const SYMBOLOGY_LABEL = { qr: 'QR', code128: 'Code 128', ean13: 'EAN-13' } as const
+const SYMBOLOGY_LABEL = { qr: 'QR', code128: 'Code 128', ean13: 'EAN-13', datamatrix: 'DataMatrix' } as const
 
 /** Human title + one-line summary of a block for the block list and aria labels. */
 export function itemSummary(item: Item, iconLabel?: (id: string) => string | undefined): { title: string; summary: string } {
@@ -340,6 +348,8 @@ export function itemSummary(item: Item, iconLabel?: (id: string) => string | und
     case 'icon':
       return { title: 'Icon', summary: iconLabel?.(item.iconId) ?? item.iconId }
     case 'code':
+      // A Wi-Fi code shows its network name, never the password.
+      if (item.content === 'wifi' && item.symbology === 'qr') return { title: 'Wi-Fi QR', summary: item.wifi?.ssid ? truncate(item.wifi.ssid, 40) : '(no network name)' }
       return { title: SYMBOLOGY_LABEL[item.symbology], summary: item.data ? truncate(item.data, 40) : '(empty)' }
     case 'image':
       return { title: 'Image', summary: item.blobRef || item.dataUrl ? `${capitalize(item.dither.replace('-', ' '))}` : 'No image chosen' }
@@ -376,4 +386,13 @@ export function docIsEmpty(doc: Pick<LabelDoc, 'items' | 'frame'>): boolean {
 /** Platform-aware modifier label for shortcut hints. */
 export function modKey(platform: string): string {
   return platform === 'mac' || platform === 'ios' ? '⌘' : 'Ctrl'
+}
+
+/**
+ * `media` of a `<meta name="theme-color" media="(prefers-color-scheme: …)">` under the in-app
+ * theme: the system setting keeps `original`; a chosen theme enables only its own colour.
+ */
+export function themeColorMedia(original: string, theme: 'system' | 'light' | 'dark'): string {
+  if (theme === 'system') return original
+  return original.includes(`prefers-color-scheme: ${theme}`) ? 'all' : 'not all'
 }

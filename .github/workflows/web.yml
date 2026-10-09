@@ -58,8 +58,8 @@ jobs:
       - name: svelte-check
         run: npm run check
         working-directory: web
-      - name: install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+      - name: install Playwright Chromium and WebKit (iPhone spec)
+        run: npx playwright install --with-deps chromium webkit
         working-directory: web
       - name: vitest (unit + browser)
         run: npx vitest run
@@ -71,6 +71,7 @@ jobs:
         working-directory: web
         env:
           PW_CHANNEL: chromium
+          PW_WEBKIT: '1'
       - name: Pages build (BASE_PATH=/ptouch/)
         run: npx vite build
         working-directory: web

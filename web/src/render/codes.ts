@@ -1,27 +1,48 @@
-// W3 — CodeItem → module matrix (wasm encodeCode, fast_qr / barcoders in ptouch-wasm) with a
-// small cache, plus the size preflight. Codes are painted by the core (`Raster.blitCode`) at an
-// integer module size and are never drawn on a canvas.
+// W3 — CodeItem → module matrix (wasm encodeCode, fast_qr / barcoders / datamatrix in
+// ptouch-wasm) with a small cache, plus the size preflight. Codes are painted by the core
+// (`Raster.blitCode`) at an integer module size and are never drawn on a canvas.
 //
-// Quiet zones (4 modules on every side of a 2-D symbol, 10 modules left and right of a linear
-// barcode) are the core's rule: the renderer reserves them in the layout and passes
-// `quietZone` to `Raster.blitCode`, so the core clears and protects them in the raster. Across
-// the tape a 2-D symbol's quiet zone may use blank band plus the unprinted tape margin; the
-// module size is chosen so both together give 4 modules (maxModuleDots).
+// Quiet zones (P3, docs/STUDIO-V1-PLAN.md §2.4) come in three modes:
+//
+// | Mode     | QR                       | DataMatrix               | Linear              |
+// |----------|--------------------------|--------------------------|---------------------|
+// | standard | 4 modules all round      | 1 module (ISO/IEC 16022) | 10 modules L/R      |
+// | compact  | 2 modules along the label| 1 module along the label | 5 modules L/R       |
+// | none     | –                        | –                        | –                   |
+//
+// Across the tape a 2-D symbol's zone may use blank band plus the unprinted tape margin
+// (maxModuleDots). In 'compact' the margin alone is enough, so the symbol may fill the whole
+// band; only when a frame line borders the band (margin 0) is the zone kept inside it. The
+// renderer pads the matrix with light modules (padMatrix) and blits it with `quietZone = false`:
+// the core paints light modules as cleared and protected dots, so the zone stays blank whatever
+// the mode (the core's own `true` only knows the standard QR/linear sizes).
 import { encodeCode, type ModuleMatrix } from '../wasm'
-import type { CodeItem } from '../doc/schema'
+import type { CodeItem, ModuleSize, QuietZone, Symbology } from '../doc/schema'
+import { wifiPayload } from './wifi'
 
-type CodeKey = Pick<CodeItem, 'symbology' | 'data' | 'ecc'>
+type CodeKey = Pick<CodeItem, 'symbology' | 'data' | 'ecc'> & Partial<Pick<CodeItem, 'content' | 'wifi'>>
+
+/**
+ * The text a code item encodes: `data`, or the `WIFI:` string for content 'wifi' (QR only).
+ * Throws an Error with a user-facing message when the Wi-Fi settings are incomplete.
+ */
+export function codePayload(item: CodeKey): string {
+  if (item.content === 'wifi' && item.symbology === 'qr') return wifiPayload(item.wifi ?? { ssid: '', password: '', security: 'wpa', hidden: false })
+  return item.data
+}
 
 const CACHE_SIZE = 64
 const cache = new Map<string, { m: ModuleMatrix } | { err: unknown }>()
 
-function key(item: CodeKey): string {
-  return `${item.symbology}\u0000${item.symbology === 'qr' ? item.ecc : ''}\u0000${item.data}`
+function key(item: CodeKey, data: string): string {
+  return `${item.symbology}\u0000${item.symbology === 'qr' ? item.ecc : ''}\u0000${data}`
 }
 
-/** Encodes (cached by symbology+data+ecc). Throws PtouchError on invalid data. */
+/** Encodes `codePayload(item)` (cached by symbology+payload+ecc). Throws PtouchError on invalid
+ * data, or an Error for incomplete Wi-Fi settings. */
 export function codeMatrix(item: CodeKey): ModuleMatrix {
-  const k = key(item)
+  const data = codePayload(item)
+  const k = key(item, data)
   let hit = cache.get(k)
   if (hit) {
     // LRU: move to the end.
@@ -29,9 +50,9 @@ export function codeMatrix(item: CodeKey): ModuleMatrix {
     cache.set(k, hit)
   } else {
     try {
-      hit = { m: encodeCode(item.symbology === 'qr' ? { symbology: 'qr', data: item.data, ecc: item.ecc } : { symbology: item.symbology, data: item.data }) }
+      hit = { m: encodeCode(item.symbology === 'qr' ? { symbology: 'qr', data, ecc: item.ecc } : { symbology: item.symbology, data }) }
     } catch (err) {
-      // Only cache genuine data errors; a missing implementation / wasm hiccup may recover.
+      // Only cache genuine data errors; a wasm hiccup may recover.
       const code = (err as { code?: unknown } | null)?.code
       if (code !== 'INVALID_INPUT') throw err
       hit = { err }
@@ -53,10 +74,24 @@ export function isLinear(m: ModuleMatrix): boolean {
   return true
 }
 
-/** Quiet zone in modules: [along the label, across the tape]. */
-export function quietModules(m: ModuleMatrix, quietZone: boolean): [number, number] {
-  if (!quietZone) return [0, 0]
-  return isLinear(m) ? [10, 0] : [4, 4]
+/** `QuietZone` mode or a schema-1 style boolean (true = 'standard'). */
+export type QuietZoneArg = QuietZone | boolean
+
+function mode(quietZone: QuietZoneArg): QuietZone {
+  return quietZone === true ? 'standard' : quietZone === false ? 'none' : quietZone
+}
+
+/**
+ * Quiet zone in modules: [along the label, across the tape]. `symbology` tells a DataMatrix
+ * (1 module) from a QR code (the default for 2-D matrices); linear codes are detected from the
+ * matrix. The across value is what the zone needs when it has to fit inside the band.
+ */
+export function quietModules(m: ModuleMatrix, quietZone: QuietZoneArg, symbology?: Symbology): [number, number] {
+  const q = mode(quietZone)
+  if (q === 'none') return [0, 0]
+  if (isLinear(m)) return [q === 'compact' ? 5 : 10, 0]
+  if (symbology === 'datamatrix') return [1, 1]
+  return q === 'compact' ? [2, 2] : [4, 4]
 }
 
 export interface CodeSize {
@@ -67,28 +102,93 @@ export interface CodeSize {
 }
 
 /** Footprint of a code at `moduleDots`. Linear codes take the whole band height. */
-export function codeSizeDots(m: ModuleMatrix, moduleDots: number, quietZone: boolean, bandDots: number): CodeSize {
+export function codeSizeDots(m: ModuleMatrix, moduleDots: number, quietZone: QuietZoneArg, bandDots: number, symbology?: Symbology): CodeSize {
   const md = Math.max(0, Math.floor(moduleDots))
-  const [qx, qy] = quietModules(m, quietZone)
+  const [qx, qy] = quietModules(m, quietZone, symbology)
   const w = (m.width + 2 * qx) * md
   return isLinear(m) ? { w, h: bandDots } : { w, h: (m.height + 2 * qy) * md }
 }
 
 /**
  * Largest integer module size whose symbol fits `bandDots` across the tape; 0 if impossible.
- * A 2-D symbol must fit the band, and with `quietZone` its 4-module vertical quiet zone must fit
- * in the blank band plus `marginDots` of unprinted tape on each side (0 when a frame line or a
- * neighbour borders the band). A linear code has no vertical limit (its bars stretch to the
- * band), so the result is capped at `min(bandDots, 255)`.
+ * A 2-D symbol must fit the band, and its vertical quiet zone must fit in the blank band plus
+ * `marginDots` of unprinted tape on each side (0 when a frame line or a neighbour borders the
+ * band). In 'compact' mode any unprinted margin is zone enough, so the symbol may fill the
+ * band. A linear code has no vertical limit (its bars stretch to the band), so the result is
+ * capped at `min(bandDots, 255)`.
  */
-export function maxModuleDots(m: ModuleMatrix, bandDots: number, quietZone: boolean, marginDots = 0): number {
+export function maxModuleDots(m: ModuleMatrix, bandDots: number, quietZone: QuietZoneArg, marginDots = 0, symbology?: Symbology): number {
   if (isLinear(m)) return Math.max(0, Math.min(255, bandDots))
   if (m.height <= 0) return 0
-  const fit = Math.floor(bandDots / m.height)
-  if (!quietZone) return Math.min(255, fit)
-  const [, qy] = quietModules(m, true)
+  const fit = Math.max(0, Math.min(255, Math.floor(bandDots / m.height)))
+  const [, qy] = quietModules(m, quietZone, symbology)
+  if (qy === 0 || (mode(quietZone) === 'compact' && marginDots > 0)) return fit
   const withQuiet = Math.floor((bandDots + 2 * Math.max(0, marginDots)) / (m.height + 2 * qy))
-  return Math.max(0, Math.min(255, fit, withQuiet))
+  return Math.max(0, Math.min(fit, withQuiet))
+}
+
+/** Largest module size `moduleDots: 'auto'` gives a linear code. */
+export const AUTO_LINEAR_MAX_DOTS = 4
+/** Linear `'auto'` module size when nothing limits the length (auto-length label). */
+export const AUTO_LINEAR_DEFAULT_DOTS = 2
+
+export interface ModuleChoice {
+  /** Module size to print with, ≥ 1 (1 also when nothing fits: see `max`). */
+  md: number
+  /** Largest size that fits (0: does not fit at all). Linear codes without a length limit: 255. */
+  max: number
+  /** A fixed size was lowered to `max`. */
+  reduced: boolean
+}
+
+/**
+ * The module size the renderer prints a code with. 2-D: `'auto'` = the largest whole-dot size
+ * that fits the band (maxModuleDots) and the frame width `limitW`; a fixed size is lowered to it.
+ * Linear: `'auto'` = the largest size up to 4 whose symbol (with its zone) fits `limitW` (a
+ * fixed label length or a frame), else 2; a fixed size is lowered only to fit `limitW`.
+ */
+export function chooseModuleDots(
+  m: ModuleMatrix,
+  o: { moduleDots: ModuleSize; quietZone: QuietZoneArg; symbology?: Symbology; bandDots: number; marginDots?: number; limitW?: number },
+): ModuleChoice {
+  const [qx] = quietModules(m, o.quietZone, o.symbology)
+  const byW = o.limitW === undefined ? 255 : Math.floor(Math.max(0, o.limitW) / Math.max(1, m.width + 2 * qx))
+  const fixed = o.moduleDots === 'auto' ? undefined : Math.max(1, Math.min(255, Math.floor(o.moduleDots)))
+  if (isLinear(m)) {
+    const max = Math.min(255, byW)
+    if (fixed === undefined) {
+      const md = o.limitW === undefined ? AUTO_LINEAR_DEFAULT_DOTS : Math.max(1, Math.min(AUTO_LINEAR_MAX_DOTS, max))
+      return { md, max, reduced: false }
+    }
+    return { md: Math.max(1, Math.min(fixed, max)), max, reduced: fixed > max && max >= 1 }
+  }
+  const max = Math.min(maxModuleDots(m, o.bandDots, o.quietZone, o.marginDots ?? 0, o.symbology), byW)
+  if (fixed === undefined) return { md: Math.max(1, max), max, reduced: false }
+  return { md: Math.max(1, Math.min(fixed, max)), max, reduced: fixed > max && max >= 1 }
+}
+
+/**
+ * `m` with `qx` light modules left and right and `qy` above and below. Blitted with
+ * `quietZone = false`, the core clears and protects them like a built-in quiet zone.
+ */
+export function padMatrix(m: ModuleMatrix, qx: number, qy: number): ModuleMatrix {
+  if (qx <= 0 && qy <= 0) return m
+  const w = m.width + 2 * qx
+  const h = m.height + 2 * qy
+  const modules = new Array<number>(w * h).fill(0)
+  for (let y = 0; y < m.height; y++) {
+    for (let x = 0; x < m.width; x++) modules[(y + qy) * w + x + qx] = m.modules[y * m.width + x] ?? 0
+  }
+  return { width: w, height: h, modules }
+}
+
+export type Readability = 'good' | 'ok' | 'poor'
+
+/** How well a code at `md` dots per module scans: ≥ 3 good for phones, 2 close up, 1 poor. */
+export function readability(md: number): { level: Readability; text: string } {
+  if (md >= 3) return { level: 'good', text: 'Good for phone cameras.' }
+  if (md === 2) return { level: 'ok', text: 'OK close up: hold the phone near the label.' }
+  return { level: 'poor', text: 'Unreliable: modules of 1 dot often do not scan. Use wider tape or less data.' }
 }
 
 /** Unprinted tape on each side of the printable band, in dots (part of a code's quiet zone). */

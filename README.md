@@ -113,7 +113,7 @@ Exit codes: 0 on success, 1 on a printer, transport or rendering error (with a o
 | Chrome / Edge 117+ on macOS, Windows, Linux, ChromeOS | Bluetooth (Web Serial), plus USB on macOS/Linux/ChromeOS |
 | Chrome on Android 138+ | Bluetooth |
 | Firefox 151+ | Serial ports only. On macOS the `/dev/cu.*` port of a Bluetooth printer stops answering after its first use, so use Chrome or Edge there |
-| Safari, any browser on iOS | Not possible (no Web Serial). You can still design labels and export or share them |
+| Safari, any browser on iOS | Not possible (no Web Serial). You can still design labels and send them to a computer to print (see *On an iPhone* below) |
 
 To print over Bluetooth:
 
@@ -123,9 +123,23 @@ To print over Bluetooth:
 
 On macOS the first connection after the printer has been idle often fails while it wakes up (the browser reports "Failed to open serial port" after about 10 s). The studio retries automatically and shows *Waking printer…*; the second attempt usually connects in under half a second. Chrome remembers the printer, so later visits reconnect without asking.
 
-**Privacy.** Everything stays in your browser. Labels are saved in the browser's IndexedDB, preferences in `localStorage`. The page makes no network requests after it has loaded (enforced by its Content Security Policy), and share links carry the label in the URL fragment (`#d=…`), which browsers never send to a server. After the first visit the studio also works offline and can be installed as an app.
+**What you can make.**
 
-**Labels** autosave as you edit. *Export* writes a self-contained `.ptlabel.json` (images included); *Share link* puts the label into a link (images over 32 KB are left out).
+- **Blocks:** text, images, icons, QR codes, DataMatrix, Code 128 and EAN-13.
+- **Templates** (*Labels → New from template…*): a Wi-Fi sticker (12 and 24 mm), a cable flag and a cable wrap, shelf, bin and drawer labels (including a 12 mm Gridfinity bin label), an asset tag with a running number, a folder spine and a name tag.
+- **Wi-Fi QR codes:** choose *Wi-Fi network* as the content of a QR code and enter the network name, security type and password. The iPhone Camera app (and Android) offers to join the network when it scans the code. *Add network name label* prints the name next to the code.
+- **Bigger codes on narrow tape:** the *Compact* quiet zone counts the tape's unprinted edge as the blank margin above and below the code. With the module size on *Auto* (the largest that fits), a code can then fill the printable height. The editor shows the printed size in mm and how well a phone will read it: 3 or more dots per module is good, 2 works close up, 1 is unreliable.
+- **QR or DataMatrix:** QR is best for phone cameras. DataMatrix fits more on narrow tape but, as far as we know, the iPhone Camera app does not read it. It needs a scanner app, but no special hardware.
+- **Variables and batches:** write `{{name}}` in a text or code block and paste a table (CSV, or copied from a spreadsheet; the first row names the columns). You can also use counters (`{{n}}`, for example `A-001`, `A-002`, …) and dates (`{{today}}`, `{{today+30d}}`). Each row becomes one label, and the whole batch prints as **one** job, so the ~24 mm leader is fed only once.
+- **Your own fonts:** upload TTF, OTF, WOFF or WOFF2 files, or use fonts installed on the computer (Chrome and Edge on desktop).
+- **Export the exact print** as a 1-bit PNG at 180 dpi or as a true-size PDF.
+- **Print history:** the last 50 printed labels, ready to reprint or open again. A tape counter shows how much tape you have used for each width.
+
+**On an iPhone.** Every iOS browser is built on Safari's engine (WebKit), which cannot reach printers. On the iPhone you can design labels in the studio. To print, use *Send to computer*: it shares the label as a link or a `.ptlabel.json` file over AirDrop or Messages, and you open it in Chrome or Edge on the computer. Use *Share → Add to Home Screen* to install the studio as an app.
+
+**Privacy.** Everything stays in your browser. Labels are saved in the browser's IndexedDB, preferences in `localStorage`. The page makes no network requests after it has loaded (enforced by its Content Security Policy), and share links carry the label in the URL fragment (`#d=…`), which browsers never send to a server. After the first visit the studio also works offline and can be installed as an app. Wi-Fi passwords are saved only in this browser: share links and exported label files leave them out unless you tick *Include Wi-Fi password*. Uploaded fonts, print history and the tape counter are also stored only in the browser. The diagnostics report never includes your labels.
+
+**Labels** autosave as you edit. *Export* writes a self-contained `.ptlabel.json` file with the images included. *Share link* puts the label into a link and leaves out images over 32 KB. Custom fonts are never included, so the receiver sees the built-in font unless they have the same font.
 
 **Diagnostics** (top bar, or `…/ptouch/#diagnostics`) shows what the browser supports, probes the link by every connection path (status request, open/close ×3) with a hex packet log, prints orientation and ruler test labels, and encodes jobs against a virtual printer so you can download the exact bytes. *Copy diagnostics* produces a bug report with device names and addresses masked.
 

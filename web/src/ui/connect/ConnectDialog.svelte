@@ -34,7 +34,7 @@
 
   // Copy follows the paths this browser really offers (Firefox: ports only; Safari: none).
   const subtitle = $derived.by(() => {
-    if (!studio.support.canPrint) return 'This browser can’t connect to printers. Use “No printer” to design and test with a virtual PT-P710BT.'
+    if (studio.designOnly) return 'This browser can’t connect to printers. Use “No printer” to design and test with a virtual PT-P710BT.'
     const ways = [hasBluetooth ? 'Bluetooth' : hasPort ? 'its Bluetooth serial port' : null, hasUsb ? 'USB' : null].filter(Boolean)
     return `Brother PT-P710BT over ${ways.join(' or ')}. Nothing is installed and nothing leaves this browser.`
   })

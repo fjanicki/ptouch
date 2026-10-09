@@ -17,6 +17,7 @@ import {
   openProgressText,
   previewColors,
   printBlockReason,
+  themeColorMedia,
   printButtonText,
   progressFraction,
   progressText,
@@ -178,6 +179,7 @@ describe('printBlockReason', () => {
   const ok: PrintGate = { wasm: 'ready', renderError: null, hasRender: true, blocking: null, isEmpty: false, conn: READY, mismatch: null }
   it('allows printing when everything is ready', () => {
     expect(printBlockReason(ok)).toBeNull()
+    expect(printBlockReason({ ...ok, missingVariables: [] })).toBeNull()
   })
   it.each([
     [{ wasm: 'loading' as const }, /Loading/],
@@ -186,6 +188,9 @@ describe('printBlockReason', () => {
     [{ renderError: 'boom' }, /could not be rendered/],
     [{ hasRender: false }, /Preparing/],
     [{ blocking: { message: 'Canvas readback is randomized' } }, /Canvas readback/],
+    [{ missingVariables: ['room'] }, /^Unknown variable \{\{room\}\}: add a column/],
+    [{ missingVariables: ['a', 'b'], canPrint: false }, /^Unknown variables \{\{a\}\}, \{\{b\}\}/],
+    [{ columnsWithoutData: ['name'] }, /^The data table has no rows, so \{\{name\}\} would print blank/],
     [{ conn: BASE }, /Connect a printer/],
     [{ conn: { ...READY, state: 'printing' as const } }, /printing/],
     [{ conn: { ...READY, state: 'waking' as const } }, /Connecting/],
@@ -273,5 +278,18 @@ describe('blocks', () => {
     expect(docIsEmpty({ items: [{ ...createItem('text'), text: ' ' }] })).toBe(true)
     expect(docIsEmpty({ items: [createItem('text')] })).toBe(false)
     expect(docIsEmpty({ items: [], frame: { thicknessMm: 0.5, radiusMm: 0, insetMm: 0 } })).toBe(false)
+  })
+})
+
+describe('themeColorMedia', () => {
+  const light = '(prefers-color-scheme: light)'
+  const dark = '(prefers-color-scheme: dark)'
+  it('keeps the system media queries', () => {
+    expect(themeColorMedia(light, 'system')).toBe(light)
+    expect(themeColorMedia(dark, 'system')).toBe(dark)
+  })
+  it('enables only the chosen theme colour', () => {
+    expect([themeColorMedia(light, 'dark'), themeColorMedia(dark, 'dark')]).toEqual(['not all', 'all'])
+    expect([themeColorMedia(light, 'light'), themeColorMedia(dark, 'light')]).toEqual(['all', 'not all'])
   })
 })

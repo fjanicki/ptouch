@@ -1,7 +1,7 @@
 // W3 — doc.print → JobOptions mapping, copies clamp, print preflight.
 import { describe, expect, it } from 'vitest'
 import { createDoc, DEFAULT_PRINT } from '../../../src/doc/schema'
-import { buildPrintJob, copiesOf, jobOptions, printBlocker } from '../../../src/render/job'
+import { buildPrintJob, copiesOf, estimateTape, jobOptions, LEADER_MM, printBlocker } from '../../../src/render/job'
 import type { RenderResult, RenderTarget } from '../../../src/render/types'
 import { Bitmap1, printArea, mediaForWidth } from '../../../src/wasm'
 import { loadWasmForTests } from '../../helpers/wasm'
@@ -56,5 +56,17 @@ describe('print job mapping', () => {
   it('refuses a render made for another tape height', () => {
     expect(printBlocker(result({ heightDots: 70 }), target)).toMatch(/different tape/)
     expect(printBlocker(result(), target)).toBeUndefined()
+  })
+})
+
+describe('estimateTape', () => {
+  it('adds the feed margin at both ends of every label and one leader', () => {
+    expect(estimateTape([30, 30, 40], 2)).toEqual({ labelsMm: 112, leaderMm: LEADER_MM, totalMm: 112 + LEADER_MM })
+    expect(estimateTape([30], 2, { leader: false })).toEqual({ labelsMm: 34, leaderMm: 0, totalMm: 34 })
+  })
+
+  it('is robust to empty and bad input', () => {
+    expect(estimateTape([], 2)).toEqual({ labelsMm: 0, leaderMm: 0, totalMm: 0 })
+    expect(estimateTape([Number.NaN, -5], Number.NaN).totalMm).toBe(LEADER_MM)
   })
 })

@@ -348,6 +348,12 @@ pub enum CodeSpec {
         /// Digits.
         data: String,
     },
+    /// DataMatrix ECC 200, square symbols only (`datamatrix` crate). The matrix includes the
+    /// finder/timing border but no quiet zone.
+    Datamatrix {
+        /// Payload (UTF-8 text; printable ASCII scans most reliably).
+        data: String,
+    },
 }
 
 /// Symbology tag of [`CodeSpec`].
@@ -360,6 +366,8 @@ pub enum Symbology {
     Code128,
     /// EAN-13.
     Ean13,
+    /// DataMatrix (ECC 200).
+    Datamatrix,
 }
 
 /// Wire form of [`CodeSpec`] (flat struct; cheap to deserialize).
@@ -383,6 +391,7 @@ impl From<CodeSpecWire> for CodeSpec {
             },
             Symbology::Code128 => Self::Code128 { data: w.data },
             Symbology::Ean13 => Self::Ean13 { data: w.data },
+            Symbology::Datamatrix => Self::Datamatrix { data: w.data },
         }
     }
 }

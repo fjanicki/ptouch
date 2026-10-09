@@ -1,4 +1,5 @@
-//! Barcode / QR module matrices (`fast_qr` 0.14.0, `barcoders` 2.0.0).
+//! Barcode / QR / DataMatrix module matrices (`fast_qr` 0.14.0, `barcoders` 2.0.0,
+//! `datamatrix` 0.3.3).
 //!
 //! Matrices are whole modules; the renderer scales them by an integer `moduleDots` in
 //! `Raster.blitCode`, so bars and QR modules stay crisp at 180 dpi. Linear codes have
@@ -8,6 +9,7 @@
 
 use barcoders::sym::code128::Code128;
 use barcoders::sym::ean13::EAN13;
+use datamatrix::{DataMatrix, SymbolList};
 use fast_qr::{ECL, QRBuilder};
 use tsify::Ts;
 use wasm_bindgen::prelude::*;
@@ -15,11 +17,13 @@ use wasm_bindgen::prelude::*;
 use crate::dto::{CodeSpec, ModuleMatrix, QrEcc};
 use crate::error::{BindError, from_ts, js_err, ts};
 
-/// Encodes a QR / Code 128 / EAN-13 symbol into a module matrix for `Raster.blitCode`.
+/// Encodes a QR / Code 128 / EAN-13 / DataMatrix symbol into a module matrix for
+/// `Raster.blitCode`.
 ///
 /// # Errors
-/// `INVALID_INPUT` (bad shape, empty data, data too long for QR, non-ASCII Code 128, bad
-/// EAN-13 digits or check digit), with a message the UI can show next to the field.
+/// `INVALID_INPUT` (bad shape, empty data, data too long for QR or DataMatrix, non-ASCII
+/// Code 128, bad EAN-13 digits or check digit), with a message the UI can show next to the
+/// field.
 #[wasm_bindgen(js_name = encodeCode)]
 pub fn encode_code(spec: Ts<CodeSpec>) -> Result<Ts<ModuleMatrix>, JsValue> {
     let spec = from_ts(&spec)?;
@@ -57,7 +61,31 @@ pub fn encode(spec: &CodeSpec) -> Result<ModuleMatrix, BindError> {
             })?;
             Ok(linear(code.encode()))
         }
+        CodeSpec::Datamatrix { data } => datamatrix(data),
     }
+}
+
+/// Square ECC 200 symbol, finder/timing border included, no quiet zone. Latin-1 text is
+/// encoded as is; anything else gets the UTF-8 ECI (`encode_str`), which some scanners ignore.
+fn datamatrix(data: &str) -> Result<ModuleMatrix, BindError> {
+    if data.is_empty() {
+        return Err(BindError::invalid("DataMatrix data is empty"));
+    }
+    let code = DataMatrix::encode_str(data, SymbolList::default().enforce_square())
+        .map_err(|_| BindError::invalid("too much data for a DataMatrix code"))?;
+    let bitmap = code.bitmap();
+    let (w, h) = (bitmap.width(), bitmap.height());
+    let mut modules = vec![0u8; w * h];
+    for (x, y) in bitmap.pixels() {
+        if let Some(m) = modules.get_mut(y * w + x) {
+            *m = 1;
+        }
+    }
+    Ok(ModuleMatrix {
+        width: u32::try_from(w).unwrap_or(0),
+        height: u32::try_from(h).unwrap_or(0),
+        modules,
+    })
 }
 
 /// One-row matrix from a bar pattern (1 = bar).
@@ -283,6 +311,87 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    fn dm(data: &str) -> ModuleMatrix {
+        encode(&CodeSpec::Datamatrix { data: data.into() }).unwrap()
+    }
+
+    fn dm_decode(m: &ModuleMatrix) -> Vec<u8> {
+        let pixels: Vec<bool> = m.modules.iter().map(|&b| b == 1).collect();
+        DataMatrix::decode(&pixels, m.width as usize).unwrap()
+    }
+
+    #[test]
+    fn datamatrix_known_vector() {
+        // "A1" = 2 ASCII codewords (66, 50) + 1 pad → the smallest symbol, 10×10 (ISO/IEC 16022
+        // table 7: 3 data + 5 error codewords).
+        let m = dm("A1");
+        assert_eq!((m.width, m.height), (10, 10));
+        assert_eq!(m.modules.len(), 100);
+        assert_eq!(dm_decode(&m), b"A1");
+        // "Hello, World!" needs 13 data codewords → 16×16.
+        let m = dm("Hello, World!");
+        assert_eq!((m.width, m.height), (16, 16));
+        assert_eq!(dm_decode(&m), b"Hello, World!");
+    }
+
+    #[test]
+    fn datamatrix_finder_pattern() {
+        for data in ["A1", "https://fjanicki.github.io/ptouch/", &"7".repeat(300)] {
+            let m = dm(data);
+            let (w, h) = (m.width as usize, m.height as usize);
+            assert_eq!(w, h, "square symbols only");
+            let at = |x: usize, y: usize| m.modules[y * w + x];
+            for i in 0..h {
+                assert_eq!(at(0, i), 1, "left column solid");
+                assert_eq!(at(i, h - 1), 1, "bottom row solid");
+                // Timing: dark on even columns of the top row, dark on odd rows of the right
+                // column (row 0 is dark too, as part of the top row).
+                assert_eq!(at(i, 0), u8::from(i % 2 == 0), "top row timing");
+                if i > 0 {
+                    assert_eq!(at(w - 1, i), u8::from(i % 2 == 1), "right column timing");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn datamatrix_round_trips() {
+        let cases = [
+            "0123456789",
+            "WIFI:T:WPA;S:Home;P:secret;;",
+            "Café Ø", // Latin-1 → encoded without ECI
+            "A-0001",
+        ];
+        for data in cases {
+            let latin1 = datamatrix::data::utf8_to_latin1(data).unwrap();
+            assert_eq!(dm_decode(&dm(data)), latin1, "{data}");
+        }
+        // Non-Latin-1 text gets the UTF-8 ECI; the crate's decoder does not read ECIs, so only
+        // check that a valid square symbol comes out.
+        let m = dm("日本語");
+        assert_eq!(m.width, m.height);
+        // Larger symbols carry extra alignment patterns (32×32 and up) and still decode.
+        let long = "x".repeat(200);
+        let m = dm(&long);
+        assert!(m.width >= 32);
+        assert_eq!(dm_decode(&m), long.as_bytes());
+    }
+
+    #[test]
+    fn datamatrix_errors() {
+        let e = encode(&CodeSpec::Datamatrix {
+            data: String::new(),
+        })
+        .unwrap_err();
+        assert_eq!(e.code(), "INVALID_INPUT");
+        let e = encode(&CodeSpec::Datamatrix {
+            data: "x".repeat(5000),
+        })
+        .unwrap_err();
+        assert_eq!(e.code(), "INVALID_INPUT");
+        assert!(e.message().contains("too much data"));
     }
 
     #[test]

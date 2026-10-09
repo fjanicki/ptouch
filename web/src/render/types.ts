@@ -10,6 +10,7 @@ export interface RenderTarget {
 
 export type RenderWarningCode =
   | 'font-fallback' // a family/weight did not load; system fallback used
+  | 'font-missing' // a custom (uploaded/local) font is not on this device; the bundled family is used
   | 'small-text' // text < 2 mm tall prints poorly at 180 dpi
   | 'code-too-small' // module < 1 dot or code taller than the band
   | 'code-invalid' // encodeCode failed (bad EAN digits, data too long…)
@@ -58,6 +59,8 @@ export interface RenderOptions {
   factor?: number
   /** Resolve ImageItem.blobRef (W5 store.getBlob). */
   loadBlob?: (ref: string) => Promise<Blob | undefined>
+  /** Resolve an uploaded font (`FontSource` kind 'user', persist-fonts.ts FontStore.get). */
+  loadFontBlob?: (ref: string) => Promise<Blob | undefined>
   signal?: AbortSignal
 }
 

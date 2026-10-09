@@ -63,7 +63,7 @@
 <style>
   .toasts {
     position: fixed;
-    right: var(--space-4);
+    right: calc(var(--space-4) + env(safe-area-inset-right, 0px));
     bottom: calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
     z-index: 60;
     display: grid;
@@ -108,8 +108,8 @@
   @media (max-width: 860px) {
     /* Stay clear of the sticky print bar on narrow screens. */
     .toasts {
-      left: var(--space-3);
-      right: var(--space-3);
+      left: calc(var(--space-3) + env(safe-area-inset-left, 0px));
+      right: calc(var(--space-3) + env(safe-area-inset-right, 0px));
       bottom: calc(88px + env(safe-area-inset-bottom, 0px));
       max-width: none;
     }

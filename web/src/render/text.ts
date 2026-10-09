@@ -11,7 +11,7 @@
 //
 // Pure functions take a `measure` callback so they are unit-testable in node.
 import type { Align, TextItem } from '../doc/schema'
-import { faceCss, fontDef, resolveWeight } from './fonts'
+import { activeCustomFamily, faceCss, fontDef, resolveWeight } from './fonts'
 import type { Ctx2D } from './canvas'
 import { alignOffset } from './layout'
 
@@ -116,19 +116,27 @@ export function fitTextBlock(lines: string[], face: FaceMetrics, lineHeight: num
 
 const faceCache = new Map<string, FaceMetrics>()
 
-export function itemFont(item: Pick<TextItem, 'fontFamily' | 'fontWeight' | 'italic'>): { family: string; weight: ReturnType<typeof resolveWeight>; italic: boolean } {
+/** What text.ts needs of an item to pick its face (`customFont` wins once it has loaded, P4). */
+export type FontItem = Pick<TextItem, 'fontFamily' | 'fontWeight' | 'italic'> & Partial<Pick<TextItem, 'customFont'>>
+
+export function itemFont(item: FontItem): { family: string; weight: ReturnType<typeof resolveWeight>; italic: boolean } {
   const def = fontDef(item.fontFamily)
-  return { family: def.family, weight: resolveWeight(def, item.fontWeight), italic: item.italic }
+  return { family: activeCustomFamily(item) ?? def.family, weight: resolveWeight(def, item.fontWeight), italic: item.italic }
 }
 
-/** CSS font shorthand for an item at `px` (exact bundled face). */
-export function cssFont(item: Pick<TextItem, 'fontFamily' | 'fontWeight' | 'italic'>, px: number): string {
+/**
+ * CSS font shorthand for an item at `px`: its loaded custom font (one file for every weight,
+ * so the weight only matters for the fallback), else the exact bundled face.
+ */
+export function cssFont(item: FontItem, px: number): string {
   const def = fontDef(item.fontFamily)
-  return faceCss(def, resolveWeight(def, item.fontWeight), px, item.italic)
+  const custom = activeCustomFamily(item)
+  const bundled = faceCss(def, resolveWeight(def, item.fontWeight), px, item.italic)
+  return custom ? bundled.replace(`"${def.family}"`, `"${custom}", "${def.family}"`) : bundled
 }
 
 /** A `MeasureFn` for `item`'s face on `ctx`. */
-export function canvasMeasure(ctx: Ctx2D, item: Pick<TextItem, 'fontFamily' | 'fontWeight' | 'italic'>): MeasureFn {
+export function canvasMeasure(ctx: Ctx2D, item: FontItem): MeasureFn {
   return (text, px) => {
     ctx.font = cssFont(item, px)
     const m = ctx.measureText(text)
@@ -143,7 +151,7 @@ export function canvasMeasure(ctx: Ctx2D, item: Pick<TextItem, 'fontFamily' | 'f
 }
 
 /** Cap height and descender of `item`'s face (per px), cached per face. */
-export function faceMetrics(ctx: Ctx2D, item: Pick<TextItem, 'fontFamily' | 'fontWeight' | 'italic'>, fontReady: boolean): FaceMetrics {
+export function faceMetrics(ctx: Ctx2D, item: FontItem, fontReady: boolean): FaceMetrics {
   const key = `${cssFont(item, 100)}|${fontReady ? 1 : 0}`
   const hit = faceCache.get(key)
   if (hit) return hit
@@ -164,7 +172,7 @@ export function invertPadding(bandPx: number, lineBoxPx: number, factor: number)
 }
 
 /** Draws a laid-out block with its top-left at (`x`, `y`) px. */
-export function drawTextBlock(ctx: Ctx2D, item: Pick<TextItem, 'fontFamily' | 'fontWeight' | 'italic'>, block: TextBlock, x: number, y: number, color: string): void {
+export function drawTextBlock(ctx: Ctx2D, item: FontItem, block: TextBlock, x: number, y: number, color: string): void {
   ctx.save()
   ctx.font = cssFont(item, block.fontPx)
   ctx.textBaseline = 'alphabetic'

@@ -7,6 +7,12 @@
 //
 // Members W5 relies on (keep): support, connection, conn, doc, setDoc, render, prefs, view,
 // setView, wasm.
+//
+// Studio v1 (docs/STUDIO-V1-PLAN.md §2.6): lead-owned and FROZEN for packages P1–P5. They use
+// the members below and never edit this file: dialog/openDialog/closeDialog (one modal at a
+// time), previewRow/batchCount/batchProgress (P1), newFromTemplate (P2), requestShare/
+// createShareUrl/copyShareLink/exportFile with ShareActionOptions (P3, P5), fonts/fontsChanged,
+// printHistory, usage/resetUsage (P4), tapeLeader.
 import { getContext, setContext, untrack } from 'svelte'
 import { TAPE_WIDTHS_MM, createDoc, newId, type Item, type ItemKind, type LabelDoc, type TapeWidthMm } from '../../doc/schema'
 import { addItem, duplicateItem, moveItem, removeItem, updateDoc, updateItem } from '../../doc/ops'
@@ -15,6 +21,13 @@ import { loadPrefs, savePrefs, type Prefs } from '../../doc/persist-prefs'
 import { createAutosave, openLabelStore, type Autosave, type LabelStore } from '../../doc/persist'
 import { SHARE_PREFIX, createShareLink, parseShareFragment } from '../../doc/persist-share'
 import { exportLabelFile, importLabelFile } from '../../doc/persist-files'
+import { openFontStore, type FontStore } from '../../doc/persist-fonts'
+import { openPrintHistory, type PrintHistory } from '../../doc/persist-history'
+import { addUsage, loadUsage, resetUsage, type TapeUsage } from '../../doc/persist-usage'
+import { docHasSecrets } from '../../doc/secrets'
+import { batchSize, columnsWithoutData, localDay, missingVariables, resolveDoc, usesDates } from '../../doc/variables'
+import { isDesignOnly } from '../handoff/handoff'
+import { buildBatchJob, type BatchProgress } from '../batch/batch-job'
 import {
   ConnectionManager,
   INITIAL_SNAPSHOT,
@@ -27,13 +40,22 @@ import {
   type ProblemAction,
   type SupportInfo,
 } from '../../printer'
-import { buildPrintJob, ensureFonts, renderLabel, thumbnailPng, type RenderResult, type RenderTarget } from '../../render'
-import { isPtouchError, listModels, loadWasm, mediaForWidth, printArea, type ModelInfo } from '../../wasm'
+import { buildPrintJob, ensureFonts, estimateTape, renderLabel, thumbnailPng, type RenderResult, type RenderTarget } from '../../render'
+import { isPtouchError, listModels, loadWasm, mediaForWidth, printArea, type Job, type ModelInfo } from '../../wasm'
 import { inShortcutScope, matchShortcut, isEditableTarget, type ShortcutAction } from './shortcuts'
-import { clampCopies, docIsEmpty, fitScale, mediaMismatch, previewColors, printBlockReason, realScale, tapeText, zoomStep, type Zoom } from './view-model'
+import { clampCopies, docIsEmpty, fitScale, mediaMismatch, previewColors, printBlockReason, realScale, tapeText, themeColorMedia, zoomStep, type Zoom } from './view-model'
 
 export type View = 'studio' | 'diagnostics'
 export type WasmState = 'loading' | 'ready' | 'error'
+
+/** Modal dialogs of the v1 packages (one open at a time; `Studio.dialog`). */
+export type StudioDialog = 'templates' | 'history' | 'export' | 'handoff' | 'fonts' | 'share-secrets'
+/** What a share action produces: a `#d=` link or a `.ptlabel.json` file. */
+export type ShareKind = 'link' | 'file'
+export interface ShareActionOptions {
+  /** The user ticked "Include Wi-Fi password" (doc/secrets.ts). Default: passwords left out. */
+  includeWifiPasswords?: boolean
+}
 
 /** Model assumed for offline design (the only hardware-verified model). */
 export const DEFAULT_MODEL = 'PT-P710BT'
@@ -57,6 +79,9 @@ function isTapeWidth(mm: number): mm is TapeWidthMm {
 export function errorMessage(e: unknown): string {
   if (isPtouchError(e)) return e.message || e.code
   if (e instanceof Error) return e.message
+  // e.g. an IndexedDB transaction aborted with a `null` error: never show "null".
+  if (e === null || e === undefined || e === '') return 'Something went wrong in the browser. Try again.'
+  if (typeof e === 'object' && typeof (e as { message?: unknown }).message === 'string' && (e as { message: string }).message) return (e as { message: string }).message
   return String(e)
 }
 
@@ -66,6 +91,10 @@ export class Studio {
   readonly history: History
   readonly store: LabelStore
   readonly autosave: Autosave
+  /** Uploaded fonts (P4). */
+  readonly fonts: FontStore
+  /** Printed labels (P4). */
+  readonly printHistory: PrintHistory
 
   prefs = $state.raw<Prefs>(loadPrefs())
   view = $state<View>(location.hash === '#diagnostics' ? 'diagnostics' : 'studio')
@@ -96,6 +125,27 @@ export class Studio {
   announcement = $state('')
   /** Bumped on every history change so canUndo/canRedo re-derive. */
   #historyTick = $state(0)
+
+  /** The open v1 modal (TemplateGallery, HistoryDialog, ExportDialog, HandoffDialog,
+   * FontManager, SecretsDialog), or none. */
+  dialog = $state<StudioDialog | null>(null)
+  /** The share action waiting for the "Include Wi-Fi password?" answer (SecretsDialog). */
+  pendingShare = $state<ShareKind | null>(null)
+  /** Batch label (0-based) the preview shows; clamped by the batch UI (P1). */
+  previewRow = $state(0)
+  /** Rendering a batch for printing: labels done / total (null otherwise). */
+  batchProgress = $state<BatchProgress | null>(null)
+  /** Tape usage per width (P4 persist-usage.ts). */
+  usage = $state.raw<TapeUsage>(loadUsage())
+  /** Bumped when user fonts are added/removed (FontManager): re-renders the label. */
+  fontsVersion = $state(0)
+  /** The next job feeds a ~24 mm leader (false right after a chained print in this tab). */
+  tapeLeader = $state(true)
+  /** Local calendar day (YYYY-MM-DD), refreshed every minute and when the tab is shown: a dated
+   * label (`{{today}}`) re-renders after midnight, so Print never sends yesterday's date. */
+  today = $state(localDay(new Date()))
+  /** Labels the next print produces as a batch (0 = plain label; doc/variables.ts batchSize). */
+  readonly batchCount = $derived(batchSize(this.doc))
 
   get canUndo(): boolean {
     void this.#historyTick // reactive dependency: History itself is not reactive
@@ -146,6 +196,8 @@ export class Studio {
       hasRender: this.render !== null,
       blocking: this.render?.blocking ? (this.render.warnings.find((w) => w.code === 'canvas-noise' || w.code === 'code-invalid') ?? this.render.warnings[0] ?? { message: 'The label cannot be printed as designed.' }) : null,
       isEmpty: docIsEmpty(this.doc),
+      missingVariables: missingVariables(this.doc),
+      columnsWithoutData: columnsWithoutData(this.doc),
       conn: this.conn,
       mismatch: this.mismatch,
       canPrint: this.#canPrint(),
@@ -154,6 +206,12 @@ export class Studio {
 
   #canPrint(): boolean {
     return this.support.canPrint
+  }
+
+  /** No way to reach a printer from this browser (every iOS browser): design here, print from a
+   * computer (DesignOnlyBanner, "Send to computer"). */
+  get designOnly(): boolean {
+    return isDesignOnly(this.support)
   }
 
   /** Effective preview scale (CSS px per dot). */
@@ -166,6 +224,8 @@ export class Studio {
   #unsaved = false
   #renderTimer: ReturnType<typeof setTimeout> | undefined
   #renderAbort: AbortController | null = null
+  /** Cancels a batch while its labels are prepared (before anything is sent). */
+  #prepareAbort: AbortController | null = null
   #toastSeq = 0
   #disposeEffects: (() => void) | undefined
   #lastMediaId: string | null = null
@@ -175,6 +235,8 @@ export class Studio {
   #renderedKey = ''
   #renderKey = ''
   #renderKeyDoc: LabelDoc | null = null
+  #dayTimer: ReturnType<typeof setInterval> | undefined
+  #onDayCheck = (): void => this.#refreshToday()
 
   /** ⌘ (Apple) or Ctrl shortcuts. */
   readonly isMac: boolean
@@ -184,7 +246,10 @@ export class Studio {
     this.support = detectSupport(undefined, { usbOnWindows: this.prefs.usbOnWindows })
     this.isMac = this.support.platform === 'mac' || this.support.platform === 'ios' || /Mac|iPhone|iPad/.test(navigator.platform)
     this.history = createHistory(this.doc)
-    this.store = openLabelStore()
+    // Images a print history record still uses survive the library's GC (reprint).
+    this.store = openLabelStore({ retainedRefs: () => this.printHistory.blobRefs() })
+    this.fonts = openFontStore()
+    this.printHistory = openPrintHistory()
     this.autosave = createAutosave(this.store, 500, (e) => this.toast('error', 'Could not save the label', errorMessage(e)), {
       thumbnail: (doc) => this.#thumbnail(doc),
     })
@@ -208,19 +273,26 @@ export class Studio {
       }
     })
     this.applyTheme(this.prefs.theme)
+    this.#dayTimer = setInterval(this.#onDayCheck, 60_000)
+    document.addEventListener('visibilitychange', this.#onDayCheck)
+    window.addEventListener('pageshow', this.#onDayCheck)
 
     this.#disposeEffects = $effect.root(() => {
       // Re-render whenever the doc or the target changes (debounced, stale renders aborted).
       $effect(() => {
         const doc = this.doc
         const target = this.target
+        const row = this.previewRow
+        const fonts = this.fontsVersion
         if (!target.ok) {
           this.#renderKey = ''
           if (target.error) this.#clearRender(target.error)
           return
         }
         // Status pushes (keepalive, printing) rebuild `target` with equal contents: skip those.
-        const key = `${target.target.model}|${target.target.media.id}`
+        void fonts
+        void this.today // a dated label re-renders when the day changes
+        const key = this.#keyFor(doc, target.target, row)
         if (doc === this.#renderKeyDoc && key === this.#renderKey) return
         this.#renderKeyDoc = doc
         this.#renderKey = key
@@ -338,6 +410,11 @@ export class Studio {
     const root = document.documentElement
     if (theme === 'system') delete root.dataset.theme
     else root.dataset.theme = theme
+    // The browser/iOS status bar colour (index.html) follows the in-app theme too.
+    for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"][media]')) {
+      meta.dataset.media ??= meta.media
+      meta.media = themeColorMedia(meta.dataset.media, theme)
+    }
   }
 
   toast(tone: Toast['tone'], title: string, detail?: string, action?: Toast['action']): number {
@@ -386,6 +463,7 @@ export class Studio {
     this.history.reset(doc)
     this.#historyTick++
     this.selectedId = doc.items[0]?.id ?? null
+    this.previewRow = 0
     this.#unsaved = opts.remember === false
     if (!this.#unsaved) this.prefs = savePrefs({ lastLabelId: doc.id })
     if (opts.save !== false && !this.readOnly) this.autosave.schedule(doc)
@@ -524,9 +602,14 @@ export class Studio {
     const ac = new AbortController()
     this.#renderAbort = ac
     try {
-      await ensureFonts(doc)
+      // Variables: the preview (and a single print) shows batch label `previewRow`.
+      const row = this.previewRow
+      const now = new Date()
+      const key = this.#keyFor(doc, target, row, localDay(now))
+      const shown = resolveDoc(doc, row, { now }).doc
+      await ensureFonts(shown, { loadFontBlob: this.#loadFontBlob })
       if (ac.signal.aborted) return
-      const result = await renderLabel(doc, target, { loadBlob: (ref) => this.store.getBlob(ref), signal: ac.signal })
+      const result = await renderLabel(shown, target, { loadBlob: (ref) => this.store.getBlob(ref), loadFontBlob: this.#loadFontBlob, signal: ac.signal })
       if (ac.signal.aborted) {
         result.bitmap.free()
         return
@@ -535,7 +618,7 @@ export class Studio {
       this.render = result
       this.#scheduleFontRetry(result.warnings.some((w) => w.code === 'font-fallback'))
       this.#renderedDoc = doc
-      this.#renderedKey = `${target.model}|${target.media.id}`
+      this.#renderedKey = key
       this.renderError = null
       old?.bitmap.free()
     } catch (e) {
@@ -548,6 +631,17 @@ export class Studio {
         this.rendering = false
       }
     }
+  }
+
+  /** What a render depends on besides the doc: target, preview row, fonts, and the local day
+   * when the label prints a date. */
+  #keyFor(doc: LabelDoc, target: RenderTarget, row: number, day = this.today): string {
+    return `${target.model}|${target.media.id}|${row}|${this.fontsVersion}|${usesDates(doc) ? day : ''}`
+  }
+
+  #refreshToday(): void {
+    const day = localDay(new Date())
+    if (day !== this.today) this.today = day
   }
 
   #fontRetryTimer: ReturnType<typeof setTimeout> | undefined
@@ -671,32 +765,72 @@ export class Studio {
   async print(): Promise<void> {
     if (this.printBlocked || this.printing) return
     this.printing = true
-    let job
+    let job: Job
     let doc: LabelDoc
+    let tapeMm: number
+    let batchRows: number | undefined
+    let widthMm: number
+    let mediaId: string
     try {
       // Print may be pressed right after an edit: wait for the preview of *this* doc and target,
       // so the old bitmap is never sent with the new settings.
       await this.#renderSettled()
+      // Past midnight since the preview of a dated label: render it again with today's date.
+      this.#refreshToday()
+      const current = this.target
+      if (current.ok && this.#renderedDoc === this.doc && this.#renderedKey !== this.#keyFor(this.doc, current.target, this.previewRow)) {
+        this.#renderKeyDoc = this.doc
+        this.#renderKey = this.#keyFor(this.doc, current.target, this.previewRow)
+        this.#scheduleRender(this.doc, current.target)
+        await this.#renderSettled()
+      }
       const result = this.render
       const target = this.target
       doc = this.doc
-      if (this.printBlocked || !result || !target.ok || this.#renderedDoc !== doc || this.#renderedKey !== `${target.target.model}|${target.target.media.id}`) {
+      if (this.printBlocked || !result || !target.ok || this.#renderedDoc !== doc || this.#renderedKey !== this.#keyFor(doc, target.target, this.previewRow)) {
         if (!this.printBlocked) this.toast('info', 'Can’t print yet', 'The preview is still updating. Try again in a moment.')
         this.printing = false
         return
       }
-      job = buildPrintJob(doc, result, target.target)
+      widthMm = target.target.media.widthMm
+      mediaId = target.target.media.id
+      const rows = batchSize(doc)
+      if (rows > 0) {
+        // A batch: every label rendered and sent as ONE chained multi-page job (P1).
+        this.batchProgress = { done: 0, total: rows }
+        this.#prepareAbort = new AbortController()
+        const built = await buildBatchJob(doc, target.target, {
+          now: new Date(),
+          leader: this.tapeLeader,
+          loadBlob: (ref) => this.store.getBlob(ref),
+          loadFontBlob: this.#loadFontBlob,
+          onProgress: (p) => (this.batchProgress = p),
+          signal: this.#prepareAbort.signal,
+        })
+        job = built.job
+        tapeMm = built.tapeMm
+        batchRows = rows
+      } else {
+        job = buildPrintJob(doc, result, target.target)
+        tapeMm = estimateTape(new Array<number>(job.pageCount).fill(result.lengthMm), result.feedMarginMm, { leader: this.tapeLeader }).totalMm
+      }
     } catch (e) {
-      this.toast('error', 'The label could not be prepared for printing', errorMessage(e))
+      if (e instanceof DOMException && e.name === 'AbortError') this.toast('info', 'Printing cancelled')
+      else this.toast('error', 'The label could not be prepared for printing', errorMessage(e))
       this.printing = false
       return
+    } finally {
+      this.batchProgress = null
+      this.#prepareAbort = null
     }
-    const copies = job.pageCount
+    const labels = job.pageCount
     try {
       await this.connection.print(job)
-      const text = copies === 1 ? 'Label printed' : `${copies} labels printed`
+      const text = labels === 1 ? 'Label printed' : `${labels} labels printed`
       // The toast region announces it (one announcer, not two).
       this.toast('ok', text, doc.print.autoCut ? undefined : 'Cut the label off at the printer.')
+      this.tapeLeader = !doc.print.chain
+      this.#recordPrint({ doc, widthMm, mediaId, labels, tapeMm, ...(batchRows !== undefined ? { batchRows } : {}) })
     } catch (e) {
       if (isUserCancel(e) || (isPtouchError(e) && e.code === 'CANCELLED')) {
         this.toast('info', 'Printing cancelled')
@@ -712,7 +846,36 @@ export class Studio {
     }
   }
 
+  /** After a successful print: tape usage counter + print history (P4). Never throws. */
+  #recordPrint(r: { doc: LabelDoc; widthMm: number; mediaId: string; labels: number; tapeMm: number; batchRows?: number }): void {
+    this.usage = addUsage(r.widthMm, r.tapeMm, r.labels)
+    const add = async (): Promise<void> => {
+      const thumbnail = await this.#thumbnail(r.doc)
+      await this.printHistory.add({
+        printedAt: new Date().toISOString(),
+        doc: r.doc,
+        name: r.doc.name,
+        tapeWidthMm: r.widthMm,
+        mediaId: r.mediaId,
+        labels: r.labels,
+        copies: r.doc.print.copies,
+        tapeMm: r.tapeMm,
+        ...(r.batchRows !== undefined ? { batchRows: r.batchRows } : {}),
+        ...(thumbnail ? { thumbnail } : {}),
+      })
+    }
+    add().catch((e: unknown) => console.warn('could not record the print in the history', e))
+  }
+
+  resetUsage(): void {
+    this.usage = resetUsage()
+  }
+
   cancelPrint(): void {
+    if (this.#prepareAbort) {
+      this.#prepareAbort.abort()
+      return
+    }
     this.connection.cancel().catch((e: unknown) => console.warn('cancel failed', e))
   }
 
@@ -746,9 +909,22 @@ export class Studio {
     }
   }
 
-  async exportFile(): Promise<void> {
+  /**
+   * "Export file" / "Copy share link" from a menu: asks "Include Wi-Fi password?" first
+   * (SecretsDialog, P3) when the label holds one, else runs right away.
+   */
+  requestShare(kind: ShareKind): void {
+    if (docHasSecrets(this.doc)) {
+      this.pendingShare = kind
+      this.dialog = 'share-secrets'
+      return
+    }
+    void (kind === 'link' ? this.copyShareLink() : this.exportFile())
+  }
+
+  async exportFile(opts: ShareActionOptions = {}): Promise<void> {
     try {
-      const { saved, notices } = await exportLabelFile(this.doc, this.store)
+      const { saved, notices } = await exportLabelFile(this.doc, this.store, opts)
       if (saved && notices.length) this.toast('info', 'Label exported', notices.join(' '))
     } catch (e) {
       if (isUserCancel(e)) return
@@ -756,15 +932,51 @@ export class Studio {
     }
   }
 
-  async copyShareLink(): Promise<void> {
+  /** A share link for the open label (Wi-Fi passwords left out unless `opts` says otherwise).
+   * Throws an Error with a user-facing message when the label is too large for a link. */
+  async createShareUrl(opts: ShareActionOptions = {}): Promise<{ url: string; notices: string[] }> {
+    return createShareLink(this.doc, location.origin + import.meta.env.BASE_URL, { getBlob: (ref) => this.store.getBlob(ref), ...opts })
+  }
+
+  async copyShareLink(opts: ShareActionOptions = {}): Promise<void> {
     try {
-      const { url, notices } = await createShareLink(this.doc, location.origin + import.meta.env.BASE_URL, { getBlob: (ref) => this.store.getBlob(ref) })
+      const { url, notices } = await this.createShareUrl(opts)
       await navigator.clipboard.writeText(url)
       this.toast('ok', 'Share link copied', notices.join(' ') || 'Anyone with the link can open a copy of this label.')
     } catch (e) {
       this.toast('error', 'Could not create a share link', errorMessage(e))
     }
   }
+
+  // -------------------------------------------------------------------------------------------
+  // v1 packages: dialogs, templates, fonts
+  // -------------------------------------------------------------------------------------------
+
+  openDialog(dialog: StudioDialog): void {
+    this.dialog = dialog
+  }
+
+  closeDialog(): void {
+    this.dialog = null
+    this.pendingShare = null
+  }
+
+  /** Opens a copy of `template` as a new label (fresh id and timestamps; P2's gallery). */
+  newFromTemplate(template: LabelDoc): void {
+    void this.autosave.flush().catch(() => {})
+    const now = new Date().toISOString()
+    const doc: LabelDoc = { ...structuredClone(template), id: newId(), createdAt: now, updatedAt: now }
+    this.dialog = null
+    this.openDoc(doc)
+    this.announce(`New label: ${doc.name}`)
+  }
+
+  /** User fonts changed (FontManager): reload faces and re-render. */
+  fontsChanged(): void {
+    this.fontsVersion++
+  }
+
+  #loadFontBlob = (ref: string): Promise<Blob | undefined> => this.fonts.get(ref)
 
   // -------------------------------------------------------------------------------------------
   // Keyboard
@@ -844,6 +1056,9 @@ export class Studio {
   }
 
   dispose(): void {
+    clearInterval(this.#dayTimer)
+    document.removeEventListener('visibilitychange', this.#onDayCheck)
+    window.removeEventListener('pageshow', this.#onDayCheck)
     clearTimeout(this.#fontRetryTimer)
     window.removeEventListener('online', this.#onOnline)
     this.#disposeEffects?.()

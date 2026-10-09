@@ -9,10 +9,18 @@
     />
     <meta name="description" content="Design and print labels on Brother P-touch printers from your browser. No install, no account, works offline." />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#12161f" media="(prefers-color-scheme: dark)" />
+    <!-- Browser chrome and the iOS status bar match the top bar (--surface). -->
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#191e29" media="(prefers-color-scheme: dark)" />
+    <!-- iPhone / iPad home screen (P5): full-screen app named "ptouch", content below the
+         status bar; digit runs on labels (A-001, 0123…) are not turned into phone links. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="ptouch" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="format-detection" content="telephone=no" />
     <link rel="icon" href="%BASE_URL%favicon.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="%BASE_URL%icons/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="%BASE_URL%icons/apple-touch-icon.png" />
     <title>ptouch studio</title>
   </head>
   <body>

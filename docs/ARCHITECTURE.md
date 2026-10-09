@@ -784,6 +784,11 @@ type Item = TextItem | IconItem | CodeItem | ImageItem | ShapeItem | SpacerItem;
 // CodeItem: { symbology: 'qr' | 'code128' | 'ean13', data, moduleDots, quietZone }
 // ImageItem: { blobRef, dither, adjust }  (blob in IndexedDB; inlined as data URL on export)
 ```
+Schema 2 (studio v1, `docs/STUDIO-V1-PLAN.md` §2.1) adds, with a tested 1 → 2 migration:
+`CodeItem.symbology` `'datamatrix'`, `content: 'text' | 'wifi'` + `wifi: { ssid, password,
+security: 'wpa' | 'wep' | 'open', hidden }`, `quietZone: 'standard' | 'compact' | 'none'` (was a
+boolean), `moduleDots: 'auto' | number`; `TextItem.customFont` (uploaded or local font, the bundled
+`fontFamily` stays as the fallback); `LabelDoc.batch` (columns, rows, count, counters, date format).
 
 ### 6.2 MVP ("print a nice label from GitHub Pages")
 - **Connect panel** (§3.3): Bluetooth / Serial port / USB / No printer (virtual). Status chip with
@@ -805,20 +810,30 @@ type Item = TextItem | IconItem | CodeItem | ImageItem | ShapeItem | SpacerItem;
   Atkinson Hyperlegible), self-hosted woff2.
 
 ### 6.3 v1
+Status (2026-10-08): the items marked **Done** shipped with studio v1 (`docs/STUDIO-V1-PLAN.md`);
+the rest is still planned.
+
 - **Free-form editor** (`layout.mode = 'free'`): move/resize/rotate (90° steps), snapping and guides,
   multi-select, grouping, keyboard nudge, z-order. Custom SVG handle overlay; adopt Konva 10.7.1 only
   for the interaction layer if handles get complex.
 - **Undo/redo** as a snapshot ring buffer of `structuredClone(doc)` (200 entries, drags coalesced).
-- More symbologies (DataMatrix via `datamatrix 0.3.3`; PDF417/Aztec etc. via lazily `import()`ed
-  bwip-js 4.11.4), symbol library (electrical, fasteners, arrows, hazard), shapes, per-element dither.
-- **Variables and batch**: `{{column}}` from CSV/paste, date expressions, counters (start/step/pad),
-  per-row preview grid, batch printed as one chained job.
-- **Templates**: cable flag / wrap, Gridfinity bin label, asset tag with QR, fastener drawer, split label.
-- Fonts: user upload (Blob in IndexedDB, `FontFace`), `queryLocalFonts()` where available (labelled
-  "varies by machine"), pixel fonts at integer scale, crispness indicator.
-- Interop: P-touch Editor `.lbx` import; PNG/PDF export.
-- PWA install, file handlers for `.ptlabel.json`, more models (P750W, E550W, P700, then P300BT,
-  E560BT/D-series dialect, P910BT 560-pin), i18n.
+- More symbologies: **Done:** DataMatrix (ECC 200, square) via `datamatrix 0.3.3` in
+  `crates/ptouch-wasm`; Wi-Fi QR builder (`WIFI:` payload with escaping); quiet-zone modes
+  (standard / compact, which uses the unprinted tape edge / none) and automatic module size with a
+  mm readout and a readability hint. Planned: PDF417/Aztec etc. via lazily `import()`ed bwip-js
+  4.11.4, symbol library (electrical, fasteners, arrows, hazard), shapes, per-element dither.
+- **Done: Variables and batch**: `{{column}}` from CSV/paste, date expressions, counters
+  (start/step/pad), per-row preview grid, batch printed as one chained job (500-row cap).
+- **Done: Templates**: Wi-Fi sticker (12/24 mm), cable flag / wrap, shelf/bin/drawer and
+  Gridfinity bin label, asset tag with QR and counter, folder spine, name tag. Planned: split label.
+- Fonts: **Done:** user upload (Blob in IndexedDB, `FontFace`), `queryLocalFonts()` where available
+  (labelled "varies by machine"), missing-font fallback. Planned: pixel fonts at integer scale,
+  crispness indicator.
+- Interop: **Done:** PNG (1-bit, 180 dpi) and true-size PDF export of the print bitmap; print
+  history (last 50, reprint) and a tape usage counter. Planned: P-touch Editor `.lbx` import.
+- **Done:** iOS home-screen install and design-only mode with "Send to computer" (Web Share,
+  link, `.ptlabel.json`). Planned: file handlers for `.ptlabel.json`, more models (P750W, E550W,
+  P700, then P300BT, E560BT/D-series dialect, P910BT 560-pin), i18n.
 
 ### 6.4 UX sketch
 ```
@@ -867,8 +882,12 @@ Print bar.
 | Images, user fonts | IndexedDB (`blobs`) | referenced by `blobRef`; garbage-collected on save |
 | Thumbnails | IndexedDB (`thumbs`) | 1-bit preview PNG for the label list |
 | Prefs | `localStorage` (try/catch everywhere) | last transport kind/info, auto-reconnect flag, UI prefs |
+| Uploaded fonts (v1) | IndexedDB database `ptouch-fonts` | validated TTF/OTF/WOFF/WOFF2 Blobs, 10 MB each, 50 fonts; never exported or shared |
+| Print history (v1) | IndexedDB `ptouch-history` + `ptouch-history-thumbs` | last 50 printed labels (doc JSON migrated on read, thumbnail, tape, copies) |
+| Tape usage (v1) | `localStorage` `ptouch.usage.v1` | mm, labels and jobs per tape width; resettable |
 | Export | `*.ptlabel.json` | self-contained (images inlined as data URLs; fonts by family + optional embedded) via `showSaveFilePicker` or Blob download; import via picker/drag-drop |
 | Share link | URL fragment `#d=<base64url(deflate-raw(JSON))>` | `CompressionStream`; never sent to the server; images > 32 KB and fonts excluded with a notice |
+| Wi-Fi passwords (v1) | inside the label document, so only in this browser | blanked in share links and exported files unless the user ticks "Include Wi-Fi password" each time (`doc/secrets.ts`) |
 
 - Call `navigator.storage.persist()` after the first save.
 - `schema` is versioned; `migrate.ts` upgrades on load with unit-tested migrations; unknown future

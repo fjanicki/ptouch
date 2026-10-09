@@ -1,0 +1,87 @@
+/* P5 (docs/STUDIO-V1-PLAN.md) — iPhone and touch polish shared by every component: safe-area
+   insets (index.html sets viewport-fit=cover, so the page reaches under the notch, the rounded
+   corners and the home indicator) and 44 px touch targets on coarse pointers (Apple HIG,
+   WCAG 2.5.5). Imported by base.css.
+
+   A few rules must beat component-scoped styles (`.printbar.svelte-x` and friends). They use
+   !important on that single property only, so the guarantee holds whatever the component's
+   own media queries say. */
+
+/* ---- Safe areas --------------------------------------------------------------------------- */
+
+/* Side gutters: in landscape the notch and the rounded corners take the left/right insets.
+   Everything (top bar, workspace, print bar) sits inside #app. */
+#app {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* Top bar: clear of the status bar when the page runs under it (home-screen app). Equal to the
+   top bar's own padding when there is no inset. */
+.topbar {
+  padding-top: max(var(--space-2), env(safe-area-inset-top, 0px)) !important;
+}
+
+/* Print bar: clear of the home indicator. Its phone padding shorthand would drop the inset
+   (same query as PrintBar.svelte's folded layout: narrow, or a phone in landscape). */
+@media (max-width: 640px), (max-height: 500px) {
+  .printbar {
+    padding-bottom: max(var(--space-2), env(safe-area-inset-bottom, 0px)) !important;
+  }
+}
+
+/* ---- Touch targets ------------------------------------------------------------------------ */
+
+/* Fingers (phones, tablets): every control is at least 44 × 44 px. Components size their
+   controls for the mouse (28–36 px); min-height/min-width win over their height/width, and
+   !important wins over their scoped selectors, so this holds for every component. Text
+   buttons are wider than 44 px already. */
+@media (pointer: coarse) {
+  button,
+  .btn,
+  a.btn,
+  select,
+  .select,
+  .input,
+  input:not([type='checkbox'], [type='radio'], [type='hidden']),
+  label.switch,
+  [role='menuitem'],
+  [role='menuitemradio'],
+  [role='option'],
+  [role='tab'],
+  summary {
+    min-height: 44px !important;
+  }
+  /* Widths only for the narrow kinds (icon buttons, short labels like "1:1"). A min-width on
+     every button would replace flex's `min-width: auto` and let text buttons shrink and clip. */
+  .btn.icon,
+  .btn.small {
+    min-width: 44px !important;
+  }
+  .btn.small {
+    flex-shrink: 0;
+  }
+  /* Text fields in tight rows (the label name in the top bar at 360 px) keep a tappable width. */
+  input:not([type='checkbox'], [type='radio'], [type='hidden'], [type='range']) {
+    min-width: 44px !important;
+  }
+  /* A label wrapping a checkbox or radio is its touch target. */
+  label:has(> input[type='checkbox'], > input[type='radio']) {
+    min-height: 44px;
+    align-items: center;
+  }
+  /* iOS zooms the page into any field whose text is smaller than 16 px. */
+  .input,
+  .select,
+  .textarea,
+  input:not([type='checkbox'], [type='radio'], [type='range']),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* No grey flash on tap (iOS); controls show their own :active state. */
+html {
+  -webkit-tap-highlight-color: transparent;
+}

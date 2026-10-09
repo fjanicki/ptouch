@@ -134,11 +134,25 @@ describe('encodeCode', () => {
     expect(encodeCode({ symbology: 'ean13', data: '4006381333931' })).toEqual(ean)
   })
 
+  it('encodes square DataMatrix (ECC 200) symbols with the finder border and no quiet zone', () => {
+    const a1 = encodeCode({ symbology: 'datamatrix', data: 'A1' })
+    expect([a1.width, a1.height, a1.modules.length]).toEqual([10, 10, 100])
+    // Solid L (left column, bottom row); alternating timing on the top row.
+    expect(a1.modules.filter((_, i) => i % 10 === 0)).toEqual(Array(10).fill(1))
+    expect(a1.modules.slice(90)).toEqual(Array(10).fill(1))
+    expect(a1.modules.slice(0, 10)).toEqual([1, 0, 1, 0, 1, 0, 1, 0, 1, 0])
+    const wifi = encodeCode({ symbology: 'datamatrix', data: 'WIFI:T:WPA;S:Home;P:secret123;;' })
+    expect(wifi.width).toBe(wifi.height)
+    expect(wifi.width).toBeLessThanOrEqual(22) // fits 12 mm tape at 3 dots per module
+  })
+
   it('rejects bad data with INVALID_INPUT', () => {
     expect(codeOf(() => encodeCode({ symbology: 'ean13', data: '4006381333932' }))).toBe('INVALID_INPUT')
     expect(codeOf(() => encodeCode({ symbology: 'code128', data: 'héllo' }))).toBe('INVALID_INPUT')
     expect(codeOf(() => encodeCode({ symbology: 'qr', data: '' }))).toBe('INVALID_INPUT')
     expect(codeOf(() => encodeCode({ symbology: 'qr', data: 'x'.repeat(4000) }))).toBe('INVALID_INPUT')
+    expect(codeOf(() => encodeCode({ symbology: 'datamatrix', data: '' }))).toBe('INVALID_INPUT')
+    expect(codeOf(() => encodeCode({ symbology: 'datamatrix', data: 'x'.repeat(5000) }))).toBe('INVALID_INPUT')
     expect(codeOf(() => encodeCode({ symbology: 'pdf417', data: 'x' } as never))).toBe('INVALID_INPUT')
   })
 })

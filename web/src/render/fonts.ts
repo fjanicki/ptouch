@@ -5,7 +5,13 @@
 // Faces are registered under a private family name ("ptouch Fira Sans"…) so a copy of the same
 // family installed on the user's machine can never stand in for the bundled file: the preview
 // and the printed dots are always drawn with exactly the bundled font.
-import type { FontFamilyId, FontWeight, LabelDoc } from '../doc/schema'
+//
+// P4 — custom fonts (`TextItem.customFont`, docs/STUDIO-V1-PLAN.md §3 P4): an uploaded file is
+// registered from its bytes under `ptouch-user-<ref>`, a font installed on this computer with
+// `local("<postscriptName>")` under `ptouch-local-<name>`. Both get the weight range `1 1000`, so
+// the one file is used for every weight and the canvas never synthesises bold. A custom font
+// that cannot be loaded is reported as `missing`; the item then draws with its bundled family.
+import type { FontFamilyId, FontSource, FontWeight, LabelDoc, TextItem } from '../doc/schema'
 
 export interface FontDef {
   id: FontFamilyId
@@ -100,6 +106,14 @@ export function fontUrl(file: string): string {
 export interface FontReport {
   /** "Family weight" strings that fell back to a system font. */
   fallbacks: string[]
+  /** Custom fonts (`TextItem.customFont`) not available on this device: the item's bundled
+   * family is used instead (display names, deduplicated). */
+  missing?: string[]
+}
+
+export interface EnsureFontsOptions {
+  /** Resolves an uploaded font's blob (persist-fonts.ts FontStore.get). */
+  loadFontBlob?: (ref: string) => Promise<Blob | undefined>
 }
 
 export interface FontUse {
@@ -175,6 +189,27 @@ function exactFaceCss(def: FontDef, weight: FontWeight, px: number, italic = fal
   return `${italic ? 'italic ' : ''}${weight} ${px}px "${def.family}"`
 }
 
+/**
+ * `true` if the face a text item draws with is loaded: its custom font when that is available,
+ * else its bundled family/weight. The renderer measures with real metrics only when this holds.
+ */
+export function textFaceReady(item: Pick<TextItem, 'fontFamily' | 'fontWeight'> & Partial<Pick<TextItem, 'customFont'>>): boolean {
+  const custom = activeCustomFamily(item)
+  if (custom) return checkFace(`400 16px "${custom}"`)
+  const def = fontDef(item.fontFamily)
+  return isFaceReady(def, resolveWeight(def, item.fontWeight))
+}
+
+function checkFace(css: string): boolean {
+  const set = fontSet()
+  if (!set) return false
+  try {
+    return set.check(css)
+  } catch {
+    return false
+  }
+}
+
 /** `true` if the face is loaded and will be used for drawing. */
 export function isFaceReady(def: FontDef, weight: FontWeight): boolean {
   const set = fontSet()
@@ -190,14 +225,113 @@ export function isFaceReady(def: FontDef, weight: FontWeight): boolean {
  * Loads every family/weight `doc` uses (FontFace), then asserts `fonts.check()` for each. Safe
  * to call before every render: faces load once. Fallbacks are reported, never thrown.
  */
-export async function ensureFonts(doc: LabelDoc): Promise<FontReport> {
+export async function ensureFonts(doc: LabelDoc, opts: EnsureFontsOptions = {}): Promise<FontReport> {
   const uses = fontsUsed(doc)
-  const results = await Promise.all(uses.map(async (u) => {
-    const def = fontDef(u.id)
-    const ok = await loadFace(def, u.weight)
-    return ok && isFaceReady(def, u.weight) ? undefined : `${def.label} ${u.weight}`
-  }))
-  return { fallbacks: results.filter((r): r is string => r !== undefined) }
+  const [results, custom] = await Promise.all([
+    Promise.all(uses.map(async (u) => {
+      const def = fontDef(u.id)
+      const ok = await loadFace(def, u.weight)
+      return ok && isFaceReady(def, u.weight) ? undefined : `${def.label} ${u.weight}`
+    })),
+    Promise.all(customFontsUsed(doc).map(async (src) => ((await loadCustomFont(src, opts.loadFontBlob)) ? undefined : src.family))),
+  ])
+  const missing = [...new Set(custom.filter((r): r is string => r !== undefined))]
+  return { fallbacks: results.filter((r): r is string => r !== undefined), ...(missing.length ? { missing } : {}) }
+}
+
+// ------------------------------------------------------------------------------------------
+// Custom fonts (uploaded / installed on this computer)
+// ------------------------------------------------------------------------------------------
+
+/** Private CSS family of a custom font (never collides with the bundled or system families). */
+export function customFamily(src: FontSource): string {
+  return src.kind === 'user' ? `ptouch-user-${src.ref}` : `ptouch-local-${src.postscriptName}`
+}
+
+const customKey = (src: FontSource): string => (src.kind === 'user' ? `user:${src.ref}` : `local:${src.postscriptName}`)
+
+/** Loaded custom faces by key (only successes are kept: a missing font may be added later). */
+const customFaces = new Map<string, FontFace>()
+const customLoading = new Map<string, Promise<boolean>>()
+/** Keys whose last load attempt failed (the font is not on this device). */
+const customFailed = new Set<string>()
+
+/** Every distinct custom font a document's (non-empty) text items use. */
+export function customFontsUsed(doc: LabelDoc): FontSource[] {
+  const seen = new Map<string, FontSource>()
+  for (const it of doc.items) if (it.kind === 'text' && it.customFont && it.text.trim() !== '') seen.set(customKey(it.customFont), it.customFont)
+  return [...seen.values()]
+}
+
+/** `true` once `src` is loaded in this page (the renderer then draws with it). */
+export function customFontReady(src: FontSource): boolean {
+  return customFaces.has(customKey(src))
+}
+
+/** `true` once loading `src` was tried and failed (not merely not tried yet). */
+export function customFontMissing(src: FontSource): boolean {
+  return customFailed.has(customKey(src)) && !customFaces.has(customKey(src))
+}
+
+/** The custom family an item draws with right now, or undefined (bundled family). */
+export function activeCustomFamily(item: Partial<Pick<TextItem, 'customFont'>>): string | undefined {
+  return item.customFont && customFontReady(item.customFont) ? customFamily(item.customFont) : undefined
+}
+
+/**
+ * Loads a custom font once per page; resolves `true` when it is usable. An uploaded font needs
+ * `loadFontBlob` (FontStore.get) the first time; a local font is looked up by the browser.
+ */
+export function loadCustomFont(src: FontSource, loadFontBlob?: (ref: string) => Promise<Blob | undefined>): Promise<boolean> {
+  const key = customKey(src)
+  if (customFaces.has(key)) return Promise.resolve(true)
+  const pending = customLoading.get(key)
+  if (pending) return pending
+  const p = (async (): Promise<boolean> => {
+    const set = fontSet()
+    if (!set || typeof FontFace === 'undefined') return false
+    let source: string | ArrayBuffer
+    if (src.kind === 'user') {
+      const blob = loadFontBlob ? await loadFontBlob(src.ref).catch(() => undefined) : undefined
+      if (!blob) return false
+      source = await blob.arrayBuffer()
+    } else {
+      // Validated in schema.ts (no quotes or backslashes), so it cannot break out of local("…").
+      if (/["'\\]/.test(src.postscriptName)) return false
+      source = `local("${src.postscriptName}")`
+    }
+    try {
+      const face = new FontFace(customFamily(src), source, { weight: '1 1000', style: 'normal', display: 'block' })
+      await face.load()
+      set.add(face)
+      customFaces.set(key, face)
+      return true
+    } catch {
+      return false
+    }
+  })()
+    .then((ok) => {
+      if (ok) customFailed.delete(key)
+      else customFailed.add(key)
+      return ok
+    })
+    .finally(() => customLoading.delete(key))
+  customLoading.set(key, p)
+  return p
+}
+
+/** Unregisters an uploaded font (FontManager "Remove"): labels using it fall back from now on. */
+export function forgetCustomFont(src: FontSource): void {
+  const key = customKey(src)
+  const face = customFaces.get(key)
+  customFaces.delete(key)
+  customFailed.delete(key)
+  if (!face) return
+  try {
+    fontSet()?.delete(face)
+  } catch {
+    // already gone
+  }
 }
 
 /** Loads every bundled face (font picker previews, diagnostics). */

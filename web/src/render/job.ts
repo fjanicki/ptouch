@@ -7,6 +7,28 @@ import type { RenderResult, RenderTarget } from './types'
  * job (and its wasm memory) reasonable and matches the 2-digit copies field. */
 export const MAX_COPIES = LIMITS.copies.max
 
+/** Tape fed before the first label of a job (head-to-cutter distance, PT-P710BT; approximate). */
+export const LEADER_MM = 24
+
+export interface TapeEstimate {
+  /** Labels incl. the printer's feed margin at both ends of each, mm. */
+  labelsMm: number
+  /** Leader counted once per job (0 when `leader` is false), mm. */
+  leaderMm: number
+  totalMm: number
+}
+
+/**
+ * Tape a job uses: every page's length plus the feed margin at both ends, plus one leader. Used
+ * by the print bar, the batch panel and the tape usage counter (one formula everywhere).
+ */
+export function estimateTape(pageLengthsMm: readonly number[], feedMarginMm: number, opts: { leader?: boolean } = {}): TapeEstimate {
+  const feed = Number.isFinite(feedMarginMm) ? Math.max(0, feedMarginMm) : 0
+  const labelsMm = pageLengthsMm.reduce((sum, l) => sum + (Number.isFinite(l) ? Math.max(0, l) : 0) + 2 * feed, 0)
+  const leaderMm = opts.leader === false || pageLengthsMm.length === 0 ? 0 : LEADER_MM
+  return { labelsMm, leaderMm, totalMm: labelsMm + leaderMm }
+}
+
 /** Copies clamped to 1–99 (NaN → 1). */
 export function copiesOf(doc: LabelDoc): number {
   const n = Math.round(doc.print.copies)

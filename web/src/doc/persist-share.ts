@@ -2,10 +2,13 @@
 // The fragment never reaches a server (browsers do not send it). Images are inlined as data
 // URLs when small (≤ 32 KB); larger ones are left out with a notice. Links are capped in size;
 // on load the payload is size-limited, decompressed with a cap, migrated and validated.
+// Privacy: Wi-Fi passwords are blanked unless the user opts in, and font files are never
+// included (shareableDoc; the label file export uses the same rule).
 import { base64UrlToBytes, blobToDataUrl, bytesToBase64Url, dataUrlSize } from './persist-codec'
 import { internalizeImages, type LabelStore } from './persist'
 import { migrate } from './persist-migrate'
 import { newId, type ImageItem, type Item, type LabelDoc } from './schema'
+import { stripSecrets } from './secrets'
 
 export const SHARE_PREFIX = '#d='
 export const SHARE_IMAGE_LIMIT_BYTES = 32 * 1024
@@ -25,6 +28,36 @@ export interface ShareResult {
 export interface ShareOptions {
   /** Resolves `ImageItem.blobRef` (LabelStore.getBlob) so images can be inlined. */
   getBlob?: (ref: string) => Promise<Blob | undefined>
+  /** Keep Wi-Fi passwords in the link (the user ticked "Include Wi-Fi password"). Default
+   * false: they are blanked (doc/secrets.ts stripSecrets) with a notice. */
+  includeWifiPasswords?: boolean
+}
+
+export const NOTICE_WIFI_PASSWORD_OMITTED = 'The Wi-Fi password was left out.'
+export const NOTICE_WIFI_PASSWORDS_OMITTED = 'The Wi-Fi passwords were left out.'
+/** The passwords came from a batch column (`{{pw}}`): its cells are blanked too. */
+export function noticeWifiPasswordColumns(columns: readonly string[]): string {
+  const names = columns.map((c) => `{{${c}}}`).join(', ')
+  return `The Wi-Fi passwords were left out, including the ${names} ${columns.length === 1 ? 'column' : 'columns'} of the data table.`
+}
+export const NOTICE_CUSTOM_FONTS = 'Custom fonts are not included. The recipient sees the built-in font unless they have the same font.'
+
+/**
+ * The doc as it may leave this browser (share link, label file): Wi-Fi passwords blanked unless
+ * `includeWifiPasswords`, plus the notices to show. Custom fonts stay referenced (the recipient
+ * may have them) but their files are never embedded, which gets a notice too.
+ */
+export function shareableDoc(doc: LabelDoc, opts: { includeWifiPasswords?: boolean } = {}): { doc: LabelDoc; notices: string[] } {
+  const notices: string[] = []
+  let out = doc
+  if (!opts.includeWifiPasswords) {
+    const s = stripSecrets(doc)
+    out = s.doc
+    if (s.columns.length) notices.push(noticeWifiPasswordColumns(s.columns))
+    else if (s.removed) notices.push(s.removed === 1 ? NOTICE_WIFI_PASSWORD_OMITTED : NOTICE_WIFI_PASSWORDS_OMITTED)
+  }
+  if (out.items.some((i) => i.kind === 'text' && i.customFont)) notices.push(NOTICE_CUSTOM_FONTS)
+  return { doc: out, notices }
 }
 
 /** Thrown by readShareFragment / parseShareFragment for a damaged or invalid link. */
@@ -82,8 +115,8 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
  * Builds `baseUrl#d=…`. `baseUrl` = location.origin + import.meta.env.BASE_URL.
  * Throws an Error with a user-facing message if the label cannot fit in a link.
  */
-export async function createShareLink(doc: LabelDoc, baseUrl: string, opts: ShareOptions = {}): Promise<ShareResult> {
-  const notices: string[] = []
+export async function createShareLink(source: LabelDoc, baseUrl: string, opts: ShareOptions = {}): Promise<ShareResult> {
+  const { doc, notices } = shareableDoc(source, opts)
   let tooLarge = 0
   let missing = 0
   const items: Item[] = []

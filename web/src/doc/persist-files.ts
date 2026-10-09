@@ -4,6 +4,7 @@
 import { blobToDataUrl } from './persist-codec'
 import { internalizeImages, type LabelStore } from './persist'
 import { migrate } from './persist-migrate'
+import { shareableDoc } from './persist-share'
 import { newId, type Item, type LabelDoc } from './schema'
 
 export const FILE_EXTENSION = '.ptlabel.json'
@@ -35,9 +36,16 @@ export function labelFileName(name: string): string {
   return `${slug || 'label'}${FILE_EXTENSION}`
 }
 
-/** The self-contained JSON text of a label (images inlined from `store`). */
-export async function serializeLabelFile(doc: LabelDoc, store: Pick<LabelStore, 'getBlob'>, generator = 'ptouch studio'): Promise<{ text: string; notices: string[] }> {
-  const notices: string[] = []
+export interface LabelFileOptions {
+  /** Keep Wi-Fi passwords in the file (the user ticked "Include Wi-Fi password"). Default
+   * false: they are blanked (doc/secrets.ts stripSecrets) with a notice. */
+  includeWifiPasswords?: boolean
+}
+
+/** The self-contained JSON text of a label (images inlined from `store`; Wi-Fi passwords left
+ * out unless `opts.includeWifiPasswords`; font files never included). */
+export async function serializeLabelFile(source: LabelDoc, store: Pick<LabelStore, 'getBlob'>, generator = 'ptouch studio', opts: LabelFileOptions = {}): Promise<{ text: string; notices: string[] }> {
+  const { doc, notices } = shareableDoc(source, opts)
   const items: Item[] = await Promise.all(
     doc.items.map(async (i): Promise<Item> => {
       if (i.kind !== 'image' || i.dataUrl) return i
@@ -119,7 +127,7 @@ const isAbort = (e: unknown): boolean => e instanceof DOMException && e.name ===
  * first (it needs the user gesture), then the content is built. Resolves `false` if the user
  * cancelled the picker. Notices (e.g. missing images) are returned for a toast.
  */
-export async function exportLabelFile(doc: LabelDoc, store: LabelStore): Promise<{ saved: boolean; notices: string[] }> {
+export async function exportLabelFile(doc: LabelDoc, store: LabelStore, opts: LabelFileOptions = {}): Promise<{ saved: boolean; notices: string[] }> {
   const name = labelFileName(doc.name)
   const picker = (globalThis as unknown as { showSaveFilePicker?: SavePicker }).showSaveFilePicker
   if (typeof picker === 'function') {
@@ -131,14 +139,14 @@ export async function exportLabelFile(doc: LabelDoc, store: LabelStore): Promise
       // SecurityError (gesture expired) etc.: fall back to a download below
     }
     if (handle) {
-      const { text, notices } = await serializeLabelFile(doc, store)
+      const { text, notices } = await serializeLabelFile(doc, store, undefined, opts)
       const w = await handle.createWritable()
       await w.write(new Blob([text], { type: FILE_MIME }))
       await w.close()
       return { saved: true, notices }
     }
   }
-  const { text, notices } = await serializeLabelFile(doc, store)
+  const { text, notices } = await serializeLabelFile(doc, store, undefined, opts)
   downloadBytes(new Blob([text], { type: FILE_MIME }), name, FILE_MIME)
   return { saved: true, notices }
 }

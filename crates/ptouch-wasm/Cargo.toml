@@ -25,6 +25,7 @@ serde-wasm-bindgen = { workspace = true }
 tsify = { workspace = true }
 fast_qr = { workspace = true }
 barcoders = { workspace = true }
+datamatrix = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = { workspace = true }

@@ -168,12 +168,18 @@ fn encode_code_from_js_objects() {
         .unwrap()
         .into();
     assert_eq!(get(&c128, "width").as_f64(), Some(57.0));
+    let dm: JsValue = encode_code(js::<CodeSpec>(r#"{"symbology":"datamatrix","data":"A1"}"#))
+        .unwrap()
+        .into();
+    assert_eq!(get(&dm, "width").as_f64(), Some(10.0));
+    assert_eq!(get(&dm, "height").as_f64(), Some(10.0));
     for bad in [
         r#"{"symbology":"pdf417","data":"x"}"#,
         r#"{"data":"x"}"#,
         r#"{"symbology":"qr"}"#,
         r#"{"symbology":"qr","data":"x","ecc":"Z"}"#,
         r#"{"symbology":"ean13","data":"4006381333932"}"#,
+        r#"{"symbology":"datamatrix","data":""}"#,
     ] {
         let err = encode_code(js::<CodeSpec>(bad)).unwrap_err();
         assert_eq!(code_of(&err), "INVALID_INPUT", "{bad}");

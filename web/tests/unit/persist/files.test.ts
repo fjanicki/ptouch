@@ -1,8 +1,9 @@
 // W5 — `.ptlabel.json` export/import round trip (with an image), id conflicts, bad input.
+// P3: Wi-Fi passwords are left out unless the user opts in; fonts are never embedded.
 import { describe, expect, it } from 'vitest'
 import { memoryBackend, openLabelStore } from '../../../src/doc/persist'
 import { FILE_FORMAT, importLabelFile, labelFileName, parseLabelFile, serializeLabelFile } from '../../../src/doc/persist-files'
-import { createDoc, type ImageItem } from '../../../src/doc/schema'
+import { createBatch, createDoc, createItem, createWifi, type ImageItem, type Item } from '../../../src/doc/schema'
 import { PNG_1PX, fixture, sampleDoc } from './helpers'
 
 const fresh = () => openLabelStore({ backend: memoryBackend(), requestPersistence: async () => true })
@@ -77,5 +78,40 @@ describe('label files', () => {
     ['a newer envelope', JSON.stringify({ format: FILE_FORMAT, version: 9, doc: {} }), /newer version/],
   ])('rejects %s', async (_l, text, msg) => {
     await expect(parseLabelFile(text, fresh())).rejects.toThrow(msg)
+  })
+})
+
+describe('label files: privacy (P3)', () => {
+  const wifiDoc = () => createDoc({ name: 'Guest Wi-Fi', items: [{ ...createItem('code'), content: 'wifi', wifi: createWifi({ ssid: 'Guest', password: 'hunter2-secret' }) } as Item] })
+
+  it('leaves Wi-Fi passwords out by default, with a notice', async () => {
+    const { text, notices } = await serializeLabelFile(wifiDoc(), fresh())
+    expect(text).not.toContain('hunter2-secret')
+    expect(text).toContain('"ssid": "Guest"')
+    expect(notices).toEqual(['The Wi-Fi password was left out.'])
+  })
+
+  it('leaves out passwords from a batch column ({{pw}})', async () => {
+    const doc = createDoc({
+      items: [{ ...createItem('code'), content: 'wifi', wifi: createWifi({ ssid: 'Guest', password: '{{pw}}' }) } as Item],
+      batch: createBatch({ enabled: true, columns: ['room', 'pw'], rows: [['101', 'S3cretPassw0rd!']] }),
+    })
+    const { text, notices } = await serializeLabelFile(doc, fresh())
+    expect(text).not.toContain('S3cretPassw0rd!')
+    expect(JSON.parse(text).doc.batch.rows).toEqual([['101', '']])
+    expect(notices.join(' ')).toMatch(/\{\{pw\}\} column/)
+  })
+
+  it('keeps them when the user opts in', async () => {
+    const { text, notices } = await serializeLabelFile(wifiDoc(), fresh(), undefined, { includeWifiPasswords: true })
+    expect(text).toContain('hunter2-secret')
+    expect(notices).toEqual([])
+  })
+
+  it('never embeds font files: a custom font stays a reference, with a notice', async () => {
+    const doc = createDoc({ items: [{ ...createItem('text'), customFont: { kind: 'user', ref: `sha256-${'a'.repeat(32)}`, family: 'Inter' } } as Item] })
+    const { text, notices } = await serializeLabelFile(doc, fresh())
+    expect(notices).toEqual([expect.stringMatching(/Custom fonts are not included/)])
+    expect(JSON.parse(text).doc.items[0].customFont).toEqual({ kind: 'user', ref: `sha256-${'a'.repeat(32)}`, family: 'Inter' })
   })
 })

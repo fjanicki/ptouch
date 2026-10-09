@@ -72,6 +72,9 @@ wasm-bindgen-test = "=0.3.79"
 # Barcode / QR module matrices for the studio (MIT / MIT OR Apache-2.0).
 fast_qr = { version = "=0.14.0", default-features = false }
 barcoders = { version = "=2.0.0", default-features = false, features = ["std"] }
+# DataMatrix ECC 200 (studio v1, package P3): pure Rust, no_std, Apache-2.0 OR MIT, no default
+# features (no encoding_rs), 0.3.3 released 2026-05-31.
+datamatrix = { version = "=0.3.3", default-features = false }
 
 # --- tooling / tests ---
 toml = "=1.1.7"

@@ -4,7 +4,9 @@
 // its own database (`ptouch-labels`, `ptouch-blobs`, `ptouch-thumbs`).
 // Autosave is debounced 500 ms and flushed when the tab is hidden; navigator.storage.persist()
 // is requested after the first save. The storage backend is injectable (memoryBackend() for
-// unit tests: node has no IndexedDB).
+// unit tests: node has no IndexedDB). hasIndexedDb / idbArea / memoryArea are shared with the
+// font store and print history (persist-fonts.ts, persist-history.ts); idbArea is Blob-safe in
+// Safari Private Browsing (blobSafeArea).
 import { createStore, del, entries, get, set, type UseStore } from 'idb-keyval'
 import { migrate } from './persist-migrate'
 import { contentRef, dataUrlToBlob } from './persist-codec'
@@ -30,7 +32,8 @@ export interface LabelStore {
   /** Stores a blob under its content hash and returns that ref (equal content → same ref). */
   putBlob(blob: Blob): Promise<string>
   getBlob(ref: string): Promise<Blob | undefined>
-  /** Delete blobs no saved doc references (older than the grace period). Returns the count. */
+  /** Delete blobs no saved doc (nor `retainedRefs`) references, older than the grace period.
+   * Returns the count. */
   collectGarbage(): Promise<number>
 }
 
@@ -52,12 +55,106 @@ export interface StorageBackend {
   thumbs: KeyValueArea
 }
 
-function idbArea(store: UseStore): KeyValueArea {
+/** IndexedDB is usable here (some private modes throw on access). */
+export function hasIndexedDb(): boolean {
+  try {
+    return typeof indexedDB !== 'undefined' && indexedDB !== null
+  } catch {
+    return false
+  }
+}
+
+/** A Blob stored as bytes (see blobSafeArea). */
+interface StoredBytes {
+  [BLOB_TAG]: true
+  type: string
+  bytes: ArrayBuffer
+}
+const BLOB_TAG = '__ptouchBlob'
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && Object.getPrototypeOf(v) === Object.prototype
+
+/** `v` holds a Blob at the top level or one level down (`{ blob, … }` records). */
+function hasBlob(v: unknown): boolean {
+  return v instanceof Blob || (isRecord(v) && Object.values(v).some((x) => x instanceof Blob))
+}
+
+async function blobToBytes(b: Blob): Promise<StoredBytes> {
+  return { [BLOB_TAG]: true, type: b.type, bytes: await b.arrayBuffer() }
+}
+
+/** Blobs (top level or one level down) → StoredBytes. */
+async function encodeBlobs(v: unknown): Promise<unknown> {
+  if (v instanceof Blob) return blobToBytes(v)
+  if (!isRecord(v)) return v
+  const out: Record<string, unknown> = {}
+  for (const [k, x] of Object.entries(v)) out[k] = x instanceof Blob ? await blobToBytes(x) : x
+  return out
+}
+
+const isStoredBytes = (v: unknown): v is StoredBytes => isRecord(v) && v[BLOB_TAG] === true && v.bytes instanceof ArrayBuffer
+
+/** StoredBytes (top level or one level down) → Blobs again. */
+function decodeBlobs<T>(v: unknown): T {
+  if (isStoredBytes(v)) return new Blob([v.bytes], { type: v.type }) as T
+  if (!isRecord(v) || !Object.values(v).some(isStoredBytes)) return v as T
+  const out: Record<string, unknown> = {}
+  for (const [k, x] of Object.entries(v)) out[k] = isStoredBytes(x) ? new Blob([x.bytes], { type: x.type }) : x
+  return out as T
+}
+
+/** A readable Error for a failed IndexedDB request (idb-keyval rejects with `transaction.error`,
+ * which WebKit leaves `null` when it aborts a put). */
+function storageError(e: unknown): unknown {
+  return e ?? new Error('This browser did not allow saving here (private browsing, or storage is full).')
+}
+
+/**
+ * `raw` made safe for Blob values. Safari Private Browsing (a WebKit ephemeral session) rejects
+ * every Blob put — with a `null` error — while JSON and ArrayBuffers are fine, so a refused value
+ * holding Blobs (top level, or one level down in a record such as `{ blob, createdAt }`) is stored
+ * as bytes instead (and every later one, once refused), and reads turn bytes back into Blobs.
+ */
+export function blobSafeArea(raw: KeyValueArea): KeyValueArea {
+  let refused = false
+  const fail = (e: unknown): Promise<never> => Promise.reject(storageError(e))
   return {
+    get: async <T>(k: string) => decodeBlobs<T | undefined>(await raw.get(k).catch(fail)),
+    async set(k, v) {
+      if (refused && hasBlob(v)) return raw.set(k, await encodeBlobs(v)).catch(fail)
+      try {
+        await raw.set(k, v)
+      } catch (e) {
+        if (!hasBlob(v)) throw storageError(e)
+        await raw.set(k, await encodeBlobs(v)).catch(fail)
+        refused = true
+      }
+    },
+    del: (k) => raw.del(k).catch(fail),
+    entries: async <T>() => (await raw.entries<unknown>().catch(fail)).map(([k, v]): [string, T] => [k, decodeBlobs<T>(v)]),
+  }
+}
+
+/** An IndexedDB area in its own database (idb-keyval `createStore(db, store)`: one object store
+ * per database), Blob-safe (blobSafeArea). */
+export function idbArea(db: string, storeName: string): KeyValueArea {
+  const store: UseStore = createStore(db, storeName)
+  return blobSafeArea({
     get: (k) => get(k, store),
     set: (k, v) => set(k, v, store),
     del: (k) => del(k, store),
     entries: <T>() => entries<string, T>(store),
+  })
+}
+
+/** Map-backed area (unit tests; fallback when IndexedDB is unavailable). */
+export function memoryArea(): KeyValueArea {
+  const m = new Map<string, unknown>()
+  return {
+    get: async <T>(k: string) => m.get(k) as T | undefined,
+    set: async (k, v) => void m.set(k, v),
+    del: async (k) => void m.delete(k),
+    entries: async <T>() => [...m.entries()] as [string, T][],
   }
 }
 
@@ -66,25 +163,16 @@ let idb: StorageBackend | undefined
 /** The IndexedDB backend (one database per area; created lazily, shared). */
 export function idbBackend(): StorageBackend {
   idb ??= {
-    labels: idbArea(createStore('ptouch-labels', 'labels')),
-    blobs: idbArea(createStore('ptouch-blobs', 'blobs')),
-    thumbs: idbArea(createStore('ptouch-thumbs', 'thumbs')),
+    labels: idbArea('ptouch-labels', 'labels'),
+    blobs: idbArea('ptouch-blobs', 'blobs'),
+    thumbs: idbArea('ptouch-thumbs', 'thumbs'),
   }
   return idb
 }
 
 /** In-memory backend (tests; fallback when IndexedDB is unavailable, e.g. some private modes). */
 export function memoryBackend(): StorageBackend {
-  const area = (): KeyValueArea => {
-    const m = new Map<string, unknown>()
-    return {
-      get: async <T>(k: string) => m.get(k) as T | undefined,
-      set: async (k, v) => void m.set(k, v),
-      del: async (k) => void m.delete(k),
-      entries: async <T>() => [...m.entries()] as [string, T][],
-    }
-  }
-  return { labels: area(), blobs: area(), thumbs: area() }
+  return { labels: memoryArea(), blobs: memoryArea(), thumbs: memoryArea() }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -107,6 +195,9 @@ export interface LabelStoreOptions {
   backend?: StorageBackend
   /** Unreferenced blobs younger than this survive GC, so undo can bring an image back. Default 1 day. */
   blobGraceMs?: number
+  /** Blob refs used outside the label library (print history docs): GC keeps them, so a
+   * reprint never loses an image. A rejection skips that GC run (nothing is deleted). */
+  retainedRefs?: () => Promise<Iterable<string>>
   /** Called after the first successful save (default: navigator.storage.persist()). */
   requestPersistence?: () => Promise<unknown>
   now?: () => number
@@ -119,18 +210,10 @@ function defaultRequestPersistence(): Promise<unknown> {
   return typeof storage?.persist === 'function' ? storage.persist().catch(() => false) : Promise.resolve(false)
 }
 
-function hasIndexedDb(): boolean {
-  try {
-    return typeof indexedDB !== 'undefined' && indexedDB !== null
-  } catch {
-    return false
-  }
-}
-
 const isImage = (i: { kind: string }): i is ImageItem => i.kind === 'image'
 
 /** Blob refs used by a (raw, possibly unmigrated) stored document. */
-function refsOf(raw: unknown): string[] {
+export function refsOf(raw: unknown): string[] {
   const items = (raw as { items?: unknown } | null)?.items
   if (!Array.isArray(items)) return []
   return items.flatMap((i: unknown) => {
@@ -170,6 +253,7 @@ export function openLabelStore(opts: LabelStoreOptions = {}): LabelStore {
 
   async function collectGarbage(): Promise<number> {
     const used = new Set((await backend.labels.entries<StoredLabel>()).flatMap(([, rec]) => refsOf(rec?.doc)))
+    if (opts.retainedRefs) for (const ref of await opts.retainedRefs()) used.add(ref)
     let removed = 0
     for (const [ref, rec] of await backend.blobs.entries<StoredBlob>()) {
       if (used.has(ref)) continue
@@ -216,7 +300,8 @@ export function openLabelStore(opts: LabelStoreOptions = {}): LabelStore {
     async save(doc, thumbnail) {
       const stored = await internalize(doc)
       await backend.labels.set(doc.id, { doc: structuredClone(stored), savedAt: new Date(now()).toISOString() } satisfies StoredLabel)
-      if (thumbnail) await backend.thumbs.set(doc.id, thumbnail)
+      // The label is saved: a thumbnail the browser refuses only costs the list its picture.
+      if (thumbnail) await backend.thumbs.set(doc.id, thumbnail).catch((e: unknown) => console.warn('could not store the label thumbnail', e))
       if (!persistRequested) {
         persistRequested = true
         void requestPersistence()

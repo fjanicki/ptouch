@@ -1,10 +1,12 @@
-<!-- W4 — app shell (ARCHITECTURE.md §6.4): top bar; INSERT + blocks | media bar + preview |
-     PROPERTIES; sticky print bar; diagnostics view (W5); unsupported-browser screen; update
-     toast (W5). ≥ 1180 px three columns, 860–1180 px two, below one column with the preview
-     on top. -->
+<!-- App shell (ARCHITECTURE.md §6.4): top bar; INSERT + blocks | media bar + preview + batch |
+     PROPERTIES; sticky print bar; diagnostics view; unsupported-browser screen; update toast.
+     ≥ 1180 px three columns, 860–1180 px two, below one column with the preview on top.
+     Lead-owned since studio v1: the v1 packages' entry points (BatchPanel, DesignOnlyBanner and
+     the dialogs) are mounted here and filled by their packages (docs/STUDIO-V1-PLAN.md); the
+     dialogs load on their first open. -->
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte'
-  import { Studio, provideStudio } from './ui/state/studio.svelte'
+  import { onDestroy, onMount, type Component } from 'svelte'
+  import { Studio, provideStudio, type StudioDialog } from './ui/state/studio.svelte'
   import TopBar from './ui/TopBar.svelte'
   import ConnectDialog from './ui/connect/ConnectDialog.svelte'
   import MediaBar from './ui/media/MediaBar.svelte'
@@ -18,11 +20,40 @@
   import LibraryDialog from './ui/labels/LibraryDialog.svelte'
   import ProblemBanner from './ui/common/ProblemBanner.svelte'
   import Toasts from './ui/common/Toasts.svelte'
+  import BatchPanel from './ui/batch/BatchPanel.svelte'
+  import DesignOnlyBanner from './ui/handoff/DesignOnlyBanner.svelte'
   // Diagnostics (probe, virtual printer runs, report) is a separate chunk: most visits never open it.
   const loadDiagnostics = () => import('./ui/diagnostics/Diagnostics.svelte')
   import UpdateToast from './pwa/UpdateToast.svelte'
 
+  // The v1 dialogs are separate chunks too (entry-chunk budget, .github/workflows/web.yml): each
+  // loads on its first open and then stays mounted, so its own open/close and focus logic is kept.
+  const DIALOGS: Record<StudioDialog, () => Promise<{ default: Component }>> = {
+    templates: () => import('./ui/templates/TemplateGallery.svelte'),
+    history: () => import('./ui/history/HistoryDialog.svelte'),
+    export: () => import('./ui/export/ExportDialog.svelte'),
+    handoff: () => import('./ui/handoff/HandoffDialog.svelte'),
+    fonts: () => import('./ui/fonts/FontManager.svelte'),
+    'share-secrets': () => import('./ui/share/SecretsDialog.svelte'),
+  }
+
   const studio = provideStudio(new Studio())
+  let dialogs = $state<Partial<Record<StudioDialog, Component>>>({})
+  const loading = new Set<StudioDialog>()
+  $effect(() => {
+    const id = studio.dialog
+    if (!id || dialogs[id] || loading.has(id)) return
+    loading.add(id)
+    DIALOGS[id]()
+      .then((m) => {
+        dialogs[id] = m.default
+      })
+      .catch(() => {
+        if (studio.dialog === id) studio.closeDialog()
+        studio.toast('error', 'This dialog could not be loaded.', 'Check your connection and reload the page.')
+      })
+      .finally(() => loading.delete(id))
+  })
   onMount(() => {
     void studio.start()
   })
@@ -41,7 +72,7 @@
   {:catch}
     <p class="loading-view" role="alert">Diagnostics could not be loaded. Check your connection and reload the page.</p>
   {/await}
-{:else if !studio.support.canPrint && !studio.designAnyway}
+{:else if studio.designOnly && !studio.designAnyway}
   <UnsupportedBrowser support={studio.support} oncontinue={() => studio.continueDesigning()} />
 {:else}
   <div class="shell">
@@ -56,14 +87,15 @@
         {#if studio.readOnly}
           <div class="notice" role="status">This label was made with a newer version of ptouch studio. It opened read-only; your first edit saves a copy.</div>
         {/if}
-        {#if !studio.support.canPrint}
-          <div class="notice" role="status">Design mode: this browser can’t connect to printers. Export the label or open it in Chrome or Edge to print.</div>
+        {#if studio.designOnly}
+          <DesignOnlyBanner />
         {/if}
         {#if showProblem}
           <ProblemBanner problem={showProblem} onaction={(a) => studio.handleProblemAction(a)} />
         {/if}
         <MediaBar />
         <Preview />
+        <BatchPanel />
       </main>
       <div class="right">
         <PropertiesPanel />
@@ -74,6 +106,9 @@
   <ConnectDialog />
   <LibraryDialog />
   <ShortcutsDialog />
+  {#each Object.values(dialogs) as Dialog (Dialog)}
+    <Dialog />
+  {/each}
   <Toasts />
 {/if}
 <UpdateToast busy={studio.printing || studio.conn.state === 'printing'} />

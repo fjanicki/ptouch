@@ -1,4 +1,4 @@
-// W5 — schema migrations (unit-tested). Every stored, imported or shared document goes through
+// Schema migrations (unit-tested). Every stored, imported or shared document goes through
 // `migrate()`: it upgrades the JSON step by step to SCHEMA_VERSION, then calls `validateDoc`
 // (W3) on the result. Documents written by a NEWER app version are not downgraded: they are
 // validated as if current and opened read-only, so they are never overwritten with data loss.
@@ -39,6 +39,23 @@ export const MIGRATIONS: Readonly<Record<number, Migration>> = {
     out['schema'] = 1
     if (typeof out['name'] !== 'string' || out['name'] === '') out['name'] = 'Imported label'
     return out
+  },
+  /**
+   * Schema 1 → 2 (studio v1). Only code items change, and they print exactly as before:
+   * `quietZone` true/false → 'standard'/'none', `content` = 'text', and `moduleDots` keeps its
+   * number (only NEW items default to 'auto'). Everything else (custom fonts, batch, Wi-Fi) is
+   * new and optional.
+   */
+  1: (raw) => {
+    const items = Array.isArray(raw['items'])
+      ? (raw['items'] as unknown[]).map((item) => {
+          if (!isObject(item) || item['kind'] !== 'code') return item
+          const out: Json = { ...item, content: 'text' }
+          if (typeof item['quietZone'] === 'boolean') out['quietZone'] = item['quietZone'] ? 'standard' : 'none'
+          return out
+        })
+      : raw['items']
+    return { ...raw, schema: 2, items }
   },
 }
 

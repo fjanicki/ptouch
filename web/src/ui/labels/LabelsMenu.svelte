@@ -1,5 +1,6 @@
-<!-- W4 — label library menu: New, Open (LibraryDialog, list from W5 LabelStore), Import/Export
-     (W5 persist-files), Share link (W5 persist-share), plus the inline label name. -->
+<!-- Label menu: New, New from template, Open (LibraryDialog), Print history, Import/Export file,
+     Export image, Share link, Send to computer, Fonts; plus the inline label name. Lead-owned
+     (studio v1 entry points, docs/STUDIO-V1-PLAN.md). -->
 <script lang="ts">
   import Menu, { type MenuItem } from '../common/Menu.svelte'
   import Icon from '../common/Icon.svelte'
@@ -8,12 +9,18 @@
   const studio = getStudio()
   let fileInput: HTMLInputElement | undefined = $state()
 
+  // Studio v1 entry points (lead-owned; the dialogs belong to packages P2–P5).
   const items: MenuItem[] = [
     { id: 'new', label: 'New label', icon: 'file-plus', run: () => studio.newLabel() },
+    { id: 'template', label: 'New from template…', icon: 'template', run: () => studio.openDialog('templates') },
     { id: 'open', label: 'Open…', icon: 'folder', run: () => (studio.libraryOpen = true) },
+    { id: 'history', label: 'Print history…', icon: 'history', run: () => studio.openDialog('history') },
     { id: 'import', label: 'Import file…', icon: 'upload', separatorBefore: true, run: () => fileInput?.click() },
-    { id: 'export', label: 'Export file', icon: 'download', run: () => void studio.exportFile() },
-    { id: 'share', label: 'Copy share link', icon: 'link', run: () => void studio.copyShareLink() },
+    { id: 'export', label: 'Export file', icon: 'download', run: () => studio.requestShare('file') },
+    { id: 'export-image', label: 'Export image (PNG, PDF)…', icon: 'image', run: () => studio.openDialog('export') },
+    { id: 'share', label: 'Copy share link', icon: 'link', run: () => studio.requestShare('link') },
+    { id: 'handoff', label: 'Send to computer…', icon: 'send', run: () => studio.openDialog('handoff') },
+    { id: 'fonts', label: 'Fonts…', icon: 'type', separatorBefore: true, run: () => studio.openDialog('fonts') },
   ]
 
   function onfile(e: Event & { currentTarget: HTMLInputElement }) {

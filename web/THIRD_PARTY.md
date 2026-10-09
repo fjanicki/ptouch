@@ -39,6 +39,9 @@ From `cargo tree -p ptouch-wasm --target wasm32-unknown-unknown -e normal`.
 | serde-wasm-bindgen | 0.6.5 | MIT |
 | fast_qr | 0.14.0 | MIT |
 | barcoders | 2.0.0 | MIT OR Apache-2.0 |
+| datamatrix | 0.3.3 | Apache-2.0 OR MIT |
+| arrayvec (via datamatrix) | 0.7.8 | MIT OR Apache-2.0 |
+| flagset (via datamatrix) | 0.4.7 | Apache-2.0 |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | bumpalo | 3.20.3 | MIT OR Apache-2.0 |

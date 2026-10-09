@@ -1,7 +1,7 @@
 // W5 — schema migrations against fixtures (one per schema version).
 import { describe, expect, it } from 'vitest'
 import { CURRENT_SCHEMA, MIGRATIONS, migrate } from '../../../src/doc/persist-migrate'
-import { createDoc } from '../../../src/doc/schema'
+import { createDoc, createItem } from '../../../src/doc/schema'
 import { fixture } from './helpers'
 
 describe('migrate()', () => {
@@ -9,14 +9,51 @@ describe('migrate()', () => {
     for (let n = 0; n < CURRENT_SCHEMA; n++) expect(MIGRATIONS[n], `step ${n} → ${n + 1}`).toBeTypeOf('function')
   })
 
-  it('accepts a current (schema 1) document unchanged', () => {
-    const raw = fixture('schema-1.json')
+  it('accepts a current (schema 2) document unchanged', () => {
+    const raw = fixture('schema-2.json')
     const r = migrate(raw)
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.readOnly).toBe(false)
     expect(r.migratedFrom).toBeUndefined()
-    expect(r.doc).toMatchObject(raw as object)
+    expect(r.doc).toEqual(raw)
+  })
+
+  it('upgrades schema 1 so it prints exactly as before', () => {
+    const raw = fixture('schema-1.json') as { items: Record<string, unknown>[] }
+    const r = migrate(raw)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.migratedFrom).toBe(1)
+    expect(r.readOnly).toBe(false)
+    expect(r.doc.schema).toBe(2)
+    // Only code items change: quiet zone true → 'standard', content 'text', module size KEPT
+    // (only new items default to 'auto').
+    const [text, code] = r.doc.items
+    expect(text).toEqual(raw.items[0])
+    expect(code).toEqual({ ...raw.items[1], content: 'text', quietZone: 'standard', moduleDots: 2 })
+    expect(r.doc.batch).toBeUndefined()
+    const { schema: _a, items: _b, ...rest } = raw as Record<string, unknown>
+    void _a
+    void _b
+    expect(r.doc).toMatchObject(rest)
+  })
+
+  it('maps a schema-1 quiet zone of false to none and keeps every module size', () => {
+    const raw = fixture('schema-1.json') as { items: Record<string, unknown>[] }
+    raw.items = [5, 1, 12].map((moduleDots, i) => ({ ...raw.items[1], id: `c${i}`, moduleDots, quietZone: i !== 1 }))
+    const r = migrate(raw)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.doc.items.map((i) => (i.kind === 'code' ? [i.moduleDots, i.quietZone] : null))).toEqual([
+      [5, 'standard'],
+      [1, 'none'],
+      [12, 'standard'],
+    ])
+  })
+
+  it('new code items default to automatic module size and the standard quiet zone', () => {
+    expect(createItem('code')).toMatchObject({ content: 'text', moduleDots: 'auto', quietZone: 'standard' })
   })
 
   it('does not mutate its input', () => {
@@ -32,7 +69,7 @@ describe('migrate()', () => {
     if (!r.ok) return
     expect(r.migratedFrom).toBe(0)
     expect(r.readOnly).toBe(false)
-    expect(r.doc.schema).toBe(1)
+    expect(r.doc.schema).toBe(2)
     expect(r.doc.name).toBe('Prototype label')
     expect(r.doc.tape.widthMm).toBe(24)
     expect(r.doc.length).toEqual({ mode: 'auto' })

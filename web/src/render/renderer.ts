@@ -9,14 +9,15 @@ import { Raster, release, type Bitmap1, type ModuleMatrix, type ToneOptions } fr
 import type { CodeItem, IconItem, ImageItem, Item, LabelDoc, Rotation, ShapeItem, TextItem } from '../doc/schema'
 import { canvasReadbackIsNoisy } from './antifp'
 import { context2d, createCanvas, rgbaBytes, type AnyCanvas, type Ctx2D } from './canvas'
-import { codeMatrix, humanReadable, isLinear, maxModuleDots, quietModules, repeatRow, rotateMatrix, tapeMarginDots } from './codes'
-import { CODE_TEXT_FONT, ensureFonts, fontDef, isFaceReady, resolveWeight } from './fonts'
+import { chooseModuleDots, codeMatrix, humanReadable, isLinear, padMatrix, quietModules, repeatRow, rotateMatrix, tapeMarginDots } from './codes'
+import { CODE_TEXT_FONT, ensureFonts, fontDef, isFaceReady, textFaceReady } from './fonts'
 import { ICON_STROKE, ICON_VIEWBOX, iconById, type IconDef } from './icons'
 import { MAX_IMAGE_DOTS, decodeImage, imageSize, resolveImageBlob, type RgbaImage } from './images'
 import { layoutFlow, layoutFree, type FlowLayout, type FramedItem, type MeasuredItem } from './layout'
 import { canvasMeasure, drawTextBlock, faceMetrics, fitTextBlock, invertPadding, splitLines } from './text'
 import type { ItemBox, RenderOptions, RenderResult, RenderTarget, RenderWarning } from './types'
 import { dotsToMm, mmToDots } from './units'
+import { wifiWarnings } from './wifi'
 
 /** Widest crisp canvas drawn at once (px); longer labels are drawn in tiles. */
 const MAX_TILE_PX = 8190
@@ -30,16 +31,13 @@ const MIN_BAR_MM = 3
 /** Content drawn on the crisp plane, in px, inside a box of `w × h` px at the origin. */
 type CrispDraw = (ctx: Ctx2D, w: number, h: number, f: number) => void
 
-/** One code blit relative to the item box (dots, unrotated). */
+/** One code blit relative to the item box (dots, unrotated). `m` already carries the quiet
+ * zone as light modules (codes.ts padMatrix), so it is blitted with `quietZone = false`. */
 interface CodeBlit {
   m: ModuleMatrix
   dx: number
   dy: number
   md: number
-  /** The item's quiet zone is cleared and protected by the core (Raster.blitCode). */
-  quiet: boolean
-  /** Linear symbol (its quiet zone is only along the label). */
-  linear: boolean
 }
 
 /** An item measured and ready to draw. Sizes in dots, unrotated. */
@@ -57,6 +55,8 @@ interface Prepared {
   tooTall?: boolean
   /** Already rotated (images are decoded rotated): `w`/`h` are the final box. */
   prerotated?: boolean
+  /** A linear code with `moduleDots: 'auto'` (sized to a fixed label length when there is one). */
+  autoLinear?: boolean
 }
 
 interface Ctx {
@@ -68,6 +68,8 @@ interface Ctx {
   /** Unprinted tape beyond the band edge usable as a code's vertical quiet zone (0 when a
    * label frame or free-layout frame borders the code). */
   marginDots: number
+  /** Length a linear `'auto'` code may take on a fixed-length label (dots, incl. its zone). */
+  autoLinearW?: number
 }
 
 const mmPx = (mm: number, dpi: number, f: number): number => (mm * dpi * f) / 25.4
@@ -90,8 +92,7 @@ function prepareText(item: TextItem, band: number, c: Ctx, maxW?: number): Prepa
   const lines = splitLines(item.text)
   if (lines.every((l) => l.trim() === '')) return { id: item.id, w: 0, h: 0 }
   const { f, dpi } = c
-  const def = fontDef(item.fontFamily)
-  const face = faceMetrics(c.mctx, item, isFaceReady(def, resolveWeight(def, item.fontWeight)))
+  const face = faceMetrics(c.mctx, item, textFaceReady(item))
   const measure = canvasMeasure(c.mctx, item)
   const lh = Math.min(3, Math.max(0.5, Number.isFinite(item.lineHeight) ? item.lineHeight : 1.1))
   const bandPx = band * f
@@ -239,41 +240,40 @@ function errorText(e: unknown): string {
   return m.replace(/^[A-Z_]+:\s*/, '')
 }
 
-const SYMBOLOGY_NAME: Record<CodeItem['symbology'], string> = { qr: 'QR code', code128: 'Code 128 barcode', ean13: 'EAN-13 barcode' }
+const SYMBOLOGY_NAME: Record<CodeItem['symbology'], string> = { qr: 'QR code', code128: 'Code 128 barcode', ean13: 'EAN-13 barcode', datamatrix: 'DataMatrix code' }
 
 function prepareCode(item: CodeItem, band: number, c: Ctx, maxW?: number): Prepared {
   const { f, dpi } = c
   const name = SYMBOLOGY_NAME[item.symbology]
   let m: ModuleMatrix
   try {
-    if (item.data === '') throw new Error('Enter the data to encode.')
+    if (item.content !== 'wifi' && item.data === '') throw new Error('Enter the data to encode.')
     m = codeMatrix(item)
   } catch (e) {
     c.warn({ code: 'code-invalid', itemId: item.id, blocking: true, message: `${name}: ${errorText(e)}` })
     const side = Math.max(1, Math.min(band, mmToDots(12, dpi)))
     return { id: item.id, w: side, h: band, crisp: invalidCodeDraw }
   }
-  let md = Math.floor(item.moduleDots)
-  if (!(md >= 1)) {
-    c.warn({ code: 'code-too-small', itemId: item.id, blocking: true, message: `${name}: the module size must be at least 1 dot.` })
-    md = 1
+  if (item.content === 'wifi' && item.symbology === 'qr' && item.wifi) {
+    for (const message of wifiWarnings(item.wifi)) c.warn({ code: 'code-invalid', itemId: item.id, message: `${name}: ${message}` })
   }
-  md = Math.min(md, 255)
+  const auto = item.moduleDots === 'auto'
+  if (!auto && !((item.moduleDots as number) >= 1)) {
+    c.warn({ code: 'code-too-small', itemId: item.id, blocking: true, message: `${name}: the module size must be at least 1 dot.` })
+  }
   const linear = isLinear(m)
-  const [qx, qy] = quietModules(m, item.quietZone)
+  const [qx, qy] = quietModules(m, item.quietZone, item.symbology)
 
   if (!linear) {
     // In a free-layout frame the symbol (with its quiet zone) must also fit the frame width.
-    const max = Math.min(maxModuleDots(m, band, item.quietZone, c.marginDots), maxW !== undefined ? Math.floor(maxW / (m.width + 2 * qx)) : 255)
-    if (max < 1) {
-      c.warn({ code: 'code-too-small', itemId: item.id, blocking: true, message: `${name}: ${m.height}×${m.width} modules do not fit on this tape. Shorten the data, lower the error correction or use wider tape.` })
+    const choice = chooseModuleDots(m, { moduleDots: item.moduleDots, quietZone: item.quietZone, symbology: item.symbology, bandDots: band, marginDots: c.marginDots, ...(maxW !== undefined ? { limitW: maxW } : {}) })
+    if (choice.max < 1) {
+      c.warn({ code: 'code-too-small', itemId: item.id, blocking: true, message: `${name}: ${m.height}×${m.width} modules do not fit on this tape. ${item.symbology === 'qr' ? 'Shorten the data, lower the error correction or use wider tape.' : 'Shorten the data or use wider tape.'}` })
       const side = Math.max(1, band)
       return { id: item.id, w: side, h: band, crisp: invalidCodeDraw }
     }
-    if (md > max) {
-      c.warn({ code: 'content-overflow', itemId: item.id, message: `${name} reduced to ${max} dot${max === 1 ? '' : 's'} per module to fit the tape.` })
-      md = max
-    }
+    const md = choice.md
+    if (choice.reduced) c.warn({ code: 'content-overflow', itemId: item.id, message: `${name} reduced to ${md} dot${md === 1 ? '' : 's'} per module to fit the tape.` })
     if (dotsToMm(md, dpi) < MIN_SCANNABLE_MODULE_MM) {
       c.warn({ code: 'code-too-small', itemId: item.id, message: `${name}: modules are ${dotsToMm(md, dpi).toFixed(2)} mm and may not scan. Use wider tape or shorter data.` })
     }
@@ -281,21 +281,19 @@ function prepareCode(item: CodeItem, band: number, c: Ctx, maxW?: number): Prepa
     const symH = m.height * md
     const w = symW + 2 * qx * md
     const h = Math.min(band, symH + 2 * qy * md)
-    return { id: item.id, w, h, codes: [{ m, dx: qx * md, dy: Math.floor((h - symH) / 2), md, quiet: item.quietZone, linear: false }] }
+    // The padded zone may run past the band into the unprinted tape edge; the core clips it.
+    return { id: item.id, w, h, codes: [{ m: padMatrix(m, qx, qy), dx: 0, dy: Math.floor((h - symH) / 2) - qy * md, md }] }
   }
 
-  // In a free-layout frame the symbol (with its quiet zones) must fit the frame length too.
-  if (maxW !== undefined) {
-    const max = Math.floor(maxW / (m.width + 2 * qx))
-    if (max < 1) {
-      c.warn({ code: 'code-too-small', itemId: item.id, blocking: true, message: `${name}: ${m.width} modules do not fit in its frame. Make the frame longer or shorten the data.` })
-      return { id: item.id, w: Math.max(1, maxW), h: band, crisp: invalidCodeDraw }
-    }
-    if (md > max) {
-      c.warn({ code: 'content-overflow', itemId: item.id, message: `${name} reduced to ${max} dot${max === 1 ? '' : 's'} per module to fit its frame.` })
-      md = max
-    }
+  // Linear: a frame limits the length; a fixed-length label limits 'auto' codes (autoLinearW).
+  const limitW = maxW ?? (auto ? c.autoLinearW : undefined)
+  const choice = chooseModuleDots(m, { moduleDots: item.moduleDots, quietZone: item.quietZone, symbology: item.symbology, bandDots: band, ...(limitW !== undefined ? { limitW } : {}) })
+  if (maxW !== undefined && choice.max < 1) {
+    c.warn({ code: 'code-too-small', itemId: item.id, blocking: true, message: `${name}: ${m.width} modules do not fit in its frame. Make the frame longer or shorten the data.` })
+    return { id: item.id, w: Math.max(1, maxW), h: band, crisp: invalidCodeDraw }
   }
+  const md = choice.md
+  if (choice.reduced) c.warn({ code: 'content-overflow', itemId: item.id, message: `${name} reduced to ${md} dot${md === 1 ? '' : 's'} per module to fit its frame.` })
 
   // Linear: bars fill the band, optional human-readable line underneath.
   if (dotsToMm(md, dpi) < MIN_SCANNABLE_MODULE_MM) {
@@ -329,11 +327,32 @@ function prepareCode(item: CodeItem, band: number, c: Ctx, maxW?: number): Prepa
     c.warn({ code: 'code-too-small', itemId: item.id, message: `${name}: bars are only ${dotsToMm(barH, dpi).toFixed(1)} mm tall and may not scan.` })
   }
   // Bar height = rows × module; a second one-row blit tops up the remainder (protected dots of
-  // the first blit stay untouched, so only the missing rows are painted).
+  // the first blit stay untouched, so only the missing rows are painted). The zone is padded
+  // along the label only.
   const rows = Math.max(1, Math.floor(barH / md))
-  const codes: CodeBlit[] = [{ m: repeatRow(m, rows), dx: qx * md, dy: 0, md, quiet: item.quietZone, linear: true }]
-  if (rows * md < barH) codes.push({ m: repeatRow(m, 1), dx: qx * md, dy: barH - md, md, quiet: item.quietZone, linear: true })
-  return { id: item.id, w, h: band, codes, ...(textDraw ? { crisp: textDraw } : {}) }
+  const codes: CodeBlit[] = [{ m: padMatrix(repeatRow(m, rows), qx, 0), dx: 0, dy: 0, md }]
+  if (rows * md < barH) codes.push({ m: padMatrix(repeatRow(m, 1), qx, 0), dx: 0, dy: barH - md, md })
+  return { id: item.id, w, h: band, codes, ...(textDraw ? { crisp: textDraw } : {}), ...(auto && maxW === undefined ? { autoLinear: true } : {}) }
+}
+
+/**
+ * Linear codes with `moduleDots: 'auto'` on a fixed-length label: re-measure them so they share
+ * the length the other flow blocks leave (largest module up to 4 dots that fits, else 1 with an
+ * overflow warning from the layout). Auto-length labels keep the default 2 dots.
+ */
+function sizeAutoLinearCodes(doc: LabelDoc, prepared: Prepared[], items: Item[], band: number, c: Ctx, limits: { insetDots: number }): void {
+  if (doc.length.mode !== 'fixed') return
+  const auto = prepared.flatMap((p, i) => (p.autoLinear ? [i] : []))
+  if (!auto.length) return
+  const measured: MeasuredItem[] = prepared.map((p) => ({ itemId: p.id, w: p.w, h: p.h, ...(p.spacer ? { spacer: true } : {}) }))
+  const { contentDots } = layoutFlow(doc, measured, band, c.dpi)
+  const ends = Math.max(0, mmToDots(doc.marginsMm.start, c.dpi)) + Math.max(0, mmToDots(doc.marginsMm.end, c.dpi)) + 2 * limits.insetDots
+  const others = contentDots - auto.reduce((n, i) => n + (prepared[i]?.w ?? 0), 0)
+  const each = Math.floor((mmToDots(doc.length.mm, c.dpi) - ends - others) / auto.length)
+  for (const i of auto) {
+    const item = items[i]
+    if (item?.kind === 'code') prepared[i] = prepareCode(item, band, { ...c, autoLinearW: Math.max(0, each) })
+  }
 }
 
 function clampInt(v: number, lo: number, hi: number, dflt: number): number {
@@ -447,6 +466,24 @@ function frameGeom(doc: LabelDoc, band: number, dpi: number): FrameGeom | undefi
   const radius = Math.max(0, mmToDots(fr.radiusMm, dpi))
   const pad = Math.max(1, Math.min(mmToDots(1, dpi), Math.round(band * 0.06)))
   return { inset, thickness, radius, reserve: inset + thickness + pad }
+}
+
+/**
+ * The band an item is sized in and the unprinted tape margin a code may count as quiet zone,
+ * by the same rules as renderLabel: flow items get the band inside the label frame (when the
+ * frame has a line), and the margin only without one; free-layout items in a frame get the
+ * frame's height (its width when turned a quarter) and no margin. The code editor's size hints
+ * use this so they never promise a size the print does not have.
+ */
+export function itemSizingBand(doc: LabelDoc, item: Item, area: RenderTarget['area']): { bandDots: number; marginDots: number; framed: boolean } {
+  const fr = doc.layout.mode === 'free' ? item.frame : undefined
+  if (fr) {
+    const turned = quarter(([0, 90, 180, 270] as const).includes(fr.rotation) ? fr.rotation : 0)
+    return { bandDots: Math.max(1, mmToDots(turned ? fr.wMm : fr.hMm, area.dpi)), marginDots: 0, framed: true }
+  }
+  const frame = frameGeom(doc, area.heightDots, area.dpi)
+  const inner = Math.max(1, area.heightDots - 2 * (frame?.reserve ?? 0))
+  return { bandDots: inner, marginDots: frame ? 0 : tapeMarginDots(area), framed: false }
 }
 
 function drawFrame(ctx: Ctx2D, g: FrameGeom, length: number, band: number, f: number): void {
@@ -566,10 +603,13 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
   }
 
   abortIfNeeded(signal)
-  const fonts = await ensureFonts(doc)
+  const fonts = await ensureFonts(doc, opts.loadFontBlob ? { loadFontBlob: opts.loadFontBlob } : {})
   abortIfNeeded(signal)
   for (const fb of fonts.fallbacks) {
     warn({ code: 'font-fallback', message: `The font “${fb}” could not be loaded; a system font is used instead. Reload the page while online to fix this.` })
+  }
+  for (const name of fonts.missing ?? []) {
+    warn({ code: 'font-missing', message: `The font “${name}” is not available on this device, so the label uses its built-in font instead. Add the font under Fonts to print it as designed.` })
   }
   if (canvasReadbackIsNoisy()) {
     warn({
@@ -590,6 +630,7 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
   // Measure. Free layout: items with a frame are placed by it; the rest flow.
   const free = doc.layout.mode === 'free'
   const flowItems: Prepared[] = []
+  const flowSource: Item[] = []
   const framed: { p: Prepared; x: number; y: number; w: number; h: number; rotation: Rotation }[] = []
   for (const item of doc.items) {
     const fr = free ? item.frame : undefined
@@ -607,11 +648,13 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
       framed.push({ p, x: mmToDots(fr.xMm, dpi), y: mmToDots(fr.yMm, dpi), w: bw, h: bh, rotation: p.prerotated ? 0 : rotation })
     } else {
       flowItems.push(await prepareItem(item, inner, c, 0))
+      flowSource.push(item)
     }
     abortIfNeeded(signal)
   }
 
   const limits = { minLengthDots: target.area.minLengthDots, ...(target.area.maxLengthDots !== undefined ? { maxLengthDots: target.area.maxLengthDots } : {}), insetDots: reserve }
+  sizeAutoLinearCodes(doc, flowItems, flowSource, inner, c, limits)
   const measured: MeasuredItem[] = flowItems.map((p) => ({ itemId: p.id, w: p.w, h: p.h, ...(p.spacer ? { spacer: true } : {}) }))
   let layout: FlowLayout = layoutFlow(doc, measured, band, dpi, limits)
   const placed: Placed[] = layout.placements.map((pl, i) => ({ p: flowItems[i] as Prepared, x: pl.x, y: pl.y, w: pl.w, h: pl.h, rotation: 0 }))
@@ -657,11 +700,9 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
         const uh = quarter(pl.rotation) ? pl.w : pl.h
         // Unrotated box is (p.w × placed cross size); centre vertically if the band clipped it.
         const r = rotateRect({ x: cb.dx, y: cb.dy + Math.floor((uh - pl.p.h) / 2), w: cb.m.width * cb.md, h: cb.m.height * cb.md }, uw, uh, pl.rotation)
-        // The core clears and protects the quiet zone (nothing under or next to the code can
-        // print into it). A quarter-turned linear code is excluded: the core would treat it as
-        // 2-D and clear its human-readable line too; its zone is reserved in the layout.
-        const quiet = cb.quiet && !(cb.linear && quarter(pl.rotation))
-        raster.blitCode(rotateMatrix(cb.m, pl.rotation), pl.x + r.x, pl.y + r.y, cb.md, quiet)
+        // The padded light modules are the quiet zone: the core clears and protects them, so
+        // nothing under or next to the code can print into it (whatever the rotation).
+        raster.blitCode(rotateMatrix(cb.m, pl.rotation), pl.x + r.x, pl.y + r.y, cb.md, false)
       }
     }
     const bitmap = raster.finish()
