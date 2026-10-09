@@ -155,7 +155,11 @@ describe('pixel grid', () => {
     await loadFamily('silkscreen', 400)
     const ctx = document.createElement('canvas').getContext('2d') as CanvasRenderingContext2D
     ctx.font = `400 8px "ptouch Silkscreen"`
-    for (const ch of SAMPLE) expect(Number.isInteger(ctx.measureText(ch).width), ch).toBe(true)
+    // Within float noise: full Chromium on Linux reports 5.99992 for 6 (the renderer quantises).
+    for (const ch of SAMPLE) {
+      const w = ctx.measureText(ch).width
+      expect(Math.abs(w - Math.round(w)), ch).toBeLessThan(1e-3)
+    }
   })
 })
 

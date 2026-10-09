@@ -7,7 +7,8 @@
 // versions, so text snapshots are kept per OS (`<name>.<os>.pbm`: macos, linux, windows) and
 // compared with a tolerance: same height, length within 2 dots, and at most `tolerance` of the
 // ink dots different at the best ±2-dot shift. CI (Linux) checks the .linux files; record them
-// in the Playwright Linux image (mcr.microsoft.com/playwright, same version as package.json).
+// in the Playwright Linux image (mcr.microsoft.com/playwright, same version as package.json)
+// with PW_CHANNEL=chromium like CI: the default headless shell rasterizes text differently.
 import { commands } from 'vitest/browser'
 import { expect } from 'vitest'
 import type { Bitmap1 } from '../../src/wasm'

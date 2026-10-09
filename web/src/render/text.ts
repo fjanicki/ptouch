@@ -294,13 +294,19 @@ export function canvasMeasure(ctx: Ctx2D, item: FontItem): MeasureFn {
     ctx.font = cssFont(item, px)
     const m = ctx.measureText(text)
     return {
-      advance: m.width,
-      left: m.actualBoundingBoxLeft,
-      right: m.actualBoundingBoxRight,
-      ascent: m.actualBoundingBoxAscent,
-      descent: m.actualBoundingBoxDescent,
+      advance: quantize(m.width),
+      left: quantize(m.actualBoundingBoxLeft),
+      right: quantize(m.actualBoundingBoxRight),
+      ascent: quantize(m.actualBoundingBoxAscent),
+      descent: quantize(m.actualBoundingBoxDescent),
     }
   }
+}
+
+/** Rounds a canvas metric to 1/1024 px. Full Chromium on Linux reports 5.99992 for a 6 px advance;
+ * without this the pixel-font grid (`snapUp`, whole-dot widths) drifts by a dot. */
+function quantize(v: number): number {
+  return Math.round(v * 1024) / 1024
 }
 
 /** Cap height and descender of `item`'s face (per px), cached per face. */
