@@ -7,7 +7,8 @@ import type { RenderResult, RenderTarget } from './types'
  * job (and its wasm memory) reasonable and matches the 2-digit copies field. */
 export const MAX_COPIES = LIMITS.copies.max
 
-/** Tape fed before the first label of a job (head-to-cutter distance, PT-P710BT; approximate). */
+/** Tape fed before the first label of a job (head-to-cutter distance, PT-P710BT; approximate).
+ * The model table has no per-model value, so every model uses it and the UI says "about". */
 export const LEADER_MM = 24
 
 export interface TapeEstimate {

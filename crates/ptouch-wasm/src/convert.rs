@@ -70,6 +70,8 @@ pub fn model_dto(p: &ModelProfile) -> dto::ModelInfo {
         dpi: p.dpi,
         head_pins: p.head_pins,
         bluetooth: p.transports.bluetooth,
+        ble: p.transports.ble,
+        network: p.transports.network,
         caps: dto::ModelCaps {
             auto_cut: p.caps.auto_cut,
             chain: p.caps.chain.unwrap_or(false),
@@ -755,6 +757,10 @@ mod tests {
         let models: Vec<dto::ModelInfo> = ptouch::profiles().iter().map(model_dto).collect();
         assert_eq!(models[0].name, "PT-P710BT");
         assert!(models[0].bluetooth);
+        assert!(!models[0].ble && !models[0].network);
+        let n25 = models.iter().find(|m| m.name == "PT-N25BT").unwrap();
+        assert!(n25.ble && !n25.bluetooth && n25.usb_pid.is_none());
+        assert!(models.iter().any(|m| m.name == "PT-P750W" && m.network));
         assert!(models[0].caps.auto_cut);
         assert!(models[0].media.iter().any(|m| m.id == "tze128-24"));
 

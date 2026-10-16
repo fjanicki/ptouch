@@ -2,13 +2,24 @@
 // LabelDoc with obvious placeholder text; `build()` returns a fresh doc (new ids) every call and
 // the gallery opens it with `studio.newFromTemplate`. Sizes follow the PT-P710BT at 180 dpi:
 // printable band 12 mm → 70 dots (9.9 mm), 24 mm → 128 dots (18.1 mm); the printer adds a
-// ≈ 2 mm feed margin at each end of every label (not counted in `length`).
+// ≈ 2 mm feed margin at each end of every label (not counted in `length`). The 36 mm variants
+// follow the PT-P910BT at 360 dpi: 36 mm → 454 dots (32 mm).
+//
+// Printer models (docs/MODELS-PLAN.md §3.9): the gallery shows the templates whose width the
+// active model takes (`templateFits`) and the others in a marked "other widths" section; it
+// renders and opens each one with the active model, or the stand-in for a width it lacks
+// (`templateModel`), and passes that model's band to `build(band)` so "M" is M on that band.
+// Other sizes are physical (mm) and fit every model's band of the template's width.
 //
 // Fonts and size (docs/FONTS-AND-SIZE-PLAN.md §3.3, P-size): text has fixed sizes, so a sticker is
 // only as long as it needs to be (text that fits the band makes short words several cm long).
 // Where it fits the design, the size is the quick size M of that tape (`QUICK_M_MM`), so the
 // text properties show it as "M". Fixed-length templates shrink long text to fit the length.
-import { createBatch, createDoc, createItem, createWifi, type CodeItem, type IconItem, type Item, type LabelDoc, type SpacerItem, type TapeWidthMm, type TextItem } from '../../doc/schema'
+import { createBatch, createDoc, createItem, createWifi, type CodeItem, type IconItem, type Item, type LabelDoc, type SpacerItem, type TapeWidthMm, type TextItem, type TextSize } from '../../doc/schema'
+import { quickTextSizes } from '../../render/text-size'
+import type { ModelInfo } from '../../wasm'
+import { findModel, standInModel, tapeWidthsOf } from '../state/models'
+import { formatMm } from '../state/view-model'
 
 export type TemplateCategory = 'network' | 'cables' | 'storage' | 'office'
 
@@ -28,7 +39,15 @@ export interface TemplateDef {
   description: string
   category: TemplateCategory
   tapeWidthMm: TapeWidthMm
-  build(): LabelDoc
+  /** A fresh doc. `band` (docs/MODELS-PLAN.md §4.8, frozen): the printable band it is opened on,
+   * so quick sizes are that band's; without it, today's output (byte-identical). */
+  build(band?: TemplateBand): LabelDoc
+}
+
+/** The printable band a template is opened on (the active model's print area for its width). */
+export interface TemplateBand {
+  bandDots: number
+  dpi: number
 }
 
 /** Default cable diameter of the cable flag (mm). */
@@ -47,8 +66,15 @@ export const CABLE_WRAP_OVERLAP_MM = 15
 export const GRIDFINITY_LENGTH_MM = 32
 
 /** Quick size M (half the printable band, render/text-size.ts) of 12 mm (35 dots) and 24 mm
- * (64 dots) tape, in mm. */
-export const QUICK_M_MM = { 12: 4.94, 24: 9.03 } as const
+ * (64 dots) tape on the PT-P710BT, and of 36 mm (227 dots at 360 dpi) on the PT-P910BT, in mm. */
+export const QUICK_M_MM = { 12: 4.94, 24: 9.03, 36: 16.02 } as const
+
+/** Quick size M of `band` (the band the template is opened on), else of the default band of
+ * that tape (`QUICK_M_MM`): `build()` without a band stays byte-identical. */
+function quickM(widthMm: keyof typeof QUICK_M_MM, band: TemplateBand | undefined): TextSize {
+  const m = band ? quickTextSizes(band.bandDots, band.dpi).find((q) => q.id === 'm')?.size : undefined
+  return m ?? { mode: 'mm', mm: QUICK_M_MM[widthMm] }
+}
 
 const text = (t: string, patch: Partial<TextItem> = {}): TextItem => ({ ...createItem('text'), text: t, ...patch })
 const icon = (iconId: string, patch: Partial<IconItem> = {}): IconItem => ({ ...createItem('icon'), iconId, ...patch })
@@ -84,9 +110,22 @@ export const TEMPLATES: readonly TemplateDef[] = [
     category: 'network',
     tapeWidthMm: 24,
     // Two lines at M (9 mm for both): ≈ 71 mm with "MyHomeNetwork" (it was 103 mm at Fit).
-    build: () =>
-      label('Wi-Fi sticker', 24, [icon('wifi', { size: { mode: 'mm', mm: 9 } }), text('Wi-Fi\n{{ssid}}', { lineHeight: 1.15, align: 'start', size: { mode: 'mm', mm: QUICK_M_MM[24] } }), wifiQr({ quietZone: 'standard', ecc: 'M' })], {
+    build: (band) =>
+      label('Wi-Fi sticker', 24, [icon('wifi', { size: { mode: 'mm', mm: 9 } }), text('Wi-Fi\n{{ssid}}', { lineHeight: 1.15, align: 'start', size: quickM(24, band) }), wifiQr({ quietZone: 'standard', ecc: 'M' })], {
         layout: { mode: 'flow', gapMm: 2.5, align: 'center' },
+      }),
+  },
+  {
+    id: 'wifi-36',
+    name: 'Wi-Fi sticker (36 mm)',
+    description: 'Big sticker for a wall or a router: Wi-Fi icon, the network name and a QR code that phones join from across the room.',
+    category: 'network',
+    tapeWidthMm: 36,
+    // The 24 mm design on the 32 mm band of a 360 dpi model: two lines at M (16 mm for both),
+    // a QR code with the standard quiet zone that fills the band.
+    build: (band) =>
+      label('Wi-Fi sticker', 36, [icon('wifi', { size: { mode: 'mm', mm: 14 } }), text('Wi-Fi\n{{ssid}}', { lineHeight: 1.15, align: 'start', size: quickM(36, band) }), wifiQr({ quietZone: 'standard', ecc: 'M' })], {
+        layout: { mode: 'flow', gapMm: 3.5, align: 'center' },
       }),
   },
   {
@@ -95,8 +134,8 @@ export const TEMPLATES: readonly TemplateDef[] = [
     description: `The same text on both ends; the blank middle (${CABLE_FLAG_WRAP_MM} mm ≈ π × ${CABLE_FLAG_DIAMETER_MM} mm) wraps around the cable and the ends stick together, so it reads from either side. Other cables: spacer = π × diameter.`,
     category: 'cables',
     tapeWidthMm: 12,
-    build: () =>
-      label('Cable flag', 12, [text('Cable name', { fontFamily: 'archivo-narrow', size: { mode: 'mm', mm: QUICK_M_MM[12] } }), spacer(CABLE_FLAG_WRAP_MM), text('Cable name', { fontFamily: 'archivo-narrow', size: { mode: 'mm', mm: QUICK_M_MM[12] } })], {
+    build: (band) =>
+      label('Cable flag', 12, [text('Cable name', { fontFamily: 'archivo-narrow', size: quickM(12, band) }), spacer(CABLE_FLAG_WRAP_MM), text('Cable name', { fontFamily: 'archivo-narrow', size: quickM(12, band) })], {
         marginsMm: { start: 1, end: 1 },
         layout: { mode: 'flow', gapMm: 2, align: 'center' },
       }),
@@ -119,7 +158,15 @@ export const TEMPLATES: readonly TemplateDef[] = [
     description: 'Icon and contents for shelves, boxes and bins. Pick another icon in the icon block.',
     category: 'storage',
     tapeWidthMm: 24,
-    build: () => label('Shelf label', 24, [icon('archive', { size: { mode: 'mm', mm: 14 } }), text('Contents', { size: { mode: 'mm', mm: QUICK_M_MM[24] } })]),
+    build: (band) => label('Shelf label', 24, [icon('archive', { size: { mode: 'mm', mm: 14 } }), text('Contents', { size: quickM(24, band) })]),
+  },
+  {
+    id: 'bin-36',
+    name: 'Shelf or bin label (36 mm)',
+    description: 'Large icon and contents for shelves, crates and archive boxes, readable from a distance.',
+    category: 'storage',
+    tapeWidthMm: 36,
+    build: (band) => label('Shelf label', 36, [icon('archive', { size: { mode: 'mm', mm: 22 } }), text('Contents', { size: quickM(36, band) })], { layout: { mode: 'flow', gapMm: 3, align: 'center' } }),
   },
   {
     id: 'drawer-12',
@@ -127,7 +174,7 @@ export const TEMPLATES: readonly TemplateDef[] = [
     description: 'Compact icon and contents for drawers and small boxes.',
     category: 'storage',
     tapeWidthMm: 12,
-    build: () => label('Drawer label', 12, [icon('package'), text('Contents', { size: { mode: 'mm', mm: QUICK_M_MM[12] } })], { layout: { mode: 'flow', gapMm: 2, align: 'center' } }),
+    build: (band) => label('Drawer label', 12, [icon('package'), text('Contents', { size: quickM(12, band) })], { layout: { mode: 'flow', gapMm: 2, align: 'center' } }),
   },
   {
     id: 'gridfinity-12',
@@ -167,6 +214,14 @@ export const TEMPLATES: readonly TemplateDef[] = [
     build: () => label('Folder spine', 24, [text('Folder title', { fontWeight: 700, size: { mode: 'mm', mm: 15 } })], { length: { mode: 'fixed', mm: 100, shrink: true } }),
   },
   {
+    id: 'folder-spine-36',
+    name: 'Folder spine (36 mm)',
+    description: 'Large title for the wide spine of a lever-arch file or archive box (150 mm long); a long title gets smaller to fit.',
+    category: 'office',
+    tapeWidthMm: 36,
+    build: () => label('Folder spine', 36, [text('Folder title', { fontWeight: 700, size: { mode: 'mm', mm: 22 } })], { length: { mode: 'fixed', mm: 150, shrink: true } }),
+  },
+  {
     id: 'name-tag',
     name: 'Name tag',
     description: 'Two lines with a thin border: a name and a team or role.',
@@ -178,6 +233,18 @@ export const TEMPLATES: readonly TemplateDef[] = [
         frame: { thicknessMm: 0.4, radiusMm: 2, insetMm: 0 },
       }),
   },
+  {
+    id: 'name-tag-36',
+    name: 'Name tag (36 mm)',
+    description: 'A large name tag for events and doors: two lines with a thin rounded border.',
+    category: 'office',
+    tapeWidthMm: 36,
+    build: () =>
+      label('Name tag', 36, [text('Your Name\nTeam or role', { lineHeight: 1.15 })], {
+        marginsMm: { start: 6, end: 6 },
+        frame: { thicknessMm: 0.5, radiusMm: 3, insetMm: 0 },
+      }),
+  },
 ]
 
 export function templateById(id: string): TemplateDef | undefined {
@@ -187,6 +254,32 @@ export function templateById(id: string): TemplateDef | undefined {
 /** Templates of `category`, in catalogue order. */
 export function templatesIn(category: TemplateCategory): TemplateDef[] {
   return TEMPLATES.filter((t) => t.category === category)
+}
+
+/** The active model takes the template's tape width (docs/MODELS-PLAN.md §3.9; frozen). */
+export function templateFits(t: Pick<TemplateDef, 'tapeWidthMm'>, widths: readonly TapeWidthMm[]): boolean {
+  return widths.some((w) => Math.abs(w - t.tapeWidthMm) < 0.01)
+}
+
+/**
+ * The model a template card is drawn and opened with: `active` when it takes the template's
+ * width (or the table does not know it: nothing to check), else the stand-in the editor would
+ * preview it with (models.ts `standInModel`: the first table model that takes the width); null
+ * when no model takes it. Thumbnails therefore never ask a model for a tape it lacks.
+ */
+export function templateModel(t: Pick<TemplateDef, 'tapeWidthMm'>, active: string, models: readonly ModelInfo[]): string | null {
+  const info = findModel(models, active)
+  if (!info || templateFits(t, tapeWidthsOf(info))) return info?.name ?? active
+  return standInModel(models, t.tapeWidthMm)
+}
+
+/** "Needs 36 mm tape · PT-P710BT takes up to 24 mm" (a width above the model's widest) or
+ * "Needs 9 mm tape · PT-X doesn’t take it" (a gap): the mark of a template or a printed label
+ * whose width the active model lacks; null when it takes the width (or `widths` is unknown). */
+export function needsWidthText(widthMm: number, model: string, widths: readonly number[]): string | null {
+  if (widths.length === 0 || widths.some((w) => Math.abs(w - widthMm) < 0.01)) return null
+  const max = Math.max(...widths)
+  return `Needs ${formatMm(widthMm)} tape · ${model} ${widthMm > max ? `takes up to ${formatMm(max)}` : 'doesn’t take it'}`
 }
 
 /** The template is designed for the tape that is loaded in the printer. */

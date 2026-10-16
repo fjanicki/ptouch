@@ -17,7 +17,7 @@
   import { matchQuickSize, quickReadouts, quickTextSizes } from '../../../render/text-size'
   import { dotsToMm } from '../../../render/units'
   import { getStudio } from '../../state/studio.svelte'
-  import { FALLBACK_BAND_DOTS } from '../../state/text-defaults'
+  import { fallbackBand } from '../../state/text-defaults'
 
   let { item, variant = 'props' }: { item: TextItem; variant?: 'props' | 'compact' } = $props()
   const studio = getStudio()
@@ -26,7 +26,8 @@
   const band = $derived.by(() => {
     const t = studio.target
     if (t.ok) return { dots: itemSizingBand(studio.doc, item, t.target.area).bandDots, dpi: t.target.area.dpi, minMm: dotsToMm(t.target.area.minLengthDots, t.target.area.dpi) }
-    return { dots: FALLBACK_BAND_DOTS[studio.doc.tape.widthMm], dpi: 180, minMm: 0 }
+    const fallback = fallbackBand(studio.doc.tape.widthMm)
+    return { dots: fallback.bandDots, dpi: fallback.dpi, minMm: 0 }
   })
   const sizes = $derived(quickTextSizes(band.dots, band.dpi))
   const current = $derived(matchQuickSize(item.size, band.dots, band.dpi))

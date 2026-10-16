@@ -14,12 +14,21 @@
  * Older documents are upgraded by persist-migrate.ts (2 → 3 marks fixed-size text `clipTall`,
  * which keeps v1's clipping of text taller than the band, so they render pixel-identically); an
  * older app opens a schema-3 label read-only instead of
- * silently turning a point size or a new font into something else. */
-export const SCHEMA_VERSION = 3 as const
+ * silently turning a point size or a new font into something else.
+ * 4 (printer models, docs/MODELS-PLAN.md): 36 mm tape (PT-P910BT, PT-E920BT, PT-P900 family…)
+ * and `tape.model`, the model a label was designed for. Nothing renders differently (3 → 4 only
+ * changes the version). An older app (widths up to 24 mm) still shows a 36 mm schema-4 label
+ * clamped to 24 mm, but opens it read-only: the first edit saves a copy, so the 36 mm original is
+ * never saved over. */
+export const SCHEMA_VERSION = 4 as const
 
-/** Nominal TZe tape widths (PT-P710BT). 3.5 mm reports width byte 4 in the status. */
-export type TapeWidthMm = 3.5 | 6 | 9 | 12 | 18 | 24
-export const TAPE_WIDTHS_MM: readonly TapeWidthMm[] = [3.5, 6, 9, 12, 18, 24]
+/**
+ * Nominal TZe tape widths any supported model takes (3.5 mm reports width byte 4 in the status).
+ * Which of them a printer takes comes from its profile (ui/state/models.ts `tapeWidthsOf`): the
+ * PT-P710BT stops at 24 mm, the PT-P300BT at 12 mm, the 360 dpi models go up to 36 mm.
+ */
+export type TapeWidthMm = 3.5 | 6 | 9 | 12 | 18 | 24 | 36
+export const TAPE_WIDTHS_MM: readonly TapeWidthMm[] = [3.5, 6, 9, 12, 18, 24, 36]
 
 /**
  * Bundled families (web/public/fonts, registry in render/font-catalog.ts). The first four are the
@@ -90,6 +99,13 @@ export interface TapeSettings {
   widthMm: TapeWidthMm
   /** Exact media id (e.g. "tze128-24") once known from the printer; else resolved from widthMm. */
   mediaId?: string
+  /**
+   * Printer model the label was last designed for ("PT-P910BT"; schema 4). Informational: the
+   * label always renders for the active model (the connected printer, else the "Design for"
+   * model). When the active model lacks the tape width, the studio offers to design for this one
+   * again. Absent on older labels; unknown names are kept (a newer app may know them).
+   */
+  model?: string
   /** Preview colours (CSS) when designing offline; the printer's reported colours win. */
   colors?: { tape: string; ink: string }
 }
@@ -450,6 +466,8 @@ export const CONTENT_REF_RE = /^sha256-[0-9a-f]{32}$/
 /** Untrusted short strings: ids, media ids, colours, timestamps (share links, imported files). */
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MEDIA_ID_RE = /^[a-z0-9-]{1,32}$/
+/** A printer model name as the core's table spells it ("PT-P710BT", "PT-P715eBT", "Cube Plus"). */
+export const MODEL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$/
 const COLOR_RE = /^#[0-9a-f]{3,8}$/i
 const isTimestamp = (v: unknown): v is string => typeof v === 'string' && v.length <= 40 && !Number.isNaN(Date.parse(v))
 
@@ -789,6 +807,8 @@ export function validateDoc(raw: unknown): { ok: true; doc: LabelDoc; notices: s
   }
   const tape: TapeSettings = { widthMm }
   if (typeof tapeIn['mediaId'] === 'string' && MEDIA_ID_RE.test(tapeIn['mediaId'])) tape.mediaId = tapeIn['mediaId']
+  if (typeof tapeIn['model'] === 'string' && MODEL_NAME_RE.test(tapeIn['model'])) tape.model = tapeIn['model']
+  else if (tapeIn['model'] !== undefined) tr.note('the printer model is not a model name; removed')
   const colors = tapeIn['colors']
   if (isObj(colors) && typeof colors['tape'] === 'string' && typeof colors['ink'] === 'string' && COLOR_RE.test(colors['tape']) && COLOR_RE.test(colors['ink'])) {
     tape.colors = { tape: colors['tape'], ink: colors['ink'] }

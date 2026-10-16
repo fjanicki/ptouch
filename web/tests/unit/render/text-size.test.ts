@@ -1,7 +1,7 @@
 // Quick text sizes (docs/FONTS-AND-SIZE-PLAN.md §3): fractions of the band, whole dots, stored as
 // mm sizes that round-trip through mmToDots.
 import { describe, expect, it } from 'vitest'
-import { MIN_READABLE_DOTS, defaultSizeOf, emDotsToPt, estimateLabelMm, matchQuickSize, quickTextSizes } from '../../../src/render/text-size'
+import { MIN_READABLE_DOTS, MIN_READABLE_MM, defaultSizeOf, minReadableDots, emDotsToPt, estimateLabelMm, matchQuickSize, quickTextSizes } from '../../../src/render/text-size'
 import { mmToDots } from '../../../src/render/units'
 
 const BANDS = { 3.5: 24, 6: 32, 9: 50, 12: 70, 18: 112, 24: 128 } as const
@@ -30,6 +30,38 @@ describe('quickTextSizes', () => {
   it('flags sizes below 2 mm on narrow tape', () => {
     expect(quickTextSizes(32, 180).filter((s) => s.tooSmall).map((s) => s.id)).toEqual(['xs', 's'])
     expect(quickTextSizes(128, 180).some((s) => s.tooSmall)).toBe(false)
+  })
+
+  it('the readable minimum is 2 mm at any dpi: 14 dots at 180 dpi, 28 at 360 (docs/MODELS-PLAN.md §3.10)', () => {
+    expect(MIN_READABLE_MM).toBe(2)
+    expect(MIN_READABLE_DOTS).toBe(14)
+    expect(minReadableDots(180)).toBe(14)
+    expect(minReadableDots(360)).toBe(28)
+    // PT-P910BT 6 mm (64 dots at 360 dpi = 4.5 mm, like 32 dots at 180 dpi): the same sizes flagged.
+    expect(quickTextSizes(64, 360).filter((s) => s.tooSmall).map((s) => s.id)).toEqual(['xs', 's'])
+    // …at the same physical sizes, within one 180 dpi dot (the finer head rounds differently).
+    const fine = quickTextSizes(64, 360)
+    quickTextSizes(32, 180).forEach((s, i) => {
+      const f = fine[i]?.size
+      if (s.size.mode === 'mm' && f?.mode === 'mm') expect(Math.abs(f.mm - s.size.mm), s.id).toBeLessThan(25.4 / 180)
+      else expect(f).toEqual(s.size)
+    })
+    // 3.5 mm on a 360 dpi head (48 dots = 3.4 mm): XS–M are below 2 mm.
+    expect(quickTextSizes(48, 360).filter((s) => s.tooSmall).map((s) => s.id)).toEqual(['xs', 's', 'm'])
+  })
+
+  it('360 dpi bands (PT-P910BT): quick sizes round-trip and M is half the band', () => {
+    for (const band of [48, 64, 106, 150, 234, 320, 454]) {
+      const q = quickTextSizes(band, 360)
+      for (const s of q) {
+        if (s.size.mode === 'mm') expect(mmToDots(s.size.mm, 360), `${band} ${s.id}`).toBe(s.dots)
+        expect(s.tooSmall).toBe(s.dots < minReadableDots(360))
+        expect(matchQuickSize(s.size, band, 360)).toBe(s.id === 'xs' && q[1]?.dots === s.dots ? 'xs' : s.id)
+      }
+    }
+    // 36 mm: M is 227 dots = 16.02 mm; 24 mm on a P910BT (320 dots): 160 dots = 11.29 mm.
+    expect(quickTextSizes(454, 360)[2]?.size).toEqual({ mode: 'mm', mm: 16.02 })
+    expect(quickTextSizes(320, 360)[2]?.size).toEqual({ mode: 'mm', mm: 11.29 })
   })
 
   it('matchQuickSize: other sizes are not a quick size', () => {

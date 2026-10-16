@@ -2,6 +2,8 @@
 // kind/label, last status hex, last Problem, probe results and the packet log tail. Everything
 // passes through maskText(): device-name suffixes become "PT-P710BTxxxx", Bluetooth addresses
 // "XX:XX:XX:XX:XX:XX", serial numbers "***" — a report never identifies the user's printer.
+// Printer models (docs/MODELS-PLAN.md; P-core-ui): the model the studio designs for, where it
+// comes from, whether it was tested on hardware, its tape widths and the label's width.
 import { toHex, type ConnectionSnapshot, type PacketLog, type PacketLogEntry, type SupportInfo } from '../../printer'
 import type { ProbeResult } from './probe'
 
@@ -19,6 +21,19 @@ export function maskDeviceLabel(label: string): string {
   return maskText(label)
 }
 
+/** The studio's model state for the report (Studio.model, modelSource, tapeWidths, …). */
+export interface ReportModel {
+  model: string
+  source: 'printer' | 'design'
+  designModel: string
+  tested: boolean
+  /** TZe widths the model takes (mm). */
+  tapeWidths: readonly number[]
+  labelWidthMm: number
+  /** The model takes the label's width. */
+  widthOk: boolean
+}
+
 export interface ReportExtras {
   appVersion?: string
   wasmVersion?: string
@@ -28,6 +43,8 @@ export interface ReportExtras {
   /** Service worker / storage / canvas facts gathered by the page. */
   facts?: Record<string, string>
   probes?: { path: string; result: ProbeResult }[]
+  /** Printer model the studio designs/prints for. */
+  model?: ReportModel
   /** Packet log lines to include (newest last). Default 200. */
   logTail?: number
   now?: Date
@@ -64,6 +81,15 @@ export function buildReport(support: SupportInfo, snap: ConnectionSnapshot, log:
   kv('can print', support.canPrint)
   kv('paths', support.paths.join(', '))
   for (const [k, v] of Object.entries(extras.facts ?? {})) kv(k, v)
+
+  if (extras.model) {
+    const m = extras.model
+    lines.push('', '## Printer model')
+    kv('model', `${m.model} (${m.source === 'printer' ? 'connected printer' : 'design for'}, ${m.tested ? 'tested' : 'untested'})`)
+    if (m.source === 'printer' && m.designModel !== m.model) kv('design for', m.designModel)
+    kv('tape widths', m.tapeWidths.length ? `${m.tapeWidths.join(', ')} mm` : null)
+    kv('label tape', `${m.labelWidthMm} mm${m.widthOk ? '' : ' (not taken by this model)'}`)
+  }
 
   lines.push('', '## Connection')
   kv('path', snap.path)

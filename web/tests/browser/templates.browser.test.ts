@@ -3,17 +3,26 @@
 // templates need P3's `wifiPayload`; they are skipped while it is still a stub.
 // P-size (docs/FONTS-AND-SIZE-PLAN.md §3.3) — and they do not waste tape: each one stays within a
 // length budget, the 12 mm Wi-Fi sticker is 30–40 mm long with a typical network name.
+// Printer models (docs/MODELS-PLAN.md §3.9) — the 36 mm variants render on the 360 dpi models, and
+// every template renders cleanly on the band of every model that takes its width (`build(band)`).
 import { beforeAll, describe, expect, it } from 'vitest'
-import { loadWasm, mediaForWidth, printArea, release, type Bitmap1 } from '../../src/wasm'
+import { listModels, loadWasm, mediaForWidth, printArea, release, type Bitmap1 } from '../../src/wasm'
 import { renderLabel, wifiPayload, type RenderResult, type RenderTarget } from '../../src/render'
 import { preloadAllFonts } from '../../src/render/fonts'
 import { createWifi, type LabelDoc } from '../../src/doc/schema'
 import { resolveDoc } from '../../src/doc/variables'
-import { TEMPLATES, withSampleData } from '../../src/ui/templates/templates'
+import { TEMPLATES, templateModel, withSampleData, type TemplateDef } from '../../src/ui/templates/templates'
+import { tapeWidthsOf } from '../../src/ui/state/models'
 
-function target(widthMm: number): RenderTarget {
-  const media = mediaForWidth('PT-P710BT', widthMm)
-  return { model: 'PT-P710BT', media, area: printArea('PT-P710BT', media.id) }
+/** The template's tape on the PT-P710BT, or on the PT-P910BT for 36 mm (which it lacks). */
+function target(widthMm: number, model = widthMm === 36 ? 'PT-P910BT' : 'PT-P710BT'): RenderTarget {
+  const media = mediaForWidth(model, widthMm)
+  return { model, media, area: printArea(model, media.id) }
+}
+
+/** `t` built on the band of `target` (as the gallery opens it on that model). */
+function builtFor(t: TemplateDef, tg: RenderTarget): LabelDoc {
+  return t.build({ bandDots: tg.area.heightDots, dpi: tg.area.dpi })
 }
 
 /** Placeholders filled the way a user (and P1's resolver) would. */
@@ -52,7 +61,7 @@ describe('templates render on their tape', () => {
   for (const t of TEMPLATES) {
     const needsWifi = t.build().items.some((i) => i.kind === 'code' && i.content === 'wifi')
     it.skipIf(needsWifi && !wifiReady())(`${t.name}`, async () => {
-      const doc = filled(t.build())
+      const doc = filled(builtFor(t, target(t.tapeWidthMm)))
       let r: RenderResult | undefined
       try {
         r = await renderLabel(doc, target(t.tapeWidthMm))
@@ -79,12 +88,16 @@ describe('templates render on their tape', () => {
     'asset-tag': 30,
     'folder-spine': 100,
     'name-tag': 65,
+    'wifi-36': 110,
+    'bin-36': 105,
+    'folder-spine-36': 150,
+    'name-tag-36': 115,
   }
 
   it.skipIf(!wifiReady())('every template stays within its length budget', async () => {
     expect(Object.keys(BUDGET_MM).sort()).toEqual(TEMPLATES.map((t) => t.id).sort())
     for (const t of TEMPLATES) {
-      const r = await renderLabel(filled(t.build()), target(t.tapeWidthMm))
+      const r = await renderLabel(filled(builtFor(t, target(t.tapeWidthMm))), target(t.tapeWidthMm))
       try {
         expect(r.lengthMm, t.id).toBeLessThanOrEqual((BUDGET_MM[t.id] ?? 0) + 0.05)
       } finally {
@@ -116,7 +129,7 @@ describe('templates render on their tape', () => {
   })
 
   it('long text shrinks on the fixed-length templates instead of being cut off', async () => {
-    for (const id of ['gridfinity-12', 'folder-spine', 'cable-wrap']) {
+    for (const id of ['gridfinity-12', 'folder-spine', 'folder-spine-36', 'cable-wrap']) {
       const t = TEMPLATES.find((x) => x.id === id)!
       const doc = t.build()
       const long = { ...doc, items: doc.items.map((i) => (i.kind === 'text' ? { ...i, text: `${i.text} with a much longer description` } : i)) }
@@ -140,6 +153,64 @@ describe('templates render on their tape', () => {
       expect(box?.h).toBeGreaterThanOrEqual(29 * 2)
     } finally {
       release(r.bitmap)
+    }
+  })
+})
+
+describe('templates on every printer model (docs/MODELS-PLAN.md §3.9)', () => {
+  /** One model per distinct print area (dpi and band of every width): the others render alike. */
+  function distinctModels(): string[] {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const m of listModels()) {
+      const key = tapeWidthsOf(m)
+        .map((w) => {
+          const a = printArea(m.name, mediaForWidth(m.name, w).id)
+          return `${a.dpi}:${a.heightDots}:${a.tapeWidthDots}`
+        })
+        .join(',')
+      if (!seen.has(key)) {
+        seen.add(key)
+        out.push(m.name)
+      }
+    }
+    return out
+  }
+
+  it.skipIf(!wifiReady())('every template renders without warnings on the band of every model that takes its width', async () => {
+    const models = distinctModels()
+    // PT-P710BT, PT-P300BT (12 mm = 64 dots), an 18 mm model and the 360 dpi heads at least.
+    expect(models).toEqual(expect.arrayContaining(['PT-P710BT', 'PT-P300BT', 'PT-E310BT', 'PT-P910BT']))
+    for (const name of models) {
+      const m = listModels().find((x) => x.name === name)!
+      for (const t of TEMPLATES.filter((x) => tapeWidthsOf(m).includes(x.tapeWidthMm))) {
+        const tg = target(t.tapeWidthMm, name)
+        const r = await renderLabel(filled(builtFor(t, tg)), tg)
+        try {
+          expect(r.warnings.map((w) => `${t.id} on ${name}: ${w.code}: ${w.message}`)).toEqual([])
+          expect(r.blocking).toBe(false)
+          expect(r.overflow ?? false, `${t.id} on ${name}`).toBe(false)
+          expect(inkRows(r.bitmap), `${t.id} on ${name}`).toBeGreaterThan(r.heightDots / 3)
+        } finally {
+          release(r.bitmap)
+        }
+      }
+    }
+  })
+
+  it('a template on a width the active model lacks is drawn with the stand-in (never fails)', async () => {
+    for (const t of TEMPLATES) {
+      for (const active of ['PT-P300BT', 'PT-D460BT', 'PT-P710BT']) {
+        const use = templateModel(t, active, listModels())
+        expect(use, `${t.id} on ${active}`).not.toBeNull()
+        const tg = target(t.tapeWidthMm, use!)
+        const r = await renderLabel(filled(builtFor(t, tg)), tg)
+        try {
+          expect(r.blocking, `${t.id} on ${active} → ${use}`).toBe(false)
+        } finally {
+          release(r.bitmap)
+        }
+      }
     }
   })
 })

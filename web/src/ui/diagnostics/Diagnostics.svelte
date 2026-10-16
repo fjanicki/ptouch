@@ -2,12 +2,14 @@
      matrix, studio connection (connect by each path, status), raw link probe per path with
      open/close stress (probe.ts), live hex packet log, virtual printer (render → encode →
      download .bin → decode → decoded pages as PNG/PBM), orientation + ruler test labels, and
-     "Copy diagnostics" (report.ts, device names masked). -->
+     "Copy diagnostics" (report.ts, device names masked).
+     Printer models (docs/MODELS-PLAN.md; P-core-ui): virtual runs and the virtual probe use the
+     studio's active model, the tape list is that model's widths, and the report names the model. -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
   import { getStudio } from '../state/studio.svelte'
   import ProblemBanner from '../common/ProblemBanner.svelte'
-  import { TAPE_WIDTHS_MM, type LabelDoc, type TapeWidthMm } from '../../doc/schema'
+  import type { LabelDoc, TapeWidthMm } from '../../doc/schema'
   import { openLabelStore } from '../../doc/persist'
   import { downloadBytes } from '../../doc/persist-files'
   import {
@@ -29,7 +31,10 @@
   import { probeTransport, type ProbeResult, type ProbeStep } from './probe'
   import { buildReport, formatLogEntry, maskText } from './report'
   import { orientationDoc, rulerDoc, type TestLabelKind } from './testlabels'
-  import { DEFAULT_MODEL, bitmapPng, freeRun, resolveTarget, runFileBase, runVirtual, type VirtualRun } from './virtual'
+  import { bitmapPng, freeRun, resolveTarget, runFileBase, runVirtual, type VirtualRun } from './virtual'
+  import { virtualScenarioFor } from '../state/virtual-printer'
+  import { isVerifiedModel } from '../state/models'
+  import { formatMm, nearestTapeWidth } from '../state/view-model'
 
   let { onclose }: { onclose: () => void } = $props()
   const studio = getStudio()
@@ -112,7 +117,7 @@
       case 'usb':
         return WebUsbTransport.request()
       case 'virtual':
-        return Promise.resolve(new MockTransport())
+        return Promise.resolve(new MockTransport(virtualScenarioFor(studio.modelInfo)))
     }
   }
 
@@ -198,11 +203,18 @@
   let printing = $state(false)
   let previewCanvas = $state<HTMLCanvasElement | null>(null)
   let decodedCanvas = $state<HTMLCanvasElement | null>(null)
-  const model = $derived(conn.model ?? DEFAULT_MODEL)
+  const model = $derived(studio.model)
+  const widths = $derived(studio.tapeWidths)
+  // Loaded media only when it belongs to the model the run is for.
+  const loaded = $derived(conn.media && (conn.model ?? conn.status?.modelName) === model ? conn.media : null)
+  // The tape list follows the model: keep the pick on one of its widths.
+  $effect(() => {
+    if (widths.length && !widths.includes(widthMm)) widthMm = nearestTapeWidth(widthMm, widths)
+  })
 
   function buildSourceDoc(): LabelDoc {
     if (source === 'current') return studio.doc
-    const target = resolveTarget(model, widthMm, conn.media)
+    const target = resolveTarget(model, widthMm, loaded)
     if (source === 'orientation') return orientationDoc(widthMm)
     return rulerDoc(widthMm, (target.area.heightDots / target.area.dpi) * 25.4)
   }
@@ -212,9 +224,14 @@
     running = true
     runError = ''
     try {
+      const support = studio.widthSupport
+      if (source === 'current' && !support.ok) {
+        runError = `${support.message} Fit it to ${formatMm(support.nearest)} in the studio, or design for a model that takes it.`
+        return
+      }
       const doc = buildSourceDoc()
       const w = source === 'current' ? doc.tape.widthMm : widthMm
-      const target = resolveTarget(model, w, conn.media)
+      const target = resolveTarget(model, w, loaded)
       const next = await runVirtual(doc, target, (ref) => store.getBlob(ref))
       // Unmounted while running: nobody will free `next` later.
       if (destroyed) {
@@ -282,6 +299,15 @@
       url: baseUrl,
       facts,
       probes: probeHistory,
+      model: {
+        model: studio.model,
+        source: studio.modelSource,
+        designModel: studio.designModel,
+        tested: isVerifiedModel(studio.model),
+        tapeWidths: studio.tapeWidths,
+        labelWidthMm: studio.doc.tape.widthMm,
+        widthOk: studio.widthSupport.ok,
+      },
     })
   }
 
@@ -307,8 +333,10 @@
     const log = studio.connection.packetLog
     logEntries = [...log.entries()]
     unsubscribeLog = log.subscribe((e) => (logEntries = [...e]))
+    // The loaded tape, else the label's width, else the model's widest.
     const w = conn.media?.widthMm ?? studio.doc.tape.widthMm
-    if ((TAPE_WIDTHS_MM as readonly number[]).includes(w)) widthMm = w as TapeWidthMm
+    const ws = studio.tapeWidths
+    widthMm = (ws as readonly number[]).includes(w) ? (w as TapeWidthMm) : (ws[ws.length - 1] ?? widthMm)
     window.scrollTo?.(0, 0)
     // The studio view (and the button that opened this one) is gone: move focus to the heading.
     heading?.focus()
@@ -369,7 +397,8 @@
       <dl class="kv">
         <dt>State</dt><dd><span class="pill {conn.state}">{conn.state}</span></dd>
         <dt>Transport</dt><dd>{conn.transport ? `${conn.transport.kind} · ${maskText(conn.transport.label)}` : '—'}</dd>
-        <dt>Model</dt><dd>{conn.model ?? '—'}</dd>
+        <dt>Model</dt><dd>{conn.model ?? '—'}{conn.model && !isVerifiedModel(conn.model) ? ' (untested)' : ''}</dd>
+        <dt>Designing for</dt><dd>{studio.model}{studio.modelSource === 'design' ? ' (no printer)' : ''}</dd>
         <dt>Media</dt><dd>{conn.media ? `${conn.media.widthMm} mm ${conn.media.kind} (${conn.media.id})` : '—'}</dd>
         {#if conn.status}
           <dt>Tape / ink</dt><dd>{conn.status.tapeColor.name} / {conn.status.textColor.name}</dd>
@@ -500,7 +529,7 @@
         <label class="inline">
           <span>Tape</span>
           <select class="select narrow" bind:value={widthMm} disabled={source === 'current'}>
-            {#each TAPE_WIDTHS_MM as w (w)}<option value={w}>{w} mm</option>{/each}
+            {#each widths as w (w)}<option value={w}>{w} mm</option>{/each}
           </select>
         </label>
         <button class="btn primary" onclick={renderRun} disabled={running || studio.wasm !== 'ready'}>{running ? 'Encoding…' : 'Render & encode'}</button>

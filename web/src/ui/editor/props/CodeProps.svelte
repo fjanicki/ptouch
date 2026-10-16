@@ -6,7 +6,7 @@
   import { createWifi, type CodeItem, type ModuleSize, type QrEcc, type QuietZone, type Symbology, type WifiSecurity, type WifiSettings } from '../../../doc/schema'
   import { resolveDoc } from '../../../doc/variables'
   import { codeMatrix, dotsToMm, isLinear, itemSizingBand, quietModules } from '../../../render'
-  import { chooseModuleDots, readability } from '../../../render/codes'
+  import { chooseModuleDots, dotsAt, readability } from '../../../render/codes'
   import { wifiPayload, wifiWarnings } from '../../../render/wifi'
   import Icon from '../../common/Icon.svelte'
   import NumberField from '../../common/NumberField.svelte'
@@ -14,6 +14,7 @@
   import Switch from '../../common/Switch.svelte'
   import { getStudio } from '../../state/studio.svelte'
   import VariableHint from '../../batch/VariableHint.svelte'
+  import { fallbackBand } from '../../state/text-defaults'
 
   let { item }: { item: CodeItem } = $props()
   const studio = getStudio()
@@ -25,10 +26,12 @@
   const setWifi = (patch: Partial<WifiSettings>, key?: string) => set({ wifi: { ...wifi, ...patch } }, key)
   let showPassword = $state(false)
 
-  const dpi = $derived(studio.target.ok ? studio.target.target.area.dpi : 180)
+  // Before the print area is known: the default model's band of this tape (text-defaults.ts).
+  const fallback = $derived(fallbackBand(studio.doc.tape.widthMm))
+  const dpi = $derived(studio.target.ok ? studio.target.target.area.dpi : fallback.dpi)
   // The renderer's own rule (render/renderer.ts itemSizingBand): the band inside a label frame,
   // and the unprinted tape counts as quiet zone only when no frame line borders the band.
-  const sizingBand = $derived(studio.target.ok ? itemSizingBand(studio.doc, item, studio.target.target.area) : { bandDots: 128, marginDots: 0, framed: false })
+  const sizingBand = $derived(studio.target.ok ? itemSizingBand(studio.doc, item, studio.target.target.area) : { bandDots: fallback.bandDots, marginDots: 0, framed: false })
   const band = $derived(sizingBand.bandDots)
   const framed = $derived(sizingBand.framed)
   const marginDots = $derived(sizingBand.marginDots)
@@ -54,7 +57,7 @@
   const sizing = $derived.by(() => {
     if (!matrix) return null
     const [qx, qy] = quietModules(matrix, item.quietZone, item.symbology)
-    const choice = chooseModuleDots(matrix, { moduleDots: item.moduleDots, quietZone: item.quietZone, symbology: item.symbology, bandDots: band, marginDots })
+    const choice = chooseModuleDots(matrix, { moduleDots: item.moduleDots, quietZone: item.quietZone, symbology: item.symbology, bandDots: band, marginDots, dpi })
     let md = choice.md
     const box = studio.render?.boxes.find((b) => b.itemId === item.id)
     const unit = matrix.width + 2 * qx
@@ -69,7 +72,7 @@
     if (linear) return `${md} dot${md === 1 ? '' : 's'} per bar module · about ${mm((matrix.width + 2 * qx) * md)} mm long with its quiet zone.`
     return `${md} dot${md === 1 ? '' : 's'} per module · ${mm(matrix.width * md)} × ${mm(matrix.height * md)} mm (${matrix.width} × ${matrix.height} modules).`
   })
-  const read = $derived(sizing && !(sizing.max < 1 && !sizing.linear) ? readability(sizing.md) : null)
+  const read = $derived(sizing && !(sizing.max < 1 && !sizing.linear) ? readability(sizing.md, dpi) : null)
 
   const wifiProblem = $derived.by((): { text: string; tone: '' | 'warn' | 'error' } => {
     if (!isWifi) return { text: '', tone: '' }
@@ -115,7 +118,8 @@
     const patch: Partial<CodeItem> = { symbology, showText: linear }
     if (symbology === 'ean13' && !/^\d{12,13}$/.test(item.data)) patch.data = '400638133393'
     if (symbology !== 'qr' && item.content === 'wifi') patch.content = 'text'
-    if (linear && typeof item.moduleDots === 'number' && item.moduleDots > 3) patch.moduleDots = 2
+    // A fixed module wider than 3 dots (at 180 dpi) makes a very long barcode: back to 2.
+    if (linear && typeof item.moduleDots === 'number' && item.moduleDots > dotsAt(3, dpi)) patch.moduleDots = dotsAt(2, dpi)
     set(patch)
   }
   function setContent(content: 'text' | 'wifi') {

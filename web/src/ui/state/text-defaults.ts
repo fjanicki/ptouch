@@ -15,8 +15,14 @@ import { matchQuickSize, quickTextSizes } from '../../render/text-size'
 export const AUTO_HALF_MIN_TAPE_MM = 12
 
 /** Printable band in dots per tape width on the PT-P710BT (180 dpi), for when the wasm core (and
- * so the exact print area) is not loaded yet. */
-export const FALLBACK_BAND_DOTS: Readonly<Record<TapeWidthMm, number>> = { 3.5: 24, 6: 32, 9: 50, 12: 70, 18: 112, 24: 128 }
+ * so the exact print area) is not loaded yet. It has no 36 mm: see `fallbackBand`. */
+export const FALLBACK_BAND_DOTS: Readonly<Record<Exclude<TapeWidthMm, 36>, number>> = { 3.5: 24, 6: 32, 9: 50, 12: 70, 18: 112, 24: 128 }
+
+/** The band to size text in before the wasm core is loaded (docs/MODELS-PLAN.md §2.5): the
+ * PT-P710BT's, and for 36 mm, which it lacks, the PT-P910BT's (454 dots at 360 dpi). */
+export function fallbackBand(widthMm: TapeWidthMm): { bandDots: number; dpi: number } {
+  return widthMm === 36 ? { bandDots: 454, dpi: 360 } : { bandDots: FALLBACK_BAND_DOTS[widthMm], dpi: 180 }
+}
 
 /** The `TextSize` a preference stands for on this tape / band. */
 export function resolveDefaultTextSize(pref: DefaultTextSize, tapeWidthMm: TapeWidthMm, bandDots: number, dpi: number): TextSize {
@@ -44,16 +50,26 @@ function sameTextSize(a: TextSize, b: TextSize): boolean {
 }
 
 /**
+ * Whether `size` reads as sized in this band: one of its quick sizes (or Fit), or `fresh`, the
+ * default new text gets there. The studio uses it to find the band a block was sized in when the
+ * printer model changed meanwhile (M of a 180 dpi band is no quick size of a 360 dpi one).
+ */
+export function isBandSize(size: TextSize, bandDots: number, dpi: number, fresh?: TextSize): boolean {
+  return (fresh !== undefined && sameTextSize(size, fresh)) || matchQuickSize(size, bandDots, dpi) !== undefined
+}
+
+/**
  * A text block's size after the tape width changes (tape picker, "Use loaded tape", an untouched
  * label following the cassette). A quick size of the old band (XS–L, which is also how the M / S
  * default of new text is stored) becomes the same quick size of the new band: M stays M instead
  * of filling a narrower tape (or being reduced to it). `fresh` (an untouched label): its text
  * still has `from`, the default of the old tape, so it gets `to`, the default of the new one
- * ('auto' is Fit below 12 mm). Fit, point sizes and other fixed sizes are kept.
+ * ('auto' is Fit below 12 mm). Fit, point sizes and other fixed sizes are kept. `newDpi`: the new
+ * band's resolution when the model changes too ("Fit to 24 mm" from a 360 dpi stand-in).
  */
-export function retapeTextSize(size: TextSize, oldBandDots: number, newBandDots: number, dpi: number, fresh?: { from: TextSize; to: TextSize }): TextSize {
+export function retapeTextSize(size: TextSize, oldBandDots: number, newBandDots: number, dpi: number, fresh?: { from: TextSize; to: TextSize }, newDpi = dpi): TextSize {
   if (fresh && sameTextSize(size, fresh.from)) return fresh.to
   const q = matchQuickSize(size, oldBandDots, dpi)
   if (q === undefined || q === 'fit') return size
-  return quickTextSizes(newBandDots, dpi).find((s) => s.id === q)?.size ?? size
+  return quickTextSizes(newBandDots, newDpi).find((s) => s.id === q)?.size ?? size
 }

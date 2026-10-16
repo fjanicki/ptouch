@@ -465,7 +465,7 @@ export function describeSupport(support: SupportInfo): Problem | null {
       title: 'Firefox works through the system serial port only',
       detail:
         support.platform === 'mac'
-          ? `Pair the printer in System Settings › Bluetooth, then choose “cu.PT-P710BTxxxx”. On macOS this port often works only once per pairing; ${CHROME_EDGE} are more reliable.`
+          ? `Pair the printer in System Settings › Bluetooth, then choose its “cu.” port (e.g. “cu.PT-P710BTxxxx”). On macOS this port often works only once per pairing; ${CHROME_EDGE} are more reliable.`
           : `Pair the printer in your system’s Bluetooth settings first, then choose its serial port. ${CHROME_EDGE} can connect over Bluetooth directly.`,
       actions: ['dismiss'],
       technical: tech,

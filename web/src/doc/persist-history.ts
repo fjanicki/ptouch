@@ -7,7 +7,7 @@
 // its GC asks blobRefs() so a reprint never loses them.
 import { hasIndexedDb, idbArea, memoryArea, refsOf, type KeyValueArea } from './persist'
 import { migrate } from './persist-migrate'
-import type { LabelDoc } from './schema'
+import { MODEL_NAME_RE, type LabelDoc } from './schema'
 
 export const HISTORY_LIMIT = 50
 
@@ -20,6 +20,8 @@ export interface PrintRecord {
   name: string
   tapeWidthMm: number
   mediaId?: string
+  /** Printer model it was printed on (docs/MODELS-PLAN.md; absent on older records). */
+  model?: string
   /** Pages in the job (batch rows × copies, or copies). */
   labels: number
   copies: number
@@ -105,6 +107,7 @@ export function openPrintHistory(opts: PrintHistoryOptions = {}): PrintHistory {
       name: typeof r.name === 'string' && r.name ? r.name : m.doc.name,
       tapeWidthMm: num(r.tapeWidthMm, m.doc.tape.widthMm),
       ...(typeof r.mediaId === 'string' ? { mediaId: r.mediaId } : {}),
+      ...(typeof r.model === 'string' && MODEL_NAME_RE.test(r.model) ? { model: r.model } : {}),
       labels: num(r.labels, 1),
       copies: num(r.copies, 1),
       ...(typeof r.batchRows === 'number' ? { batchRows: num(r.batchRows) } : {}),

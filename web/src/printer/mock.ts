@@ -2,14 +2,16 @@
 // the core encodes. Used by unit tests, the "No printer (virtual)" connect option and the
 // diagnostics page. Every reply is scheduled on the injected Clock (deterministic in tests),
 // optionally fragmented like RFCOMM ([7, 25]) and delayed by `latencyMs`.
+// Any model of the core's table works (docs/MODELS-PLAN.md §3.5): the status frames carry that
+// model's codes, so the connection reports it like a real printer of that model.
 import { VirtualPrinter, type Bitmap1, type VirtualBehaviour, type VirtualTiming } from '../wasm'
 import { LinkLostError, abortError } from './errors'
 import { DEFAULT_OPEN_RETRY, openWithRetry, type OpenRetryPolicy } from './retry'
 import { realClock, type Clock, type OpenOptions, type Transport, type TransportEvent, type TransportInfo } from './transport'
 
 export interface MockScenario {
-  model: string // "PT-P710BT"
-  mediaId: string // "tze128-24"
+  model: string // "PT-P710BT", "PT-P910BT", … (any table model or alias)
+  mediaId: string // "tze128-24", "tze560-36" … (a media id of that model)
   behaviour?: VirtualBehaviour
   timing?: VirtualTiming
   /** Split every reply like RFCOMM does, e.g. [7, 25] (the pattern repeats). */
@@ -24,6 +26,9 @@ export interface MockScenario {
   openRetry?: OpenRetryPolicy
 }
 
+/** Tests and the Diagnostics probe without a model. The studio's "No printer" passes its own
+ * scenario instead: the "Design for" model with its widest TZe tape (ConnectionManagerOptions
+ * .virtualScenario). */
 export const DEFAULT_SCENARIO: MockScenario = { model: 'PT-P710BT', mediaId: 'tze128-24' }
 
 export class MockTransport implements Transport {

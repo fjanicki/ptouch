@@ -2,7 +2,10 @@
      reprint / open; clear) and the tape usage counter (studio.usage, resettable). Open while
      studio.dialog === 'history'.
      "Open" reopens the label as printed: as itself when the library still holds that version
-     (or no longer holds the label), else as a copy, so later edits are never overwritten. -->
+     (or no longer holds the label), else as a copy, so later edits are never overwritten.
+     Printer models (docs/MODELS-PLAN.md §3.11): a record names the model it was printed on when
+     that is not the active model, and is marked when the active model lacks its tape width;
+     Reprint then opens it and the print gate explains why it can't print ("Fit to …"). -->
 <script lang="ts">
   import { tick } from 'svelte'
   import type { PrintRecord } from '../../doc/persist-history'
@@ -12,6 +15,7 @@
   import Modal from '../common/Modal.svelte'
   import { errorMessage, getStudio } from '../state/studio.svelte'
   import { formatTape } from '../batch/batch-model'
+  import { needsWidthText } from '../templates/templates'
 
   const studio = getStudio()
   const open = $derived(studio.dialog === 'history')
@@ -42,6 +46,14 @@
     const d = new Date(iso)
     return Number.isNaN(d.getTime()) ? '' : fmt.format(d)
   }
+
+  /** "24 mm tape", plus " · PT-P910BT" when it was printed on another model than the active one. */
+  function tapeText(r: PrintRecord): string {
+    return `${r.tapeWidthMm} mm tape${r.model && r.model !== studio.model ? ` · ${r.model}` : ''}`
+  }
+
+  /** The active model (once the table is loaded) lacks the record's tape width. */
+  const needs = (r: PrintRecord): string | null => (studio.modelInfo ? needsWidthText(r.tapeWidthMm, studio.model, studio.tapeWidths) : null)
 
   function labelsText(r: PrintRecord): string {
     if (r.batchRows !== undefined) return `${r.batchRows} batch ${r.batchRows === 1 ? 'label' : 'labels'}${r.copies > 1 ? ` × ${r.copies}` : ''}`
@@ -171,7 +183,8 @@
             <span class="meta">
               <strong>{r.name}</strong>
               <span>{when(r.printedAt)}</span>
-              <span>{r.tapeWidthMm} mm tape · {labelsText(r)} · {formatTape(r.tapeMm)}</span>
+              <span>{tapeText(r)} · {labelsText(r)} · {formatTape(r.tapeMm)}</span>
+              {#if needs(r)}<span class="needs" data-needs>{needs(r)}</span>{/if}
             </span>
             <span class="actions">
               <button type="button" class="btn small" aria-label="Open {r.name}" onclick={() => void reopen(r)}>Open</button>
@@ -272,6 +285,9 @@
   .meta span {
     color: var(--text-muted);
     font-size: 13px;
+  }
+  .meta .needs {
+    color: var(--warn);
   }
   .actions {
     display: flex;

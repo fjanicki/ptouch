@@ -1,4 +1,5 @@
-// W3 — unit conversions. PT-P710BT: 180 dpi head and feed → 7.0866 dots/mm.
+// W3 — unit conversions. 180 dpi models (PT-P710BT) → 7.0866 dots/mm; 360 dpi models (PT-P910BT)
+// → 14.173 dots/mm. Callers always pass the print area's dpi; the 180 default is for tests.
 export const MM_PER_INCH = 25.4
 
 export function mmToDots(mm: number, dpi = 180): number {

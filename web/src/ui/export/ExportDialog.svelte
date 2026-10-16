@@ -1,6 +1,8 @@
 <!-- P4 (docs/STUDIO-V1-PLAN.md) — export the exact print bitmap (studio.render.bitmap) as PNG
-     (1-bit, 180 dpi pHYs) or PDF (true physical size). Open while studio.dialog === 'export'.
-     The bitmap is cloned while it is encoded (the preview may re-render meanwhile). -->
+     (1-bit, pHYs at the print area's dpi: 180, or 360 on PT-P9xx models) or PDF (true physical
+     size). Open while studio.dialog === 'export'. The bitmap is cloned while it is encoded (the
+     preview may re-render meanwhile). A label on a width the active model lacks is rendered (and
+     so exported) on the stand-in model (docs/MODELS-PLAN.md §3.4): the dialog says which. -->
 <script lang="ts">
   import { FILE_EXTENSION, downloadBytes, labelFileName } from '../../doc/persist-files'
   import { mmToDots } from '../../render/units'
@@ -19,6 +21,9 @@
   const ready = $derived(!!render && !!area && render.lengthDots > 0 && !studio.renderError)
   const marginDots = $derived(render && area ? mmToDots(render.feedMarginMm, area.dpi) : 0)
   const pageMm = $derived(render && area ? pdfPageMm({ length: render.lengthDots }, { dpi: area.dpi, tapeWidthDots: area.tapeWidthDots, marginDots }) : null)
+  /** The model the export is drawn for: the active one, or the stand-in for a width it lacks. */
+  const drawnFor = $derived(studio.target.ok ? studio.target.target.model : studio.model)
+  const support = $derived(studio.widthSupport)
 
   /** "52.3" (formatMm without the unit). */
   const num = (mm: number, digits = 1): string => formatMm(mm, digits).slice(0, -3)
@@ -59,9 +64,12 @@
   {:else}
     <dl class="facts">
       <div><dt>Printed area</dt><dd>{num((render.lengthDots * 25.4) / area.dpi)} × {formatMm((render.heightDots * 25.4) / area.dpi)} ({render.lengthDots} × {render.heightDots} dots)</dd></div>
-      <div><dt>Resolution</dt><dd>{area.dpi} dpi (1 dot = {formatMm(25.4 / area.dpi, 3)})</dd></div>
+      <div><dt>Resolution</dt><dd>{area.dpi} dpi (1 dot = {formatMm(25.4 / area.dpi, 3)}) · {drawnFor}</dd></div>
       {#if pageMm}<div><dt>Cut label</dt><dd>{num(pageMm[0])} × {formatMm(pageMm[1])} on {studio.doc.tape.widthMm} mm tape</dd></div>{/if}
     </dl>
+    {#if !support.ok}
+      <p class="hint note" data-standin><Icon name="info" size={14} />{support.message} The export shows the label as printed on a {drawnFor}.</p>
+    {/if}
     {#if studio.batchCount > 0}
       <p class="hint note"><Icon name="table" size={14} />This label has a batch: the export shows label {studio.previewRow + 1} of {studio.batchCount}, the one in the preview.</p>
     {/if}

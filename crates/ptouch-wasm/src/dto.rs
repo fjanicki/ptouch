@@ -100,6 +100,10 @@ pub struct ModelInfo {
     pub head_pins: u16,
     /// Bluetooth Classic (SPP) available.
     pub bluetooth: bool,
+    /// Bluetooth Low Energy available (PT-N25BT; Web Serial cannot reach it).
+    pub ble: bool,
+    /// TCP 9100 (Wi-Fi / Ethernet) available (a browser cannot open raw sockets).
+    pub network: bool,
     /// Capabilities.
     pub caps: ModelCaps,
     /// Supported media.

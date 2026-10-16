@@ -13,7 +13,7 @@ import type { Bitmap1 } from '../wasm'
 export type BitmapSource = Pick<Bitmap1, 'length' | 'height' | 'toPacked'>
 
 export interface PngExportOptions {
-  /** Dots per inch along and across the tape (PT-P710BT: 180). */
+  /** Dots per inch along and across the tape (the print area's: 180, or 360 on PT-P9xx models). */
   dpi: number
 }
 
@@ -99,7 +99,7 @@ function pngChunk(type: string, data: Uint8Array): Uint8Array {
   return out
 }
 
-/** Pixels per metre for a dpi (pHYs): 180 dpi → 7087. */
+/** Pixels per metre for a dpi (pHYs): 180 dpi → 7087, 360 dpi → 14173. */
 export function pixelsPerMetre(dpi: number): number {
   return Math.round(dpi / 0.0254)
 }

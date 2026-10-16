@@ -13,6 +13,8 @@
   const doc = $derived(studio.doc)
   const layout = $derived(doc.layout)
   const DEFAULT_FRAME = { thicknessMm: 0.5, radiusMm: 1, insetMm: 0.5 }
+  /** The head resolution the label is printed at (the print area's; 180 before it is known). */
+  const dpi = $derived(studio.target.ok ? studio.target.target.area.dpi : 180)
 
   function boldnessText(v: number): string {
     const step = Math.round((v - 128) / 16)
@@ -54,7 +56,7 @@
   step={16}
   value={256 - doc.print.threshold}
   format={boldnessText}
-  hint="Thickens or thins text and lines at 180 dpi."
+  hint="Thickens or thins text and lines at {dpi} dpi."
   onchange={(v) => studio.updateDoc({ print: { ...doc.print, threshold: 256 - v } }, 'doc:threshold')}
 />
 

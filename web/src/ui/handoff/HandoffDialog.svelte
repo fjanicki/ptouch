@@ -8,8 +8,8 @@
   import Modal from '../common/Modal.svelte'
   import Icon from '../common/Icon.svelte'
   import { docHasSecrets } from '../../doc/secrets'
-  import { errorMessage, getStudio } from '../state/studio.svelte'
-  import { canShareFile, canShareLink, fileShareData, handoffCopy, labelShareFile, linkShareData, share } from './handoff'
+  import { DEFAULT_MODEL, errorMessage, getStudio } from '../state/studio.svelte'
+  import { canShareFile, canShareLink, fileShareData, handoffCopy, handoffModel, labelShareFile, linkShareData, share } from './handoff'
 
   const studio = getStudio()
   const id = $props.id()
@@ -29,7 +29,9 @@
 
   const shareLinkOk = $derived(!!link && canShareLink(navigator, link.url))
   const shareFileOk = $derived(!!file && canShareFile(navigator, file.file))
-  const copy = $derived(handoffCopy({ designOnly, canShare: shareLinkOk }))
+  // Names the model when it is not the default one (e.g. a 36 mm label designed for a PT-P910BT),
+  // and never one that lacks the label's width (then: the model it was made for, and the notice).
+  const copy = $derived(handoffCopy({ designOnly, canShare: shareLinkOk, ...handoffModel(studio.model, DEFAULT_MODEL, studio.widthSupport), widthMm: studio.doc.tape.widthMm }))
   const notices = $derived([...new Set([...(link?.notices ?? []), ...(file?.notices ?? [])])])
 
   $effect(() => {

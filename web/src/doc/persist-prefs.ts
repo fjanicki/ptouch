@@ -5,7 +5,11 @@
 //
 // Fonts and size (docs/FONTS-AND-SIZE-PLAN.md, lead-owned): the default font and text size for
 // new text blocks, favourite and recently used fonts (font picker).
-import { CONTENT_REF_RE, FONT_FAMILY_IDS, LIMITS, type FontFamilyId, type FontWeight } from './schema'
+//
+// Printer models (docs/MODELS-PLAN.md, lead-owned): the "Design for" model used while no printer
+// is connected (and by the virtual printer), and the models whose "untested model" notice the
+// user dismissed. Both additive: older prefs get the defaults.
+import { CONTENT_REF_RE, FONT_FAMILY_IDS, LIMITS, MODEL_NAME_RE, type FontFamilyId, type FontWeight } from './schema'
 
 export type ConnectPathPref = 'bluetooth' | 'serial-port' | 'usb' | 'virtual'
 
@@ -25,6 +29,11 @@ export type DefaultTextSize = 'auto' | 'fit' | 'half' | 'third' | { pt: number }
  */
 export type FontKey = string
 
+/** Model designed for when nothing is connected (the only hardware-verified model). */
+export const DEFAULT_DESIGN_MODEL = 'PT-P710BT'
+/** Most dismissed "untested model" notices remembered. */
+export const MAX_DISMISSED_MODELS = 40
+
 /** Most favourites / recent fonts kept. */
 export const MAX_FAVORITE_FONTS = 50
 export const MAX_RECENT_FONTS = 8
@@ -39,6 +48,12 @@ export interface Prefs {
   theme: 'system' | 'light' | 'dark'
   /** Id of the last open label. */
   lastLabelId?: string
+  /**
+   * Set when that label was made here as a new label (first start, New label, re-made for the
+   * "Design for" model): restored untouched, it still follows the model picker (Studio
+   * `#isPristine`). Additive: absent in older prefs.
+   */
+  freshLabelId?: string
   previewZoom: number
   previewMode: 'design' | 'dots'
   /** Windows users who installed WinUSB may opt in to USB. */
@@ -54,6 +69,14 @@ export interface Prefs {
   favoriteFonts: FontKey[]
   /** Recently picked fonts, most recent first (≤ MAX_RECENT_FONTS). */
   recentFonts: FontKey[]
+  /**
+   * Model to design for while no printer is connected, and the model of the virtual printer
+   * ("No printer"). A name of the core's model table; an unknown name (a table from a newer app)
+   * is kept here and the studio falls back to DEFAULT_DESIGN_MODEL until it knows it.
+   */
+  designModel: string
+  /** Models whose "untested model, please report" notice was dismissed (≤ MAX_DISMISSED_MODELS). */
+  dismissedUntested: string[]
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -68,6 +91,8 @@ export const DEFAULT_PREFS: Prefs = {
   defaultTextSize: 'auto',
   favoriteFonts: [],
   recentFonts: [],
+  designModel: DEFAULT_DESIGN_MODEL,
+  dismissedUntested: [],
 }
 
 export const PREFS_KEY = 'ptouch.prefs.v1'
@@ -123,6 +148,7 @@ export function sanitizePrefs(raw: unknown): Prefs {
   if (typeof r['autoReconnect'] === 'boolean') p.autoReconnect = r['autoReconnect']
   if (THEMES.includes(r['theme'] as Prefs['theme'])) p.theme = r['theme'] as Prefs['theme']
   if (typeof r['lastLabelId'] === 'string' && r['lastLabelId']) p.lastLabelId = r['lastLabelId']
+  if (typeof r['freshLabelId'] === 'string' && r['freshLabelId']) p.freshLabelId = r['freshLabelId']
   if (typeof r['previewZoom'] === 'number' && Number.isFinite(r['previewZoom'])) p.previewZoom = Math.min(16, Math.max(0.1, r['previewZoom']))
   if (r['previewMode'] === 'design' || r['previewMode'] === 'dots') p.previewMode = r['previewMode']
   if (typeof r['usbOnWindows'] === 'boolean') p.usbOnWindows = r['usbOnWindows']
@@ -135,6 +161,9 @@ export function sanitizePrefs(raw: unknown): Prefs {
   p.defaultTextSize = defaultTextSize(r['defaultTextSize']) ?? DEFAULT_PREFS.defaultTextSize
   p.favoriteFonts = fontKeys(r['favoriteFonts'], MAX_FAVORITE_FONTS)
   p.recentFonts = fontKeys(r['recentFonts'], MAX_RECENT_FONTS)
+  if (typeof r['designModel'] === 'string' && MODEL_NAME_RE.test(r['designModel'])) p.designModel = r['designModel']
+  const dismissed = r['dismissedUntested']
+  p.dismissedUntested = Array.isArray(dismissed) ? [...new Set(dismissed.filter((m): m is string => typeof m === 'string' && MODEL_NAME_RE.test(m)))].slice(-MAX_DISMISSED_MODELS) : []
   return p
 }
 

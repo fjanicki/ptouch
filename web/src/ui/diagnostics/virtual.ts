@@ -1,11 +1,11 @@
 // W5 — "virtual printer" pipeline for the Diagnostics page: LabelDoc → W3 renderer → wasm
 // encodeJob (via buildPrintJob) → bytes for "Download .bin" → wasm decodeJob → decoded pages
 // (what a printer would print) for side-by-side comparison with the preview.
+// Printer models (docs/MODELS-PLAN.md; P-core-ui): runs and the virtual probe use the studio's
+// active model (the connected printer's, else the "Design for" model), not a fixed PT-P710BT.
 import type { LabelDoc } from '../../doc/schema'
 import { buildPrintJob, ensureFonts, paintPreview, renderLabel, type RenderResult, type RenderTarget } from '../../render'
 import { decodeJob, mediaForWidth, printArea, type Bitmap1, type MediaInfo } from '../../wasm'
-
-export const DEFAULT_MODEL = 'PT-P710BT'
 
 /** Render target for `widthMm` on `model`; reuses `loaded` media (from the printer status) when it matches. */
 export function resolveTarget(model: string, widthMm: number, loaded?: MediaInfo | null): RenderTarget {

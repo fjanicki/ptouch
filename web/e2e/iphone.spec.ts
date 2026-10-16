@@ -268,6 +268,54 @@ for (const width of [375, 360]) {
   })
 }
 
+// Printer models (docs/MODELS-PLAN.md §3.11, P-core-ui): no printer can connect from an iPhone,
+// so the media bar's "Printer model" picks what to design for; a 36 mm label for a PT-P910BT
+// travels in the hand-off link with its width and model.
+test('iPhone: design a 36 mm label for a PT-P910BT and hand it off', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 760 })
+  await startDesigning(page)
+  const media = page.getByRole('region', { name: 'Tape and length' })
+  // Nothing connects from an iPhone: the picker never says "Connects from this browser".
+  const picker = media.getByLabel('Printer model')
+  await expect(picker.locator('optgroup[label="Connect from Chrome or Edge on a computer"] option', { hasText: 'PT-P910BT' })).toHaveCount(1)
+  await expect(picker.locator('optgroup[label="Connects from this browser"]')).toHaveCount(0)
+  await picker.selectOption('PT-P910BT')
+  const widths = page.getByRole('radiogroup', { name: 'Tape width (mm)' })
+  await expect(widths.getByRole('radio')).toHaveText(['3.5', '6', '9', '12', '18', '24', '36'])
+  await widths.getByRole('radio', { name: '36' }).click()
+  await expect(page.getByRole('region', { name: 'Label preview' }).getByRole('figure', { name: /on 36 mm tape/ })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
+  for (const r of await widths.getByRole('radio').all()) {
+    const box = await r.boundingBox()
+    expect(box?.height).toBeGreaterThanOrEqual(43.5)
+    expect(box?.width).toBeGreaterThanOrEqual(43.5)
+  }
+
+  await page.getByRole('button', { name: 'Send to computer…' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Send to computer' })
+  await expect(dialog).toContainText('It is designed for a PT-P910BT on 36 mm tape.')
+  const field = dialog.getByRole('textbox', { name: 'Share link' })
+  await expect(field).toHaveValue(/\/ptouch\/#d=/)
+  const doc = JSON.parse(decodeLink(await field.inputValue())) as { schema: number; tape: { widthMm: number; model?: string } }
+  expect(doc.schema).toBe(4)
+  expect(doc.tape).toMatchObject({ widthMm: 36, model: 'PT-P910BT' })
+})
+
+// A label whose width the "Design for" model lacks: the hand-off names the model it was made
+// for and says the picked one can't take it, like the notice in the media bar.
+test('iPhone: hand-off of a 36 mm label while designing for a PT-P710BT says it does not fit', async ({ page }) => {
+  await startDesigning(page)
+  const media = page.getByRole('region', { name: 'Tape and length' })
+  await media.getByLabel('Printer model').selectOption('PT-P910BT')
+  await page.getByRole('radiogroup', { name: 'Tape width (mm)' }).getByRole('radio', { name: '36' }).click()
+  await media.getByLabel('Printer model').selectOption('PT-P710BT')
+  await expect(page.getByRole('alert').filter({ hasText: 'This label is 36 mm; PT-P710BT takes up to 24 mm.' })).toBeVisible()
+  await page.getByRole('button', { name: 'Send to computer…' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Send to computer' })
+  await expect(dialog).toContainText('It is designed for a PT-P910BT on 36 mm tape. This label is 36 mm; PT-P710BT takes up to 24 mm.')
+  await expect(dialog).not.toContainText('designed for a PT-P710BT')
+})
+
 test('the built index.html has the iOS home-screen tags and keeps the CSP', async ({ request }) => {
   const html = await (await request.get('./')).text()
   for (const tag of [

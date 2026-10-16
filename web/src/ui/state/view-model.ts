@@ -140,6 +140,17 @@ export function isConnected(state: ClientState): boolean {
   return state === 'ready' || state === 'printing' || state === 'cancelling'
 }
 
+/**
+ * The model of the printer the studio designs for, or null to design for the "Design for" pick
+ * (docs/MODELS-PLAN.md §3.2): the connected (or connecting, or virtual) printer's. A lost or
+ * silent link keeps the old model and status in the snapshot until the next attach; they no
+ * longer count, so the picker works again and the media bar never says "(connected)".
+ */
+export function printerModel(conn: Pick<ConnectionSnapshot, 'state' | 'model' | 'status'>): string | null {
+  if (conn.state === 'lost' || conn.state === 'no-reply' || conn.state === 'error' || conn.state === 'disconnected') return null
+  return conn.model ?? conn.status?.modelName ?? null
+}
+
 // ---------------------------------------------------------------------------------------------
 // Media / tape
 // ---------------------------------------------------------------------------------------------
@@ -214,6 +225,9 @@ export interface PrintGate {
   mismatch: MediaMismatch | null
   /** false: this browser can't reach printers at all (design mode). Default true. */
   canPrint?: boolean
+  /** The label's tape width is not one the active model takes (docs/MODELS-PLAN.md): the
+   * sentence to show, e.g. "This label is 36 mm; PT-P710BT takes up to 24 mm. …". */
+  unsupportedWidth?: string | null
 }
 
 /** Why Print is disabled (sentence for the UI), or null when printing is possible. */
@@ -224,6 +238,7 @@ export function printBlockReason(g: PrintGate): string | null {
   if (g.renderError) return 'The preview could not be rendered.'
   if (!g.hasRender) return 'Preparing the preview…'
   if (g.blocking) return g.blocking.message
+  if (g.unsupportedWidth) return g.unsupportedWidth
   const missing = g.missingVariables ?? []
   if (missing.length) return `Unknown ${missing.length === 1 ? 'variable' : 'variables'} ${missing.map((n) => `{{${n}}}`).join(', ')}: add a column or counter with that name, or fix the spelling.`
   const empty = g.columnsWithoutData ?? []

@@ -1,14 +1,20 @@
 <!-- W4 — "Connect your printer" dialog (ARCHITECTURE.md §6.4): Bluetooth (default), Choose port…
      (unfiltered; always next to Bluetooth on Chromium), USB cable, No printer (virtual).
      Each option calls studio.connect(path) synchronously from its click handler (user gesture).
-     Shows openProgress ("Waking printer… attempt 2 of 3"), the connected printer, and Problems. -->
+     Shows openProgress ("Waking printer… attempt 2 of 3"), the connected printer, and Problems.
+     Printer models (docs/MODELS-PLAN.md §3.5, §3.8): the copy is model-generic (copy.ts; examples
+     name the PT-P710BT), "Printer model" picks the virtual printer's model (and the model designed
+     for while nothing is connected), and a connected model nobody has tested says so. -->
 <script lang="ts">
   import { tick, untrack } from 'svelte'
-  import { LINUX_USB_DETACH_FLAG, describeSupport, type ConnectPath } from '../../printer'
+  import { describeSupport, type ConnectPath } from '../../printer'
   import Icon from '../common/Icon.svelte'
   import ProblemBanner from '../common/ProblemBanner.svelte'
+  import ModelPicker from '../media/ModelPicker.svelte'
   import { getStudio } from '../state/studio.svelte'
+  import { isVerifiedModel } from '../state/models'
   import { batteryText, chipView, isConnected, openProgressText, tapeText, transportKindLabel } from '../state/view-model'
+  import { EXAMPLE_DEVICE, connectSubtitle, optionHints } from './copy'
 
   const studio = getStudio()
   let dialog: HTMLDialogElement | undefined = $state()
@@ -33,11 +39,7 @@
   const usbFirst = $derived(paths[0] === 'usb')
 
   // Copy follows the paths this browser really offers (Firefox: ports only; Safari: none).
-  const subtitle = $derived.by(() => {
-    if (studio.designOnly) return 'This browser can’t connect to printers. Use “No printer” to design and test with a virtual PT-P710BT.'
-    const ways = [hasBluetooth ? 'Bluetooth' : hasPort ? 'its Bluetooth serial port' : null, hasUsb ? 'USB' : null].filter(Boolean)
-    return `Brother PT-P710BT over ${ways.join(' or ')}. Nothing is installed and nothing leaves this browser.`
-  })
+  const subtitle = $derived(connectSubtitle({ designOnly: studio.designOnly, designModel: studio.designModel, bluetooth: hasBluetooth, port: hasPort, usb: hasUsb }))
   // Browser caveats (Firefox ports, Brave, Safari) shown up front, until dismissed.
   let supportDismissed = $state(false)
   const supportNote = $derived(supportDismissed ? null : describeSupport(studio.support))
@@ -82,35 +84,12 @@
     icon: string
     recommended?: boolean
   }
+  const hints = $derived(optionHints({ gecko, bluetooth: hasBluetooth, linux: studio.support.platform === 'linux', designModel: studio.designModel }))
   const OPTIONS: Option[] = $derived([
-    {
-      path: 'bluetooth',
-      title: 'Bluetooth',
-      icon: 'bluetooth',
-      recommended: !usbFirst,
-      hint: gecko ? 'Pair the printer in system settings, then pick “cu.PT-P710BT…”.' : 'Pair the printer in system settings first, then pick “PT-P710BT…”.',
-    },
-    {
-      path: 'serial-port',
-      title: 'Choose port…',
-      icon: 'cable',
-      recommended: !hasBluetooth && !usbFirst,
-      hint: hasBluetooth
-        ? 'Shows every serial port. Pick “PT-P710BT…” or “cu.PT-P710BT…” if Bluetooth shows nothing.'
-        : 'Pair the printer in system settings first, then pick “cu.PT-P710BT…” (macOS) or its COM port.',
-    },
-    {
-      path: 'usb',
-      title: 'USB cable',
-      icon: 'usb',
-      recommended: usbFirst,
-      // Linux: the kernel's usblp driver holds the printer unless Chromium may detach it (problems.ts usb-busy).
-      hint:
-        studio.support.platform === 'linux'
-          ? `Most reliable: answers instantly, no pairing or waking. On Linux, start the browser with ${LINUX_USB_DETACH_FLAG} first.`
-          : 'Most reliable: answers instantly, no pairing or waking. Close P-touch Editor first.',
-    },
-    { path: 'virtual', title: 'No printer', icon: 'monitor', hint: 'Design and test with a virtual PT-P710BT.' },
+    { path: 'bluetooth', title: 'Bluetooth', icon: 'bluetooth', recommended: !usbFirst, hint: hints.bluetooth },
+    { path: 'serial-port', title: 'Choose port…', icon: 'cable', recommended: !hasBluetooth && !usbFirst, hint: hints['serial-port'] },
+    { path: 'usb', title: 'USB cable', icon: 'usb', recommended: usbFirst, hint: hints.usb },
+    { path: 'virtual', title: 'No printer', icon: 'monitor', hint: hints.virtual },
   ])
   // Shown in the order support.paths recommends (USB first where it is the dependable path).
   const available = $derived(paths.flatMap((p) => OPTIONS.filter((o) => o.path === p)))
@@ -167,6 +146,7 @@
         <span class="printer-icon"><Icon name="printer" size={28} /></span>
         <div class="printer-info">
           <strong>{conn.model ?? 'Printer'}</strong>
+          {#if conn.model && conn.transport?.kind !== 'virtual' && !isVerifiedModel(conn.model)}<span class="untested">Untested model</span>{/if}
           <dl>
             <dt>Tape</dt>
             <dd>{tapeText(conn) ?? 'No tape detected'}</dd>
@@ -203,18 +183,19 @@
           </li>
         {/each}
       </ul>
+      <ModelPicker />
 
       {#if hasBluetooth || hasPort}
         <details class="help">
           <summary>First time? How to pair the printer</summary>
           <ol>
             <li>Turn the printer on and press its Bluetooth button until the Bluetooth light is on.</li>
-            <li>Pair <strong>PT-P710BTxxxx</strong> in your computer’s Bluetooth settings (no PIN, or 0000).</li>
+            <li>Pair your printer (e.g. <strong>{EXAMPLE_DEVICE}</strong>) in your computer’s Bluetooth settings (no PIN, or 0000).</li>
             {#if hasBluetooth}
               <li>Come back here and choose <strong>Bluetooth</strong>. On a Mac the first attempt can take a few seconds while the printer wakes up.</li>
               {#if hasPort}<li>Bluetooth list empty? Use <strong>Choose port…</strong> instead.</li>{/if}
             {:else}
-              <li>Come back here, choose <strong>Choose port…</strong> and pick <strong>cu.PT-P710BTxxxx</strong> (macOS) or the printer’s serial port.</li>
+              <li>Come back here, choose <strong>Choose port…</strong> and pick its <strong>cu.</strong> port (macOS, e.g. <strong>cu.{EXAMPLE_DEVICE}</strong>) or the printer’s serial port.</li>
             {/if}
           </ol>
         </details>
@@ -352,6 +333,16 @@
   }
   .printer-info strong {
     font-size: 16px;
+  }
+  .untested {
+    margin-left: var(--space-2);
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--warn-soft);
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
   }
   dl {
     display: grid;

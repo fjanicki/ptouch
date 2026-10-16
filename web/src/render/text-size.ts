@@ -25,16 +25,24 @@ export interface QuickTextSize {
   size: TextSize
   /** Cap-to-descender height of the block in dots (the band for 'fit'). */
   dots: number
-  /** Below the readable minimum (`MIN_READABLE_DOTS`) on this band: offered but flagged. */
+  /** Below the readable minimum (`minReadableDots(dpi)`) on this band: offered but flagged. */
   tooSmall: boolean
 }
 
 /** Fraction of the band per quick size (block height). */
 export const QUICK_FRACTIONS: Readonly<Record<Exclude<QuickSizeId, 'fit'>, number>> = { xs: 1 / 4, s: 1 / 3, m: 1 / 2, l: 3 / 4 }
 
-/** Cap-to-descender height below which one line prints poorly at 180 dpi (2 mm ≈ 14 dots;
- * the renderer's `small-text` warning uses the same 2 mm). */
-export const MIN_READABLE_DOTS = 14
+/** Cap-to-descender height (mm) below which one line prints poorly, whatever the head
+ * resolution (the renderer's `small-text` warning uses the same 2 mm). */
+export const MIN_READABLE_MM = 2
+
+/** `MIN_READABLE_MM` in dots at `dpi`: 14 at 180 dpi, 28 at 360 dpi (docs/MODELS-PLAN.md §3.10). */
+export function minReadableDots(dpi: number): number {
+  return mmToDots(MIN_READABLE_MM, dpi)
+}
+
+/** The readable minimum at 180 dpi (PT-P710BT), in dots. */
+export const MIN_READABLE_DOTS = minReadableDots(180)
 
 /** [button text, accessible name]. The name starts with the visible text (WCAG 2.5.3 Label in
  * Name: "tap XS" works with voice control) and spells it out. */
@@ -54,10 +62,11 @@ function dotsMm(dots: number, dpi: number): number {
 /** The quick sizes for a band of `bandDots` (XS → L, then Fit). */
 export function quickTextSizes(bandDots: number, dpi: number): QuickTextSize[] {
   const band = Math.max(1, Math.round(bandDots))
+  const minDots = minReadableDots(dpi)
   const out: QuickTextSize[] = (['xs', 's', 'm', 'l'] as const).map((id) => {
     const dots = Math.max(1, Math.round(band * QUICK_FRACTIONS[id]))
     const [label, name] = LABELS[id]
-    return { id, label, name, size: { mode: 'mm', mm: dotsMm(dots, dpi) }, dots, tooSmall: dots < MIN_READABLE_DOTS }
+    return { id, label, name, size: { mode: 'mm', mm: dotsMm(dots, dpi) }, dots, tooSmall: dots < minDots }
   })
   out.push({ id: 'fit', label: LABELS.fit[0], name: LABELS.fit[1], size: { mode: 'fit' }, dots: band, tooSmall: false })
   return out

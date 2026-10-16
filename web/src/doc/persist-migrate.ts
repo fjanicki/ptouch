@@ -75,6 +75,12 @@ export const MIGRATIONS: Readonly<Record<number, Migration>> = {
       : raw['items']
     return { ...raw, schema: 3, items }
   },
+  /**
+   * Schema 3 → 4 (printer models, docs/MODELS-PLAN.md). 36 mm tape and `tape.model` are new and
+   * optional; nothing renders differently, so only the version changes. The bump exists for
+   * older apps: they open a schema-4 label read-only instead of clamping 36 mm to 24 mm.
+   */
+  3: (raw) => ({ ...raw, schema: 4 }),
 }
 
 /** Schema version of a raw object (0 = unversioned), or a problem string. */

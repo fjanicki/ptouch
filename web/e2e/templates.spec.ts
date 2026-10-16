@@ -24,7 +24,8 @@ test('pick “Wi-Fi sticker (12 mm)”: a new 12 mm label with a QR block and a 
   await page.getByLabel('Text', { exact: true }).fill('My old label')
   await openGallery(page)
   for (const section of ['Wi-Fi', 'Cables', 'Shelves, bins & drawers', 'Office']) await expect(gallery(page).getByRole('heading', { name: section })).toBeVisible()
-  await expect(gallery(page).getByRole('button')).toHaveCount(11) // 10 cards + Close
+  // 10 cards for the PT-P710BT's widths + "Show templates for other tape widths" (36 mm) + Close.
+  await expect(gallery(page).getByRole('button')).toHaveCount(12)
   // Thumbnails render lazily; the cards in view are drawn.
   await expect(gallery(page).locator('.thumb[data-state="ready"]').first()).toBeVisible()
   await expect(card(page, 'Wi-Fi sticker (12 mm)')).toHaveAccessibleDescription(/12 mm tape.*iPhone Camera/)

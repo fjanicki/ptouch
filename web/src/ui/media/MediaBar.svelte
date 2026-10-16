@@ -1,11 +1,19 @@
 <!-- W4 — tape width (auto from status, manual offline), tape/ink colours, length auto/fixed,
-     margins; mismatch preflight with one-click "Use loaded 12 mm tape". -->
+     margins; mismatch preflight with one-click "Use loaded 12 mm tape".
+     Printer models (docs/MODELS-PLAN.md §3.4–§3.7; P-core-ui): the widths are the active model's,
+     "Printer model" (Design for) while no printer is connected, the connected printer's model
+     otherwise; the unsupported-width notice with "Fit to 24 mm" replaces the mismatch banner, and
+     a real printer of an untested model gets a dismissible note (loaded on demand). -->
 <script lang="ts">
-  import { TAPE_WIDTHS_MM, type TapeWidthMm } from '../../doc/schema'
+  import { tick } from 'svelte'
+  import type { TapeWidthMm } from '../../doc/schema'
   import Icon from '../common/Icon.svelte'
   import NumberField from '../common/NumberField.svelte'
   import Segmented from '../common/Segmented.svelte'
   import { getStudio } from '../state/studio.svelte'
+  import ModelPicker from './ModelPicker.svelte'
+  import UnsupportedWidthNotice from './UnsupportedWidthNotice.svelte'
+  import { connectedModelText } from '../connect/copy'
   import { DEFAULT_COLORS, TAPE_PRESETS, capitalize, formatMm, previewColors } from '../state/view-model'
 
   const studio = getStudio()
@@ -16,9 +24,18 @@
     TAPE_PRESETS.find((p) => p.tape === (doc.tape.colors ?? DEFAULT_COLORS).tape && p.ink === (doc.tape.colors ?? DEFAULT_COLORS).ink)?.id ?? 'custom',
   )
   const widthOptions = $derived(
-    TAPE_WIDTHS_MM.map((w) => ({ value: w, label: loaded && Math.abs(loaded.widthMm - w) < 0.01 ? `${w} •` : String(w) })),
+    studio.tapeWidths.map((w) => ({ value: w, label: loaded && Math.abs(loaded.widthMm - w) < 0.01 ? `${w} •` : String(w) })),
   )
+  const support = $derived(studio.widthSupport)
   const maxLen = $derived(studio.target.ok && studio.target.target.area.maxLengthDots ? Math.floor((studio.target.target.area.maxLengthDots * 25.4) / studio.target.target.area.dpi) : 999)
+
+  // After "Fit to …" or "Dismiss" the pressed button is gone: keep keyboard focus nearby, on the
+  // tape width now checked.
+  let widthEl: HTMLDivElement | undefined = $state()
+  function focusWidth() {
+    void tick().then(() => widthEl?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')?.focus())
+  }
+  const loadUntested = () => import('./UntestedModelNotice.svelte')
 
   function setPreset(id: string) {
     const p = TAPE_PRESETS.find((x) => x.id === id)
@@ -27,12 +44,21 @@
 </script>
 
 <section class="mediabar panel" aria-label="Tape and length">
-  <div class="group width">
+  <div class="group width" bind:this={widthEl}>
     <Segmented label="Tape width (mm)" options={widthOptions} value={doc.tape.widthMm} onchange={(w: TapeWidthMm) => studio.setTapeWidth(w)} size="small" />
     {#if loaded}
       <p class="hint">• loaded in the printer: {formatMm(loaded.widthMm)}</p>
     {/if}
   </div>
+
+  {#if studio.modelSource === 'design'}
+    <div class="group model"><ModelPicker /></div>
+  {:else}
+    <div class="group model">
+      <span class="field-label">Designing for</span>
+      <span class="model-name">{connectedModelText(studio.model, studio.conn.transport?.kind)}</span>
+    </div>
+  {/if}
 
   <div class="group colours">
     {#if colors.fromPrinter}
@@ -81,7 +107,9 @@
   </div>
 </section>
 
-{#if studio.mismatch}
+{#if !support.ok}
+  <UnsupportedWidthNotice {support} onfit={focusWidth} />
+{:else if studio.mismatch}
   {@const m = studio.mismatch}
   <div class="mismatch" role="alert">
     <Icon name="alert" size={20} />
@@ -90,6 +118,12 @@
     </p>
     <button type="button" class="btn small primary" onclick={() => studio.useLoadedTape()}>Use loaded {formatMm(m.loadedMm)} tape</button>
   </div>
+{/if}
+
+{#if studio.untestedModel}
+  {#await loadUntested() then { default: UntestedModelNotice }}
+    <UntestedModelNotice model={studio.untestedModel} ondismiss={focusWidth} />
+  {/await}
 {/if}
 
 <style>
@@ -109,11 +143,25 @@
     flex: 1 1 260px;
     max-width: 340px;
   }
+  /* Colours, length and margins may narrow a little (to their max otherwise) so that, next to the
+     model picker, the bar keeps two rows on 1024–1400 px laptops. */
   .colours {
-    flex: 0 1 200px;
+    flex: 1 1 170px;
+    max-width: 200px;
+  }
+  .model {
+    /* Room for the longest option ("PT-P710BT · up to 24 mm · tested") without clipping. */
+    flex: 0 1 264px;
+  }
+  .model-name {
+    display: flex;
+    align-items: center;
+    min-height: 34px;
+    font-weight: 600;
   }
   .length {
-    flex: 0 1 220px;
+    flex: 1 1 170px;
+    max-width: 220px;
     grid-template-columns: 1fr;
   }
   .length-hint {
@@ -122,7 +170,8 @@
     font-size: 12px;
   }
   .margins {
-    flex: 0 1 230px;
+    flex: 1 1 200px;
+    max-width: 230px;
     grid-template-columns: 1fr 1fr;
     gap: var(--space-2);
   }
@@ -153,6 +202,21 @@
     align-items: center;
     gap: var(--space-2);
     min-height: 34px;
+  }
+  /* Phones: up to seven widths (3.5–36 mm on the 360 dpi models) keep 44 px touch targets at
+     360 px, with a little less padding around them. */
+  @media (max-width: 420px) {
+    .mediabar {
+      padding-inline: var(--space-2);
+    }
+    .width,
+    .model {
+      flex-basis: 100%;
+      max-width: none;
+    }
+    .width :global(.seg) {
+      gap: 0;
+    }
   }
   .mismatch {
     display: flex;

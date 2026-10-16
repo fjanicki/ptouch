@@ -51,8 +51,9 @@ export interface ConnectionManagerOptions {
   remember?: (c: RememberedConnection | null) => void
   /** Recall the remembered connection for restore(). Return null when auto-reconnect is off. */
   recall?: () => RememberedConnection | null
-  /** Scenario for the 'virtual' path. */
-  virtualScenario?: Partial<MockScenario>
+  /** Scenario for the 'virtual' path; a function is asked on every virtual connect (the studio's
+   * "Design for" model and tape, docs/MODELS-PLAN.md). */
+  virtualScenario?: Partial<MockScenario> | (() => Partial<MockScenario>)
   /** Injected APIs (tests / e2e); default navigator.serial / navigator.usb. */
   serial?: SerialLike
   usb?: UsbLike
@@ -293,6 +294,11 @@ export class ConnectionManager {
 
   // ----- internals ----------------------------------------------------------------------------
 
+  #virtualScenario(): Partial<MockScenario> {
+    const s = this.options.virtualScenario
+    return (typeof s === 'function' ? s() : s) ?? {}
+  }
+
   /** Starts the chooser for `path`. Must not await before calling requestPort/requestDevice. */
   #request(path: ConnectPath): Promise<Transport> {
     const { support } = this.options
@@ -307,7 +313,7 @@ export class ConnectionManager {
       case 'usb':
         return WebUsbTransport.request(this.options.usb)
       case 'virtual':
-        return Promise.resolve(new MockTransport(this.options.virtualScenario ?? {}, this.options.client?.clock))
+        return Promise.resolve(new MockTransport(this.#virtualScenario(), this.options.client?.clock))
     }
   }
 
@@ -323,7 +329,7 @@ export class ConnectionManager {
       case 'usb':
         return WebUsbTransport.fromGranted(this.options.usb)
       case 'virtual':
-        return new MockTransport(this.options.virtualScenario ?? {}, this.options.client?.clock)
+        return new MockTransport(this.#virtualScenario(), this.options.client?.clock)
     }
   }
 

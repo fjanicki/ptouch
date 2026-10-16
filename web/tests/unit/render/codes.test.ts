@@ -2,7 +2,7 @@
 // automatic module size, padding, readability, DataMatrix and Wi-Fi payloads.
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { ModuleMatrix } from '../../../src/wasm'
-import { chooseModuleDots, codeMatrix, codePayload, codeSizeDots, ean13CheckDigit, humanReadable, isLinear, maxModuleDots, padMatrix, quietModules, readability, repeatRow, rotateMatrix } from '../../../src/render/codes'
+import { chooseModuleDots, codeMatrix, dotsAt, codePayload, codeSizeDots, ean13CheckDigit, humanReadable, isLinear, maxModuleDots, padMatrix, quietModules, readability, repeatRow, rotateMatrix } from '../../../src/render/codes'
 import { createWifi, type QuietZone } from '../../../src/doc/schema'
 import { loadWasmForTests } from '../../helpers/wasm'
 
@@ -108,6 +108,21 @@ describe('code geometry', () => {
     expect(chooseModuleDots(b, { moduleDots: 6, quietZone: 'standard', bandDots: 128 })).toEqual({ md: 6, max: 255, reduced: false })
   })
 
+  it('chooseModuleDots: linear auto sizes are physical, 4 / 8 dots at 360 dpi; fixed sizes stay dots (docs/MODELS-PLAN.md §3.10)', () => {
+    const b = bars(95)
+    expect(dotsAt(2)).toBe(2)
+    expect(dotsAt(2, 360)).toBe(4)
+    expect(dotsAt(1, 90)).toBe(1) // never below one dot
+    // 180 dpi is unchanged with an explicit dpi.
+    expect(chooseModuleDots(b, { moduleDots: 'auto', quietZone: 'standard', bandDots: 128, dpi: 180 }).md).toBe(2)
+    expect(chooseModuleDots(b, { moduleDots: 'auto', quietZone: 'standard', bandDots: 320, dpi: 360 }).md).toBe(4)
+    expect(chooseModuleDots(b, { moduleDots: 'auto', quietZone: 'standard', bandDots: 320, limitW: 4000, dpi: 360 }).md).toBe(8)
+    expect(chooseModuleDots(b, { moduleDots: 'auto', quietZone: 'compact', bandDots: 320, limitW: 400, dpi: 360 }).md).toBe(3) // 400 / 105
+    expect(chooseModuleDots(b, { moduleDots: 3, quietZone: 'standard', bandDots: 320, dpi: 360 }).md).toBe(3)
+    // 2-D auto still fills the band: dpi only matters for linear codes.
+    expect(chooseModuleDots(qr(21), { moduleDots: 'auto', quietZone: 'compact', bandDots: 150, marginDots: 10, dpi: 360 }).md).toBe(7)
+  })
+
   it('padMatrix surrounds the symbol with light modules', () => {
     const m: ModuleMatrix = { width: 2, height: 1, modules: [1, 1] }
     expect(padMatrix(m, 0, 0)).toBe(m)
@@ -121,6 +136,15 @@ describe('code geometry', () => {
     expect(readability(3).text).toMatch(/phone cameras/)
     expect(readability(2).level).toBe('ok')
     expect(readability(1).level).toBe('poor')
+    expect(readability(1).text).toMatch(/modules of 1 dot often do not scan/)
+  })
+
+  it('readability goes by the module size in mm: 6 / 4 dots at 360 dpi are good / close up', () => {
+    expect(readability(6, 360).level).toBe('good')
+    expect(readability(5, 360).level).toBe('ok')
+    expect(readability(4, 360).level).toBe('ok')
+    expect(readability(3, 360)).toEqual({ level: 'poor', text: 'Unreliable: modules of 3 dots (0.21 mm) often do not scan. Use wider tape or less data.' })
+    expect(readability(3, 180)).toEqual(readability(6, 360))
   })
 
   it('codePayload: data, or the WIFI: string for a Wi-Fi QR code', () => {

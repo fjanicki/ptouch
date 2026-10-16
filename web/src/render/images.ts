@@ -10,7 +10,7 @@ export interface RgbaImage {
   height: number
 }
 
-/** Longest image side accepted along the label, dots (~564 mm at 180 dpi). */
+/** Longest image side accepted along the label, dots (~564 mm at 180 dpi, ~282 mm at 360 dpi). */
 export const MAX_IMAGE_DOTS = 4000
 
 const decoded = new WeakMap<Blob, Promise<ImageBitmap>>()

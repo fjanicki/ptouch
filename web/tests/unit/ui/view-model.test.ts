@@ -17,6 +17,7 @@ import {
   openProgressText,
   previewColors,
   printBlockReason,
+  printerModel,
   themeColorMedia,
   printButtonText,
   progressFraction,
@@ -165,6 +166,14 @@ describe('media', () => {
     expect(mediaMismatch({ ...READY, state: 'lost' }, doc(12))).toBeNull()
     expect(mediaMismatch(BASE, doc(12))).toBeNull()
   })
+  it('designs for the printer’s model only while its link is up (a lost link falls back to Design for)', () => {
+    expect(printerModel(READY)).toBe('PT-P710BT')
+    expect(printerModel({ ...READY, model: null })).toBe('PT-P710BT') // from the status
+    expect(printerModel({ ...READY, state: 'printing' })).toBe('PT-P710BT')
+    expect(printerModel({ ...READY, state: 'handshaking' })).toBe('PT-P710BT')
+    for (const state of ['lost', 'no-reply', 'error', 'disconnected'] as const) expect(printerModel({ ...READY, state })).toBeNull()
+    expect(printerModel(BASE)).toBeNull()
+  })
   it('uses the printer colours only when its tape matches the design', () => {
     expect(previewColors(READY, doc(24))).toEqual({ tape: '#ffffff', ink: '#000000', fromPrinter: true })
     const yellow = { ...READY, status: { ...STATUS_24, tapeColor: { byte: 3, name: 'yellow', css: '#ffd400' } } }
@@ -200,6 +209,8 @@ describe('printBlockReason', () => {
     [{ conn: { ...READY, status: { ...STATUS_24, error: true, errors: [{ id: 'cover-open', message: 'Cover open' }] } } }, /Cover open/],
     [{ mismatch: { loadedMm: 12, designMm: 24, media: MEDIA_12 } }, /has 12 mm tape; this label is 24 mm/],
     [{ canPrint: false, conn: BASE }, /needs Chrome or Edge/],
+    // A width the model lacks wins over the tape mismatch and the connection (docs/MODELS-PLAN.md).
+    [{ unsupportedWidth: 'This label is 36 mm; PT-P710BT takes up to 24 mm. Fit it to 24 mm to print it.', mismatch: { loadedMm: 24, designMm: 36, media: MEDIA_12 }, conn: BASE }, /^This label is 36 mm; PT-P710BT takes up to 24 mm/],
     [{ conn: { ...BASE, state: 'error' as const, problem: { id: 'open-failed' as const, severity: 'error' as const, title: 'x', detail: '', actions: [] } } }, /^Connect a printer/],
     [{ conn: { ...READY, state: 'error' as const, problem: { id: 'printer-error' as const, severity: 'error' as const, title: 'x', detail: '', actions: [] } } }, /Fix the printer problem/],
     [{ conn: { ...BASE, state: 'no-reply' as const, problem: { id: 'no-reply-firefox' as const, severity: 'error' as const, title: 'x', detail: '', actions: [] } } }, /Firefox.*Chrome or Edge/],

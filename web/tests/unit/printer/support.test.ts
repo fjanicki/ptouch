@@ -255,3 +255,13 @@ describe('PacketLog', () => {
     expect(seen.at(-1)).toBe(0)
   })
 })
+
+// Printer models (docs/MODELS-PLAN.md §3.8, P-core-ui): the Firefox port hint is model-generic;
+// the PT-P710BT appears only as a masked example.
+describe('describeSupport copy is model-generic', () => {
+  it('Firefox on macOS: “its cu. port”, the device name only as a masked example', () => {
+    const detail = describeSupport(d({ userAgent: UA.firefoxMac156, serial: { requestPort() {}, getPorts() {} } }))?.detail ?? ''
+    expect(detail).toMatch(/choose its “cu\.” port \(e\.g\. “cu\.PT-P710BTxxxx”\)/)
+    expect(detail.match(/PT-\w+/g)).toEqual(['PT-P710BTxxxx'])
+  })
+})

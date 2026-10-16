@@ -16,7 +16,7 @@
   import VariableHint from '../../batch/VariableHint.svelte'
   import TextSizeQuick from './TextSizeQuick.svelte'
   import { defaultSizeOf, measureTextAt } from '../../../render/text-size'
-  import { FALLBACK_BAND_DOTS } from '../../state/text-defaults'
+  import { fallbackBand } from '../../state/text-defaults'
 
   let { item }: { item: TextItem } = $props()
   const studio = getStudio()
@@ -32,8 +32,9 @@
    * stored as its point size (render/text-size.ts `defaultSizeOf`). */
   function useForNew(): void {
     const t = studio.target
-    const band = t.ok ? itemSizingBand(studio.doc, item, t.target.area).bandDots : FALLBACK_BAND_DOTS[studio.doc.tape.widthMm]
-    const dpi = t.ok ? t.target.area.dpi : 180
+    const fallback = fallbackBand(studio.doc.tape.widthMm)
+    const band = t.ok ? itemSizingBand(studio.doc, item, t.target.area).bandDots : fallback.bandDots
+    const dpi = t.ok ? t.target.area.dpi : fallback.dpi
     studio.updatePrefs({ defaultTextSize: defaultSizeOf(item.size, band, dpi, measureTextAt(item, item.size, band, dpi).emDots) })
     studio.announce('New text blocks will get this size')
   }

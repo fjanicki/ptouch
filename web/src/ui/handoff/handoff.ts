@@ -2,11 +2,13 @@
 // checks and share data. Pure (navigator-like input) so it is unit-testable; HandoffDialog and
 // DesignOnlyBanner call these. Every iOS browser is WebKit (no Web Serial / WebUSB), so on an
 // iPhone the label is designed here and printed from a computer: AirDrop / Messages via
-// navigator.share, the link with Copy, or the .ptlabel.json file.
+// navigator.share, the link with Copy, or the .ptlabel.json file. Printer models (P-core-ui):
+// the label carries its width and model; the copy names the model when it is not the default.
 import type { LabelStore } from '../../doc/persist'
 import { FILE_MIME, labelFileName, serializeLabelFile } from '../../doc/persist-files'
 import type { LabelDoc } from '../../doc/schema'
 import type { SupportInfo } from '../../printer'
+import type { WidthSupport } from '../state/models'
 
 /** The parts of `navigator` the hand-off uses (fakes in tests). */
 export interface ShareNavigator {
@@ -39,11 +41,27 @@ export function designOnlyMessage(support: Pick<SupportInfo, 'platform'>, nav: P
 
 /** The dialog's subtitle and first step: they only mention a Share button when one is shown
  * (no navigator.share in Firefox or some in-app browsers), and a computer user is not told to
- * "print from a Mac or PC". */
-export function handoffCopy(o: { designOnly: boolean; canShare: boolean }): { description: string; firstStep: string } {
-  const description = o.designOnly ? 'Print this label from a Mac or PC with Chrome or Edge.' : 'Open this label on another computer with Chrome or Edge.'
+ * "print from a Mac or PC". With `model` (designing for a model other than the default one,
+ * docs/MODELS-PLAN.md §3.11) the subtitle says which printer and tape the label is for; `note`
+ * (the label's width is one the active model lacks) follows it (`handoffModel`). */
+export function handoffCopy(o: { designOnly: boolean; canShare: boolean; model?: string | null; widthMm?: number; note?: string }): { description: string; firstStep: string } {
+  const base = o.designOnly ? 'Print this label from a Mac or PC with Chrome or Edge.' : 'Open this label on another computer with Chrome or Edge.'
+  const tape = o.widthMm !== undefined ? ` on ${o.widthMm} mm tape` : ''
+  const named = o.model ? `${base} It is designed for a ${o.model}${tape}.` : base
+  const description = o.note ? `${named} ${o.note}` : named
   if (!o.canShare) return { description, firstStep: 'Copy the link, or export the file, and send it to your computer.' }
   return { description, firstStep: o.designOnly ? 'Tap Share and pick AirDrop or Messages, or copy the link.' : 'Share or copy the link, or export the file.' }
+}
+
+/**
+ * Which model the hand-off names: the active one when it takes the label's width (only when it
+ * is not `defaultModel`); otherwise the model the label renders with meanwhile (its `tape.model`
+ * when that takes the width, `WidthUnsupported.standIn`), plus the notice text, so it never
+ * claims a label is "designed for" a model that can't print it.
+ */
+export function handoffModel(active: string, defaultModel: string, support: WidthSupport): { model: string | null; note?: string } {
+  if (support.ok) return { model: active !== defaultModel ? active : null }
+  return { model: support.standIn, note: support.message }
 }
 
 /** Started from the home screen (iOS `navigator.standalone`, or display-mode standalone). */

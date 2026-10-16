@@ -127,10 +127,15 @@ export function maxModuleDots(m: ModuleMatrix, bandDots: number, quietZone: Quie
   return Math.max(0, Math.min(fit, withQuiet))
 }
 
-/** Largest module size `moduleDots: 'auto'` gives a linear code. */
+/** Largest module size `moduleDots: 'auto'` gives a linear code (at 180 dpi; `dotsAt`). */
 export const AUTO_LINEAR_MAX_DOTS = 4
-/** Linear `'auto'` module size when nothing limits the length (auto-length label). */
+/** Linear `'auto'` module size when nothing limits the length (auto-length label; at 180 dpi). */
 export const AUTO_LINEAR_DEFAULT_DOTS = 2
+
+/** A module size given in 180 dpi dots, at `dpi`: the same physical size (2 → 4 at 360 dpi). */
+export function dotsAt(dots180: number, dpi = 180): number {
+  return Math.max(1, Math.round((dots180 * dpi) / 180))
+}
 
 export interface ModuleChoice {
   /** Module size to print with, ≥ 1 (1 also when nothing fits: see `max`). */
@@ -145,11 +150,12 @@ export interface ModuleChoice {
  * The module size the renderer prints a code with. 2-D: `'auto'` = the largest whole-dot size
  * that fits the band (maxModuleDots) and the frame width `limitW`; a fixed size is lowered to it.
  * Linear: `'auto'` = the largest size up to 4 whose symbol (with its zone) fits `limitW` (a
- * fixed label length or a frame), else 2; a fixed size is lowered only to fit `limitW`.
+ * fixed label length or a frame), else 2; a fixed size is lowered only to fit `limitW`. The
+ * linear 'auto' sizes are physical: 4 and 2 dots at 180 dpi, 8 and 4 at 360 dpi (`o.dpi`).
  */
 export function chooseModuleDots(
   m: ModuleMatrix,
-  o: { moduleDots: ModuleSize; quietZone: QuietZoneArg; symbology?: Symbology; bandDots: number; marginDots?: number; limitW?: number },
+  o: { moduleDots: ModuleSize; quietZone: QuietZoneArg; symbology?: Symbology; bandDots: number; marginDots?: number; limitW?: number; dpi?: number },
 ): ModuleChoice {
   const [qx] = quietModules(m, o.quietZone, o.symbology)
   const byW = o.limitW === undefined ? 255 : Math.floor(Math.max(0, o.limitW) / Math.max(1, m.width + 2 * qx))
@@ -157,7 +163,7 @@ export function chooseModuleDots(
   if (isLinear(m)) {
     const max = Math.min(255, byW)
     if (fixed === undefined) {
-      const md = o.limitW === undefined ? AUTO_LINEAR_DEFAULT_DOTS : Math.max(1, Math.min(AUTO_LINEAR_MAX_DOTS, max))
+      const md = o.limitW === undefined ? dotsAt(AUTO_LINEAR_DEFAULT_DOTS, o.dpi) : Math.max(1, Math.min(dotsAt(AUTO_LINEAR_MAX_DOTS, o.dpi), max))
       return { md, max, reduced: false }
     }
     return { md: Math.max(1, Math.min(fixed, max)), max, reduced: fixed > max && max >= 1 }
@@ -184,11 +190,14 @@ export function padMatrix(m: ModuleMatrix, qx: number, qy: number): ModuleMatrix
 
 export type Readability = 'good' | 'ok' | 'poor'
 
-/** How well a code at `md` dots per module scans: ≥ 3 good for phones, 2 close up, 1 poor. */
-export function readability(md: number): { level: Readability; text: string } {
-  if (md >= 3) return { level: 'good', text: 'Good for phone cameras.' }
-  if (md === 2) return { level: 'ok', text: 'OK close up: hold the phone near the label.' }
-  return { level: 'poor', text: 'Unreliable: modules of 1 dot often do not scan. Use wider tape or less data.' }
+/** How well a code at `md` dots per module scans at `dpi`, by the module's physical size: ≥ 3
+ * dots at 180 dpi (0.42 mm) good for phones, 2 (0.28 mm) close up, less poor. 360 dpi: 6 / 4. */
+export function readability(md: number, dpi = 180): { level: Readability; text: string } {
+  const at180 = (md * 180) / dpi
+  if (at180 >= 3 - 1e-9) return { level: 'good', text: 'Good for phone cameras.' }
+  if (at180 >= 2 - 1e-9) return { level: 'ok', text: 'OK close up: hold the phone near the label.' }
+  const size = md === 1 ? '1 dot' : `${md} dots (${((md * 25.4) / dpi).toFixed(2)} mm)`
+  return { level: 'poor', text: `Unreliable: modules of ${size} often do not scan. Use wider tape or less data.` }
 }
 
 /** Unprinted tape on each side of the printable band, in dots (part of a code's quiet zone). */

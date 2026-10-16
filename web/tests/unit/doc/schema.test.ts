@@ -157,11 +157,20 @@ describe('history', () => {
 
 describe('validateDoc', () => {
   it('rejects things that are not current-schema labels', () => {
-    for (const raw of [null, 42, 'x', [], {}, { schema: 1, items: [] }, { schema: 2, items: [] }, { schema: 4, items: [] }, { schema: 3 }, { schema: 3, items: {} }]) {
+    for (const raw of [null, 42, 'x', [], {}, { schema: 1, items: [] }, { schema: 2, items: [] }, { schema: 3, items: [] }, { schema: 5, items: [] }, { schema: 4 }, { schema: 4, items: {} }]) {
       const v = validateDoc(raw)
       expect(v.ok, JSON.stringify(raw)).toBe(false)
       if (!v.ok) expect(v.problems[0]).toMatch(/not a ptouch label document/)
     }
+  })
+
+  it('accepts 36 mm tape (schema 4) and maps other widths to the nearest TZe width', () => {
+    const d = createDoc({ items: [] })
+    const wide = validateDoc({ ...d, tape: { widthMm: 36, model: 'PT-P910BT' } })
+    expect(wide.ok && wide.doc.tape).toEqual({ widthMm: 36, model: 'PT-P910BT' })
+    const over = validateDoc({ ...d, tape: { widthMm: 40 } })
+    expect(over.ok && over.doc.tape.widthMm).toBe(36)
+    expect(over.ok && over.notices.join('\n')).toMatch(/width 40 mm is not a TZe width; using 36 mm/)
   })
 
   it('fills a minimal document with defaults', () => {

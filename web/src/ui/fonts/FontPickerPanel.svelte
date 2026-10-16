@@ -30,6 +30,7 @@
   import { customFamily, customFontReady, loadCustomFont } from '../../render/fonts'
   import Icon from '../common/Icon.svelte'
   import { getStudio } from '../state/studio.svelte'
+  import { fallbackBand } from '../state/text-defaults'
   import { familyPatch, fontKeyOf, pushRecent, toggleFavorite, type FontPatch } from './font-choice'
   import { availableFilters, buildGroups, flatOptions, fontEntries, missingEntry, moveActive, previewText, qualityNote, qualityTag, type FontEntry, type FontFilter } from './font-list'
   import { localFonts, localFontsSupported } from './local-fonts.svelte'
@@ -88,7 +89,7 @@
   const info = $derived(studio.render?.texts?.find((t) => t.itemId === item.id))
   const capMm = $derived.by(() => {
     if (!info) return undefined
-    const dpi = studio.target.ok ? studio.target.target.area.dpi : 180
+    const dpi = studio.target.ok ? studio.target.target.area.dpi : fallbackBand(studio.doc.tape.widthMm).dpi
     return (info.capDots * 25.4) / dpi
   })
   const qualityWarning = $derived(studio.render?.warnings.find((w) => w.code === 'font-quality' && w.itemId === item.id))

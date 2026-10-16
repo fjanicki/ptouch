@@ -2,6 +2,7 @@
      after the selected block). Image asks for a file first. -->
 <script lang="ts">
   import { createWifi } from '../../doc/schema'
+  import { dotsAt } from '../../render/codes'
   import Icon from '../common/Icon.svelte'
   import { errorMessage, getStudio } from '../state/studio.svelte'
 
@@ -26,7 +27,8 @@
     { id: 'qr', label: 'QR code', icon: 'qr', run: () => studio.insert('code') },
     // A Wi-Fi join code; on narrow tape the compact quiet zone lets the symbol fill the band.
     { id: 'wifi', label: 'Wi-Fi QR', icon: 'wifi', run: () => studio.insert('code', { content: 'wifi', wifi: createWifi(), ecc: 'L', quietZone: studio.doc.tape.widthMm <= 12 ? 'compact' : 'standard' }) },
-    { id: 'barcode', label: 'Barcode', icon: 'barcode', run: () => studio.insert('code', { symbology: 'code128', data: 'ABC-12345', moduleDots: 2, showText: true }) },
+    // 2 dots at 180 dpi (0.28 mm bars); the same physical size on a 360 dpi model.
+    { id: 'barcode', label: 'Barcode', icon: 'barcode', run: () => studio.insert('code', { symbology: 'code128', data: 'ABC-12345', moduleDots: dotsAt(2, studio.target.ok ? studio.target.target.area.dpi : 180), showText: true }) },
     { id: 'image', label: 'Image', icon: 'image', run: () => fileInput?.click() },
     { id: 'shape', label: 'Shape', icon: 'square', run: () => studio.insert('shape') },
     { id: 'spacer', label: 'Spacer', icon: 'space', run: () => studio.insert('spacer') },

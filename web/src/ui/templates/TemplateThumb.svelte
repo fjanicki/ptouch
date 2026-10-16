@@ -3,13 +3,16 @@
      into view, through the gallery's bounded queue; aborted on unmount; the bitmap is freed as
      soon as it is painted. Decorative (the card button carries the name and description); the
      label length it measured (printed length + 2 × feed, as the editor shows it) goes to the card
-     through `onrender`. -->
+     through `onrender`. Printer models (docs/MODELS-PLAN.md §3.9): drawn with `model` when it
+     takes the template's width, else with the stand-in (templates.ts `templateModel`), on that
+     model's band (`build(band)`), so no thumbnail asks a model for a tape it lacks. 36 mm tape
+     is drawn at the height of 24 mm (every card keeps the same height). -->
 <script lang="ts">
   import { onDestroy } from 'svelte'
   import { resolveDoc } from '../../doc/variables'
   import { paintPreview, renderLabel, type PreviewColors } from '../../render'
-  import { loadWasm, mediaForWidth, printArea, release } from '../../wasm'
-  import { withSampleData, type TemplateDef } from './templates'
+  import { listModels, loadWasm, mediaForWidth, printArea, release } from '../../wasm'
+  import { templateModel, withSampleData, type TemplateDef } from './templates'
   import type { TaskQueue } from './gallery'
 
   let {
@@ -22,6 +25,9 @@
 
   /** CSS px per mm of tape (24 mm tape → 48 px tall; labels up to ≈ 120 mm keep this scale). */
   const PX_PER_MM = 2
+  /** Tallest tape drawn at `PX_PER_MM`; wider tape (36 mm) is drawn smaller to the same height. */
+  const MAX_TAPE_MM = 24
+  const pxPerMm = $derived(Math.min(PX_PER_MM, (MAX_TAPE_MM * PX_PER_MM) / template.tapeWidthMm))
 
   let host: HTMLElement | undefined = $state()
   let canvas: HTMLCanvasElement | undefined = $state()
@@ -40,10 +46,12 @@
 
   async function draw(): Promise<void> {
     await loadWasm()
-    const media = mediaForWidth(model, template.tapeWidthMm)
-    const area = printArea(model, media.id)
-    const doc = resolveDoc(withSampleData(template.build()), 0, { now: new Date() }).doc
-    const r = await renderLabel(doc, { model, media, area }, { signal: ac.signal })
+    const use = templateModel(template, model, listModels())
+    if (!use) throw new Error(`No printer model takes ${template.tapeWidthMm} mm tape`)
+    const media = mediaForWidth(use, template.tapeWidthMm)
+    const area = printArea(use, media.id)
+    const doc = resolveDoc(withSampleData(template.build({ bandDots: area.heightDots, dpi: area.dpi })), 0, { now: new Date() }).doc
+    const r = await renderLabel(doc, { model: use, media, area }, { signal: ac.signal })
     try {
       if (ac.signal.aborted || !canvas) return
       paintPreview(canvas, r.bitmap, colors)
@@ -80,10 +88,10 @@
   })
 </script>
 
-<div class="thumb" bind:this={host} style:height="calc({24 * PX_PER_MM}px + 2 * var(--space-2))" aria-hidden="true" data-state={phase}>
+<div class="thumb" bind:this={host} style:height="calc({MAX_TAPE_MM * PX_PER_MM}px + 2 * var(--space-2))" aria-hidden="true" data-state={phase}>
   <div
     class="tape"
-    style:width="min(100%, {lengthMm * PX_PER_MM}px)"
+    style:width="min(100%, {lengthMm * pxPerMm}px)"
     style:aspect-ratio="{lengthMm} / {template.tapeWidthMm}"
     style:background={colors.tape}
   >

@@ -17,6 +17,12 @@
 // Fonts and size (docs/FONTS-AND-SIZE-PLAN.md, frozen for P-lib/P-picker/P-size): updatePrefs
 // (favourite/recent fonts, default font and size), textDefaults (what a new text block gets);
 // insert('text') and new labels apply the user's default font and size.
+//
+// Printer models (docs/MODELS-PLAN.md §2.6, frozen for P-core-ui / P-render-templates): model
+// (the connected printer's, else the "Design for" model), modelSource, designModel, models,
+// modelInfo, tapeWidths, widthSupport, setDesignModel, fitToModel, untestedModel,
+// dismissUntestedModel. Everything tape-related follows the active model's profile; a label whose
+// width it lacks keeps its width, renders with a stand-in model and cannot be printed.
 import { getContext, setContext, untrack } from 'svelte'
 import { TAPE_WIDTHS_MM, createDoc, createItem, newId, type Item, type ItemKind, type LabelDoc, type TapeWidthMm, type TextItem } from '../../doc/schema'
 import { addItem, duplicateItem, moveItem, removeItem, updateDoc, updateItem } from '../../doc/ops'
@@ -40,15 +46,18 @@ import {
   isUserCancel,
   type ConnectPath,
   type ConnectionSnapshot,
+  type MockScenario,
   type Problem,
   type ProblemAction,
   type SupportInfo,
 } from '../../printer'
 import { buildPrintJob, ensureFonts, estimateTape, itemSizingBand, renderLabel, thumbnailPng, type RenderResult, type RenderTarget } from '../../render'
 import { isPtouchError, listModels, loadWasm, mediaForWidth, printArea, type Job, type ModelInfo } from '../../wasm'
+import { DEFAULT_MODEL, FALLBACK_TAPE_WIDTHS, findModel, isVerifiedModel, standInModel, tapeWidthsOf, widthSupport, type WidthSupport } from './models'
+import { virtualScenarioFor } from './virtual-printer'
 import { inShortcutScope, matchShortcut, isEditableTarget, type ShortcutAction } from './shortcuts'
-import { FALLBACK_BAND_DOTS, newTextDefaults, retapeTextSize } from './text-defaults'
-import { clampCopies, docIsEmpty, fitScale, mediaMismatch, previewColors, printBlockReason, realScale, tapeText, themeColorMedia, zoomStep, type Zoom } from './view-model'
+import { fallbackBand, isBandSize, newTextDefaults, retapeTextSize } from './text-defaults'
+import { clampCopies, docIsEmpty, fitScale, formatMm, isConnected, mediaMismatch, nearestTapeWidth, previewColors, printBlockReason, printerModel, realScale, tapeText, themeColorMedia, zoomStep, type Zoom } from './view-model'
 
 export type View = 'studio' | 'diagnostics'
 export type WasmState = 'loading' | 'ready' | 'error'
@@ -62,8 +71,7 @@ export interface ShareActionOptions {
   includeWifiPasswords?: boolean
 }
 
-/** Model assumed for offline design (the only hardware-verified model). */
-export const DEFAULT_MODEL = 'PT-P710BT'
+export { DEFAULT_MODEL }
 
 export type TargetState = { ok: true; target: RenderTarget } | { ok: false; error: string | null }
 
@@ -162,34 +170,78 @@ export class Studio {
   }
   readonly selected = $derived(this.doc.items.find((i) => i.id === this.selectedId) ?? null)
 
-  /** The model to design/print for: the connected printer's, else the default. */
-  readonly model = $derived(this.conn.model ?? this.conn.status?.modelName ?? DEFAULT_MODEL)
-
-  readonly modelInfo = $derived.by<ModelInfo | null>(() => {
-    if (this.wasm !== 'ready') return null
-    const name = this.model
+  /** Every model of the core's table, in table order ([] until the wasm core is loaded). */
+  readonly models = $derived.by<readonly ModelInfo[]>(() => {
+    if (this.wasm !== 'ready') return []
     try {
-      return listModels().find((m) => m.name === name || m.aliases.includes(name)) ?? null
+      return listModels()
     } catch {
-      return null
+      return []
     }
   })
 
-  /** Render target for the doc's tape: exact loaded media when it matches, else by width. */
+  /** The "Design for" model (prefs.designModel, picked in the model picker): what the studio
+   * designs for while no printer is connected, and the virtual printer's model. A name the table
+   * does not know (prefs from a newer app) falls back to DEFAULT_MODEL once the table is loaded. */
+  readonly designModel = $derived.by<string>(() => {
+    const name = this.prefs.designModel
+    if (this.wasm !== 'ready') return name
+    return findModel(this.models, name)?.name ?? DEFAULT_MODEL
+  })
+
+  /** Where `model` comes from: the connected (or virtual) printer, or the "Design for" pick. A
+   * lost or silent link no longer counts (view-model `printerModel`). */
+  readonly modelSource = $derived<'printer' | 'design'>(printerModel(this.conn) ? 'printer' : 'design')
+
+  /** The model to design/print for: the connected printer's, else the "Design for" model. */
+  readonly model = $derived(printerModel(this.conn) ?? this.designModel)
+
+  readonly modelInfo = $derived.by<ModelInfo | null>(() => findModel(this.models, this.model) ?? null)
+
+  /** TZe widths the active model takes, ascending (the tape picker). The default model's until
+   * the table is loaded. */
+  readonly tapeWidths = $derived.by<readonly TapeWidthMm[]>(() => (this.modelInfo ? tapeWidthsOf(this.modelInfo) : FALLBACK_TAPE_WIDTHS))
+
+  /** Whether the active model takes the doc's tape width; when not: the notice, "Fit to …", the
+   * stand-in model the preview renders with, and Print is blocked. */
+  readonly widthSupport = $derived.by<WidthSupport>(() => {
+    if (!this.modelInfo) return { ok: true }
+    const width = this.doc.tape.widthMm
+    const widths = this.tapeWidths
+    if (widths.includes(width)) return { ok: true }
+    return widthSupport(this.model, width, widths, standInModel(this.models, width, this.doc.tape.model))
+  })
+
+  /** Render target for the doc's tape: exact loaded media when it matches, else by width. A width
+   * the active model lacks renders with the stand-in model (`widthSupport.standIn`). */
   readonly target = $derived.by<TargetState>(() => {
     if (this.wasm !== 'ready') return { ok: false, error: null }
-    const model = this.model
+    const support = this.widthSupport
+    const model = support.ok ? this.model : support.standIn
+    if (!model) return { ok: false, error: support.ok ? null : support.message }
+    const info = support.ok ? this.modelInfo : (findModel(this.models, model) ?? null)
     const width = this.doc.tape.widthMm
-    const loaded = this.conn.media
+    // The loaded tape belongs to the printer: not to the "Design for" model after a lost link.
+    const loaded = support.ok && this.modelSource === 'printer' ? this.conn.media : null
     try {
       const media =
         loaded && Math.abs(loaded.widthMm - width) < 0.01
           ? loaded
-          : (this.modelInfo?.media.find((m) => m.id === this.doc.tape.mediaId && Math.abs(m.widthMm - width) < 0.01) ?? mediaForWidth(model, width))
+          : (info?.media.find((m) => m.id === this.doc.tape.mediaId && Math.abs(m.widthMm - width) < 0.01) ?? mediaForWidth(model, width))
       return { ok: true, target: { model, media, area: printArea(model, media.id) } }
     } catch (e) {
       return { ok: false, error: errorMessage(e) }
     }
+  })
+
+  /** A real (not virtual) printer of a model nobody has tested yet is connected and its notice
+   * was not dismissed: "untested model, please report" (P-core-ui). */
+  readonly untestedModel = $derived.by<string | null>(() => {
+    const c = this.conn
+    if (!isConnected(c.state) || !c.transport || c.transport.kind === 'virtual') return null
+    const name = c.model ?? c.status?.modelName
+    if (!name || isVerifiedModel(name) || this.prefs.dismissedUntested.includes(name)) return null
+    return name
   })
 
   readonly mismatch = $derived(mediaMismatch(this.conn, this.doc))
@@ -206,6 +258,7 @@ export class Studio {
       conn: this.conn,
       mismatch: this.mismatch,
       canPrint: this.#canPrint(),
+      unsupportedWidth: this.widthSupport.ok ? null : `${this.widthSupport.message} Fit it to ${formatMm(this.widthSupport.nearest)} to print it.`,
     }),
   )
 
@@ -227,6 +280,9 @@ export class Studio {
 
   /** The open doc came from a share link and is neither saved nor remembered until edited. */
   #unsaved = false
+  /** The open doc was made here as a new label (first start, New label), not opened from a share
+   * link, file, template or the library: only such a label follows the model picker. */
+  #fresh = true
   #renderTimer: ReturnType<typeof setTimeout> | undefined
   #renderAbort: AbortController | null = null
   /** Cancels a batch while its labels are prepared (before anything is sent). */
@@ -261,16 +317,25 @@ export class Studio {
     this.connection = new ConnectionManager({
       support: this.support,
       designWidthMm: () => this.doc.tape.widthMm,
+      virtualScenario: () => this.#virtualScenario(),
       remember: (c) =>
         (this.prefs = savePrefs(c ? { lastPath: c.path, ...(c.transport ? { lastTransport: c.transport } : {}), autoReconnect: true } : { autoReconnect: false })),
       recall: () => (this.prefs.lastPath && this.prefs.autoReconnect ? { path: this.prefs.lastPath, ...(this.prefs.lastTransport ? { transport: this.prefs.lastTransport as never } : {}) } : null),
     })
     this.designAnyway = this.prefs.designAnyway
     let previousState = INITIAL_SNAPSHOT.state
+    let previousPrinter: string | null = null
     this.connection.subscribe((s) => {
       const was = previousState
       previousState = s.state
       this.conn = s
+      // A printer of another model connected: a pristine label is re-made for it first (its band
+      // and dpi; M of a 180 dpi band is not M on a 360 dpi one), then follows its cassette below.
+      const printer = printerModel(s)
+      if (printer !== previousPrinter) {
+        previousPrinter = printer
+        if (printer) this.#followModel()
+      }
       // A successful connect is announced (the dialog's live region is gone by then).
       if (s.state === 'ready' && (was === 'opening' || was === 'waking' || was === 'handshaking')) {
         const tape = tapeText(s)
@@ -314,9 +379,8 @@ export class Studio {
           if (Math.abs(media.widthMm - this.doc.tape.widthMm) < 0.01) return
           // Only a brand-new, untouched label follows the cassette; anything designed keeps its
           // width and gets the mismatch banner with a one-click switch instead.
-          const pristine = this.doc.createdAt === this.doc.updatedAt && !this.canUndo && !this.readOnly
-          if (pristine && isTapeWidth(media.widthMm)) {
-            this.setDoc(this.#retaped({ ...this.doc.tape, widthMm: media.widthMm, mediaId: media.id }, true))
+          if (this.#isUntouched() && isTapeWidth(media.widthMm)) {
+            this.setDoc(this.#retaped({ ...this.doc.tape, widthMm: media.widthMm, mediaId: media.id, model: this.model }, true))
             this.toast('info', `Switched to the loaded ${media.widthMm} mm tape`, undefined, { label: 'Undo', run: () => this.undo() })
           }
         })
@@ -339,6 +403,7 @@ export class Studio {
       return
     }
     await this.#restoreDoc()
+    this.#followModel()
     if (this.prefs.autoReconnect && this.prefs.lastPath && this.prefs.lastPath !== 'virtual') {
       try {
         await this.connection.restore()
@@ -374,7 +439,8 @@ export class Studio {
         const found = await this.store.load(this.prefs.lastLabelId)
         // The editor is usable while this loads: never overwrite edits made meanwhile.
         if (found && this.doc === before) {
-          this.openDoc(found.doc, { readOnly: found.readOnly, save: false })
+          // A new label saved untouched (re-made for the picked model, or New label) stays new.
+          this.openDoc(found.doc, { readOnly: found.readOnly, save: false, fresh: found.doc.id === this.prefs.freshLabelId })
           return
         }
       } catch (e) {
@@ -462,29 +528,30 @@ export class Studio {
   }
 
   /** Open a document (new, from the library, import, share link): resets history. */
-  openDoc(doc: LabelDoc, opts: { readOnly?: boolean; save?: boolean; remember?: boolean } = {}): void {
+  openDoc(doc: LabelDoc, opts: { readOnly?: boolean; save?: boolean; remember?: boolean; fresh?: boolean } = {}): void {
     this.doc = doc
+    this.#fresh = opts.fresh ?? false
     this.readOnly = opts.readOnly ?? false
     this.history.reset(doc)
     this.#historyTick++
     this.selectedId = doc.items[0]?.id ?? null
     this.previewRow = 0
     this.#unsaved = opts.remember === false
-    if (!this.#unsaved) this.prefs = savePrefs({ lastLabelId: doc.id })
+    // `freshLabelId`: after a reload the restored label is still new (`#isPristine`).
+    if (!this.#unsaved) this.prefs = savePrefs({ lastLabelId: doc.id, freshLabelId: this.#fresh ? doc.id : undefined })
     if (opts.save !== false && !this.readOnly) this.autosave.schedule(doc)
   }
 
   /** A new label on `widthMm` tape whose text block has the user's default font and size. */
-  #freshDoc(widthMm: TapeWidthMm, mediaId?: string): LabelDoc {
-    const doc = createDoc({ tape: { widthMm, ...(mediaId ? { mediaId } : {}) } })
+  #freshDoc(widthMm: TapeWidthMm, mediaId?: string, model?: string): LabelDoc {
+    const doc = createDoc({ tape: { widthMm, ...(mediaId ? { mediaId } : {}), ...(model ? { model } : {}) } })
     const text = { ...createItem('text'), ...this.textDefaults(doc) }
     return { ...doc, items: [text] }
   }
 
   /**
    * Font and size a new text block in `doc` gets (prefs `defaultFont` / `defaultTextSize`,
-   * ui/state/text-defaults.ts), sized in the band of the current print area when it matches the
-   * doc's tape, else the PT-P710BT band of that width.
+   * ui/state/text-defaults.ts), sized in the band `#sizingBand` gives for the doc's tape.
    */
   textDefaults(doc: LabelDoc = this.doc): Pick<TextItem, 'fontFamily' | 'fontWeight' | 'size'> {
     const { bandDots, dpi } = this.#sizingBand(doc, createItem('text'))
@@ -492,35 +559,64 @@ export class Studio {
   }
 
   /** The band `item` is sized in on `doc`'s tape: the current print area when it matches the
-   * tape, else the area of that width for this model, else the PT-P710BT band of that width. */
+   * tape; else that width on the active model, or on the stand-in model when the active one lacks
+   * the width; else (core not loaded) `fallbackBand`: the PT-P710BT's band, the PT-P910BT's for
+   * 36 mm. */
   #sizingBand(doc: LabelDoc, item: Item): { bandDots: number; dpi: number } {
     const width = doc.tape.widthMm
     // `target` is derived from the current doc; it may not exist yet (wasm loading, constructor).
     const t = this.wasm === 'ready' && this.target.ok ? this.target.target : null
     let area = t && Math.abs(t.media.widthMm - width) < 0.01 ? t.area : null
     if (!area && this.wasm === 'ready') {
+      // The active model, else (a width it lacks) the stand-in the preview uses.
+      const model = this.tapeWidths.includes(width) ? this.model : standInModel(this.models, width, doc.tape.model)
       try {
-        area = printArea(this.model, mediaForWidth(this.model, width).id)
+        area = model ? printArea(model, mediaForWidth(model, width).id) : null
       } catch {
         area = null
       }
     }
-    return area ? { bandDots: itemSizingBand(doc, item, area).bandDots, dpi: area.dpi } : { bandDots: FALLBACK_BAND_DOTS[width as TapeWidthMm] ?? 70, dpi: 180 }
+    return area ? { bandDots: itemSizingBand(doc, item, area).bandDots, dpi: area.dpi } : fallbackBand(width)
+  }
+
+  /** The band `item` is sized in on `doc`'s tape when printed on `model`; null when the model
+   * lacks the width (or the core is not loaded). */
+  #bandOn(model: string, doc: LabelDoc, item: Item): { bandDots: number; dpi: number } | null {
+    const info = this.wasm === 'ready' ? findModel(this.models, model) : undefined
+    if (!info || !tapeWidthsOf(info).includes(doc.tape.widthMm)) return null
+    try {
+      const area = printArea(info.name, mediaForWidth(info.name, doc.tape.widthMm).id)
+      return { bandDots: itemSizingBand(doc, item, area).bandDots, dpi: area.dpi }
+    } catch {
+      return null
+    }
   }
 
   /**
    * The current doc on `tape`: quick sizes of text blocks follow the new band (M stays M,
    * `retapeTextSize`); `fresh` (an untouched label) also gives its default-size text the new
    * tape's default. Free-layout frames keep their own band.
+   *
+   * A block's old band is the one its size was made in: the model the label was laid out for
+   * (`tape.model`; a label without one predates models, so the PT-P710BT) when its size is a
+   * quick size or the default there, else the active model's. They differ once the model changed
+   * (a PT-P910BT connected to a label made for a PT-P710BT): measured on the new model, M of the
+   * old band is neither a quick size nor the default, and would stay a fixed size.
    */
   #retaped(tape: LabelDoc['tape'], fresh = false): LabelDoc {
     const doc = this.doc
     const next = updateDoc(doc, { tape })
-    const defaults = fresh ? { from: this.textDefaults(doc).size, to: this.textDefaults(next).size } : undefined
+    const freshTo = fresh ? this.textDefaults(next).size : undefined
+    const madeOn = doc.tape.model ?? DEFAULT_MODEL
     const items = doc.items.map((item) => {
       if (item.kind !== 'text' || (doc.layout.mode === 'free' && item.frame)) return item
-      const from = this.#sizingBand(doc, item)
-      const size = retapeTextSize(item.size, from.bandDots, this.#sizingBand(next, item).bandDots, from.dpi, defaults)
+      const defaultIn = (b: { bandDots: number; dpi: number }) => newTextDefaults(this.prefs, doc.tape.widthMm, b.bandDots, b.dpi).size
+      const active = this.#sizingBand(doc, item)
+      const made = this.#bandOn(madeOn, doc, item)
+      const from = made && isBandSize(item.size, made.bandDots, made.dpi, freshTo ? defaultIn(made) : undefined) ? made : active
+      const to = this.#sizingBand(next, item)
+      const defaults = freshTo ? { from: defaultIn(from), to: freshTo } : undefined
+      const size = retapeTextSize(item.size, from.bandDots, to.bandDots, from.dpi, defaults, to.dpi)
       if (size === item.size) return item
       const { clipTall: _v1, ...rest } = item
       void _v1
@@ -534,11 +630,83 @@ export class Studio {
     this.prefs = savePrefs(patch)
   }
 
+  /** Not edited since it was opened (nor read-only): it follows a newly loaded cassette (toast +
+   * Undo). */
+  #isUntouched(): boolean {
+    return this.doc.createdAt === this.doc.updatedAt && !this.canUndo && !this.readOnly
+  }
+
+  /** A brand-new label made here and still untouched: it also follows the model picker. Shared,
+   * imported, template and library labels never change width on their own (notice + "Fit to"). */
+  #isPristine(): boolean {
+    return this.#fresh && this.#isUntouched()
+  }
+
+  /** A pristine label is re-made for the active model: on the nearest width it takes when it lacks
+   * the label's, with the default text size of that model's band (M on a 360 dpi band is not M on
+   * a 180 dpi one). Not an edit (no undo step): the label stays pristine, so a cassette loaded
+   * later still moves it. No-op when nothing would change. */
+  #followModel(): void {
+    if (!this.#isPristine() || this.wasm !== 'ready') return
+    const s = this.widthSupport
+    const doc = this.doc
+    const widthMm = s.ok ? doc.tape.widthMm : s.nearest
+    const tape: LabelDoc['tape'] = { widthMm, model: this.model, ...(doc.tape.colors ? { colors: doc.tape.colors } : {}) }
+    const next: LabelDoc = { ...doc, tape }
+    let changed = widthMm !== doc.tape.widthMm
+    const items = doc.items.map((item) => {
+      if (item.kind !== 'text') return item
+      const d = this.textDefaults(next)
+      if (JSON.stringify(d.size) === JSON.stringify(item.size) && d.fontFamily === item.fontFamily && d.fontWeight === item.fontWeight) return item
+      changed = true
+      return { ...item, ...d }
+    })
+    if (changed) this.openDoc({ ...next, items }, { fresh: true })
+  }
+
+  /**
+   * "Design for" (model picker): remembers the model to design for while no printer is
+   * connected (and the virtual printer's model). Accepts a name or alias. Only a pristine label
+   * (`#isPristine`: made here as a new label, still untouched) is re-made for the model
+   * (`#followModel`); every other label, including untouched shared, imported, template and
+   * library labels, keeps its width (notice + "Fit to").
+   */
+  setDesignModel(name: string): void {
+    const canonical = findModel(this.models, name)?.name ?? name
+    if (canonical === this.prefs.designModel) return
+    this.prefs = savePrefs({ designModel: canonical })
+    this.#followModel()
+  }
+
+  /** "Fit to 24 mm": the label on `widthMm` (default: the nearest width the active model takes),
+   * text quick sizes following the new band. One undo step; no-op when nothing changes. */
+  fitToModel(widthMm?: TapeWidthMm): void {
+    const s = this.widthSupport
+    const to = widthMm ?? (s.ok ? undefined : s.nearest)
+    if (to === undefined || to === this.doc.tape.widthMm) return
+    this.setTapeWidth(to)
+    this.announce(`Label fitted to ${formatMm(to)} tape`)
+  }
+
+  /** Hides the "untested model" notice for the connected model (remembered). */
+  dismissUntestedModel(): void {
+    const m = this.untestedModel
+    if (m) this.prefs = savePrefs({ dismissedUntested: [...this.prefs.dismissedUntested, m] })
+  }
+
+  /** The virtual printer ("No printer"): the "Design for" model with its widest TZe tape loaded
+   * (`virtualScenarioFor`, shared with the Diagnostics probe). An untouched label follows that
+   * cassette like a real one; a designed label gets the mismatch banner. */
+  #virtualScenario(): Partial<MockScenario> {
+    return virtualScenarioFor(findModel(this.models, this.designModel))
+  }
+
   newLabel(): void {
     void this.autosave.flush().catch(() => {})
     const loaded = this.conn.media && isTapeWidth(this.conn.media.widthMm) ? this.conn.media : null
-    const doc = this.#freshDoc(loaded ? (loaded.widthMm as TapeWidthMm) : this.doc.tape.widthMm, loaded?.id)
-    this.openDoc(doc)
+    const width = this.tapeWidths.includes(this.doc.tape.widthMm) ? this.doc.tape.widthMm : nearestTapeWidth(this.doc.tape.widthMm, this.tapeWidths)
+    const doc = this.#freshDoc(loaded ? (loaded.widthMm as TapeWidthMm) : width, loaded?.id, this.wasm === 'ready' ? this.model : undefined)
+    this.openDoc(doc, { fresh: true })
     this.announce('New label')
   }
 
@@ -634,7 +802,7 @@ export class Studio {
     const { mediaId: _drop, ...tape } = this.doc.tape
     void _drop
     const loaded = this.conn.media && Math.abs(this.conn.media.widthMm - widthMm) < 0.01 ? { mediaId: this.conn.media.id } : {}
-    this.setDoc(this.#retaped({ ...tape, ...loaded, widthMm }))
+    this.setDoc(this.#retaped({ ...tape, ...loaded, widthMm, ...(this.wasm === 'ready' ? { model: this.model } : {}) }))
   }
 
   /** "Use loaded 12 mm tape" (problem action `switch-tape`, mismatch banner). */
@@ -643,10 +811,11 @@ export class Studio {
     if (!media) return
     if (!isTapeWidth(media.widthMm)) {
       // e.g. 11.7 mm heat-shrink tube: the core knows it, the editor's widths don't (yet).
-      this.toast('info', `The loaded ${media.widthMm} mm media can’t be designed for yet`, 'Load a TZe tape cassette (3.5–24 mm).')
+      const widths = this.tapeWidths
+      this.toast('info', `The loaded ${media.widthMm} mm media can’t be designed for yet`, `Load a TZe tape cassette (${widths[0] ?? 3.5}–${widths[widths.length - 1] ?? 24} mm).`)
       return
     }
-    this.setDoc(this.#retaped({ ...this.doc.tape, widthMm: media.widthMm, mediaId: media.id }))
+    this.setDoc(this.#retaped({ ...this.doc.tape, widthMm: media.widthMm, mediaId: media.id, model: this.model }))
     this.toast('ok', `Label switched to ${media.widthMm} mm tape`)
   }
 
@@ -838,6 +1007,7 @@ export class Studio {
     let batchRows: number | undefined
     let widthMm: number
     let mediaId: string
+    let model: string
     try {
       // Print may be pressed right after an edit: wait for the preview of *this* doc and target,
       // so the old bitmap is never sent with the new settings.
@@ -861,6 +1031,7 @@ export class Studio {
       }
       widthMm = target.target.media.widthMm
       mediaId = target.target.media.id
+      model = target.target.model
       const rows = batchSize(doc)
       if (rows > 0) {
         // A batch: every label rendered and sent as ONE chained multi-page job (P1).
@@ -897,7 +1068,7 @@ export class Studio {
       // The toast region announces it (one announcer, not two).
       this.toast('ok', text, doc.print.autoCut ? undefined : 'Cut the label off at the printer.')
       this.tapeLeader = !doc.print.chain
-      this.#recordPrint({ doc, widthMm, mediaId, labels, tapeMm, ...(batchRows !== undefined ? { batchRows } : {}) })
+      this.#recordPrint({ doc, widthMm, mediaId, model, labels, tapeMm, ...(batchRows !== undefined ? { batchRows } : {}) })
     } catch (e) {
       if (isUserCancel(e) || (isPtouchError(e) && e.code === 'CANCELLED')) {
         this.toast('info', 'Printing cancelled')
@@ -914,7 +1085,7 @@ export class Studio {
   }
 
   /** After a successful print: tape usage counter + print history (P4). Never throws. */
-  #recordPrint(r: { doc: LabelDoc; widthMm: number; mediaId: string; labels: number; tapeMm: number; batchRows?: number }): void {
+  #recordPrint(r: { doc: LabelDoc; widthMm: number; mediaId: string; model: string; labels: number; tapeMm: number; batchRows?: number }): void {
     this.usage = addUsage(r.widthMm, r.tapeMm, r.labels)
     const add = async (): Promise<void> => {
       const thumbnail = await this.#thumbnail(r.doc)
@@ -924,6 +1095,7 @@ export class Studio {
         name: r.doc.name,
         tapeWidthMm: r.widthMm,
         mediaId: r.mediaId,
+        model: r.model,
         labels: r.labels,
         copies: r.doc.print.copies,
         tapeMm: r.tapeMm,

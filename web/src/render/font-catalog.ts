@@ -65,7 +65,7 @@ export interface FontDef {
   condensed?: boolean
 }
 
-/** Cap height (mm) below which a `quality` font prints poorly at 180 dpi (picker hint). */
+/** Cap height (mm) below which a `quality` font prints poorly (picker hint; physical, any dpi). */
 export const MIN_QUALITY_CAP_MM = 3
 
 /** The family used for the human-readable line under linear barcodes. */

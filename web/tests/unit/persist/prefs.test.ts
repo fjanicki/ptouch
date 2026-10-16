@@ -1,6 +1,6 @@
 // W5 — preferences survive throwing / corrupt / missing localStorage.
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_PREFS, MAX_FAVORITE_FONTS, MAX_RECENT_FONTS, PREFS_KEY, isFontKey, loadPrefs, sanitizePrefs, savePrefs, type PrefsStorage } from '../../../src/doc/persist-prefs'
+import { DEFAULT_DESIGN_MODEL, DEFAULT_PREFS, MAX_DISMISSED_MODELS, MAX_FAVORITE_FONTS, MAX_RECENT_FONTS, PREFS_KEY, isFontKey, loadPrefs, sanitizePrefs, savePrefs, type PrefsStorage } from '../../../src/doc/persist-prefs'
 
 function memory(): PrefsStorage & { data: Map<string, string> } {
   const data = new Map<string, string>()
@@ -102,5 +102,34 @@ describe('prefs: fonts and size (docs/FONTS-AND-SIZE-PLAN.md)', () => {
   it('isFontKey', () => {
     expect(['b:lexend', 'u:sha256-ffffffffffffffffffffffffffffffff', 'l:Menlo-Regular'].every(isFontKey)).toBe(true)
     expect(['lexend', 'b:', 'x:lexend', 'u:sha256-xyz', "l:a'b", 'l:a\\b', `l:${'a'.repeat(101)}`, null].some(isFontKey)).toBe(false)
+  })
+})
+
+describe('prefs: printer models (docs/MODELS-PLAN.md)', () => {
+  it('defaults: design for the PT-P710BT, no dismissed notices (older prefs get them too)', () => {
+    expect(sanitizePrefs({ theme: 'dark' })).toMatchObject({ theme: 'dark', designModel: DEFAULT_DESIGN_MODEL, dismissedUntested: [] })
+    expect(DEFAULT_DESIGN_MODEL).toBe('PT-P710BT')
+  })
+
+  it('keeps a model name, also one this app does not know yet', () => {
+    expect(sanitizePrefs({ designModel: 'PT-P910BT' }).designModel).toBe('PT-P910BT')
+    expect(sanitizePrefs({ designModel: 'PT-Z999BT' }).designModel).toBe('PT-Z999BT')
+    expect(sanitizePrefs({ designModel: '<img>' }).designModel).toBe(DEFAULT_DESIGN_MODEL)
+    expect(sanitizePrefs({ designModel: 42 }).designModel).toBe(DEFAULT_DESIGN_MODEL)
+  })
+
+  it('dedupes and caps the dismissed notices, dropping junk', () => {
+    const many = Array.from({ length: MAX_DISMISSED_MODELS + 5 }, (_, i) => `PT-X${i}`)
+    const p = sanitizePrefs({ dismissedUntested: ['PT-P910BT', 'PT-P910BT', 7, '', ...many] })
+    expect(p.dismissedUntested).toHaveLength(MAX_DISMISSED_MODELS)
+    expect(p.dismissedUntested).not.toContain('')
+    expect(sanitizePrefs({ dismissedUntested: ['PT-P910BT', 'PT-P910BT'] }).dismissedUntested).toEqual(['PT-P910BT'])
+  })
+
+  it('remembers which label was made as a new one (additive, removable)', () => {
+    expect(sanitizePrefs({ theme: 'dark' }).freshLabelId).toBeUndefined()
+    expect(sanitizePrefs({ freshLabelId: 'abc' }).freshLabelId).toBe('abc')
+    expect(sanitizePrefs({ freshLabelId: '' }).freshLabelId).toBeUndefined()
+    expect(sanitizePrefs({ freshLabelId: 7 }).freshLabelId).toBeUndefined()
   })
 })

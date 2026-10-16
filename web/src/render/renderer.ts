@@ -22,9 +22,9 @@ import { wifiWarnings } from './wifi'
 
 /** Widest crisp canvas drawn at once (px); longer labels are drawn in tiles. */
 const MAX_TILE_PX = 8190
-/** Below this cap-to-descender height text prints poorly at 180 dpi. */
+/** Below this cap-to-descender height (mm) text prints poorly, at any head resolution. */
 const SMALL_TEXT_MM = 2
-/** Narrowest module that scans reliably at 180 dpi (2 dots = 0.28 mm). */
+/** Narrowest module that scans reliably (2 dots at 180 dpi = 0.28 mm; 4 dots at 360 dpi). */
 const MIN_SCANNABLE_MODULE_MM = 0.25
 /** Shortest bars we accept silently. */
 const MIN_BAR_MM = 3
@@ -292,7 +292,7 @@ function prepareCode(item: CodeItem, band: number, c: Ctx, maxW?: number): Prepa
 
   if (!linear) {
     // In a free-layout frame the symbol (with its quiet zone) must also fit the frame width.
-    const choice = chooseModuleDots(m, { moduleDots: item.moduleDots, quietZone: item.quietZone, symbology: item.symbology, bandDots: band, marginDots: c.marginDots, ...(maxW !== undefined ? { limitW: maxW } : {}) })
+    const choice = chooseModuleDots(m, { moduleDots: item.moduleDots, quietZone: item.quietZone, symbology: item.symbology, bandDots: band, marginDots: c.marginDots, dpi, ...(maxW !== undefined ? { limitW: maxW } : {}) })
     if (choice.max < 1) {
       c.warn({ code: 'code-too-small', itemId: item.id, blocking: true, message: `${name}: ${m.height}×${m.width} modules do not fit on this tape. ${item.symbology === 'qr' ? 'Shorten the data, lower the error correction or use wider tape.' : 'Shorten the data or use wider tape.'}` })
       const side = Math.max(1, band)
@@ -313,7 +313,7 @@ function prepareCode(item: CodeItem, band: number, c: Ctx, maxW?: number): Prepa
 
   // Linear: a frame limits the length; a fixed-length label limits 'auto' codes (autoLinearW).
   const limitW = maxW ?? (auto ? c.autoLinearW : undefined)
-  const choice = chooseModuleDots(m, { moduleDots: item.moduleDots, quietZone: item.quietZone, symbology: item.symbology, bandDots: band, ...(limitW !== undefined ? { limitW } : {}) })
+  const choice = chooseModuleDots(m, { moduleDots: item.moduleDots, quietZone: item.quietZone, symbology: item.symbology, bandDots: band, dpi, ...(limitW !== undefined ? { limitW } : {}) })
   if (maxW !== undefined && choice.max < 1) {
     c.warn({ code: 'code-too-small', itemId: item.id, blocking: true, message: `${name}: ${m.width} modules do not fit in its frame. Make the frame longer or shorten the data.` })
     return { id: item.id, w: Math.max(1, maxW), h: band, crisp: invalidCodeDraw }
@@ -363,8 +363,9 @@ function prepareCode(item: CodeItem, band: number, c: Ctx, maxW?: number): Prepa
 
 /**
  * Linear codes with `moduleDots: 'auto'` on a fixed-length label: re-measure them so they share
- * the length the other flow blocks leave (largest module up to 4 dots that fits, else 1 with an
- * overflow warning from the layout). Auto-length labels keep the default 2 dots.
+ * the length the other flow blocks leave (largest module up to 4 dots at 180 dpi that fits, else
+ * 1 with an overflow warning from the layout). Auto-length labels keep the default 2 dots (4 at
+ * 360 dpi: codes.ts `dotsAt`).
  */
 function sizeAutoLinearCodes(doc: LabelDoc, prepared: Prepared[], items: Item[], band: number, c: Ctx, limits: { insetDots: number }): void {
   if (doc.length.mode !== 'fixed') return
