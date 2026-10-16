@@ -1,8 +1,8 @@
 # ptouch
 
-An open-source library and tools for printing to Brother P-touch label printers over Bluetooth, written in Rust.
+**Open the studio: [fjanicki.github.io/ptouch](https://fjanicki.github.io/ptouch/)**: design and print labels straight from Chrome or Edge over USB or Bluetooth. Nothing to install, no account, no vendor app.
 
-The goal is a browser-based label print studio, hosted on GitHub Pages, that talks directly to a printer paired with your computer. No vendor app is needed.
+An open-source library and tools for Brother P-touch label printers, written in Rust: the protocol core, a `ptouch` CLI, and the browser print studio above (the same core compiled to WebAssembly). See [Web studio](#web-studio) for browser support and details.
 
 **Status:** early development. Primary target: **PT-P710BT** (Cube Plus). The model table covers 27 P-touch models (PT-P300BT, PT-P910BT, PT-D460BT, PT-D610BT, PT-E310BT, PT-E560BT, …), but only the PT-P710BT has been checked against real hardware so far.
 
