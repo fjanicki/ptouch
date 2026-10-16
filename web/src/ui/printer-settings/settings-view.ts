@@ -6,8 +6,8 @@
 import type { TransportKind } from '../../printer'
 import type { SettingId, SettingInfo, SettingReport, SettingValue } from '../../wasm'
 
-/** Our row labels where the selector is not in doubt (Brother's own label for the model is
- * shown underneath). "External power" covers Brother's USB / AC, AC/DC and USB Connection. */
+/** Our row labels (Brother's own name for the setting is shown underneath). "External power"
+ * covers Brother's USB / AC adapter ("adp" on the PT-P710BT), AC/DC and USB Connection. */
 export const ROW_LABELS: Record<SettingId, string> = {
   'auto-power-on': 'Auto power on',
   'auto-power-off': 'Auto power off: on external power',
@@ -27,43 +27,33 @@ export const ROW_HINTS: Record<SettingId, string> = {
   'auto-power-off-battery': 'Turns the printer off after this long without use while it runs on its battery.',
 }
 
-/** Where Brother's tool says the timer applies (used only for rows whose selector is in doubt). */
-const BROTHER_SAYS: Partial<Record<SettingId, string>> = {
-  'auto-power-off': 'external (USB / AC) power',
-  'auto-power-off-battery': 'battery',
-}
-
-/** The row label. Where it is UNVERIFIED which timer the setting controls (PT-P710BT,
- * `SettingInfo.selectorUnverified`, PROTOCOL.md §8 #34), the row is named by Brother's label
- * instead of by a power source we cannot vouch for. */
+/** The row label. */
 export function rowLabel(info: SettingInfo): string {
-  return info.selectorUnverified ? `Auto power off: “${info.brotherLabel}”` : ROW_LABELS[info.id]
+  return ROW_LABELS[info.id]
 }
 
 /** The row hint. */
 export function rowHint(info: SettingInfo): string {
-  const where = BROTHER_SAYS[info.id]
-  if (info.selectorUnverified && where) return `Brother’s tool applies this timer on ${where}. Which timer it really controls is unverified on this model (see the note below).`
   return ROW_HINTS[info.id]
 }
 
 /** Short name for sentences. */
 export function shortName(info: SettingInfo): string {
-  return info.selectorUnverified ? `“${info.brotherLabel}”` : SHORT_NAMES[info.id]
+  return SHORT_NAMES[info.id]
 }
-
-/** The note shown when a row's selector is in doubt. */
-export const SELECTOR_NOTE =
-  'Auto power off on this model: Brother’s definition may have the external-power and battery timers swapped, and this hasn’t been checked on a printer. “Verified” means the printer stored the value, not which timer uses it.'
 
 /** "Saved and verified" sentence after a read-back that matches. */
 export function savedText(info: SettingInfo, label: string): string {
   return `Saved and verified: ${shortName(info)} is ${label}.`
 }
 
-/** Models whose settings support was checked on a real printer (docs/HARDWARE-TESTS.md §9).
- * Empty until a hardware run: every model gets the "untested" note. */
+/** Models whose settings support (reads and writes) was checked on a real printer
+ * (docs/HARDWARE-TESTS.md §9). Empty until a write hardware run. */
 export const SETTINGS_VERIFIED_MODELS: readonly string[] = []
+
+/** Models whose settings reads (not writes) were checked on a real printer
+ * (docs/HARDWARE-TESTS.md §9 HW-S1/HW-S2, PT-P710BT over USB, 2026-10-16). */
+export const SETTINGS_READ_VERIFIED_MODELS: readonly string[] = ['PT-P710BT']
 
 export function sameValue(a: SettingValue | undefined, b: SettingValue | undefined): boolean {
   if (!a || !b || a.kind !== b.kind) return false
@@ -92,18 +82,21 @@ export function confirmText(info: SettingInfo, from: SettingReport | undefined, 
   return `Change ${shortName(info)}${was} to ${toLabel}?`
 }
 
-/** Brother's label, as the subtitle under a row. */
+/** Brother's name for the setting, as the subtitle under a row. On the PT-P710BT / P715eBT the
+ * timers are named as in the printer's own information report: Brother's Printer Setting Tool
+ * labels them the other way round on these models (PROTOCOL.md §8 #34), so the note must not
+ * point at that tool. */
 export function brotherNote(info: SettingInfo): string {
+  if (info.brotherLabelSource === 'info-report') return `Shown as “${info.brotherLabel}” in the printer’s information report.`
   return `Same as “${info.brotherLabel}” in Brother’s Printer Setting Tool.`
 }
 
-/** Notes under the panel: untested model, timer selector in doubt, untested Bluetooth path,
- * simulated values. */
-export function settingsNotes(model: string, kind: TransportKind | undefined, infos: readonly SettingInfo[] = []): string[] {
+/** Notes under the panel: untested model, untested Bluetooth path, simulated values. */
+export function settingsNotes(model: string, kind: TransportKind | undefined): string[] {
   const notes: string[] = []
   if (kind === 'virtual') notes.push('Virtual printer: the values are simulated and nothing reaches a real printer.')
+  else if (SETTINGS_READ_VERIFIED_MODELS.includes(model) && !SETTINGS_VERIFIED_MODELS.includes(model)) notes.push(`Reading is checked on the ${model}; changing a setting has not been tested on a real printer yet. Each change is read back to check that the printer stored it.`)
   else if (!SETTINGS_VERIFIED_MODELS.includes(model)) notes.push(`Untested on the ${model}: printer settings have not been checked on a real printer yet. Each change is read back to check that the printer stored it.`)
-  if (infos.some((i) => i.selectorUnverified)) notes.push(SELECTOR_NOTE)
   if (kind === 'serial-rfcomm' || kind === 'serial-os-port') notes.push('Bluetooth: untested. If the printer doesn’t answer, try a USB cable.')
   return notes
 }

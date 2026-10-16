@@ -104,7 +104,7 @@ ptouch --device virtual:24 print --text "Hello"              # full print agains
 
 ### Printer settings (Auto Power Off, Auto Power On)
 
-`ptouch settings` reads and changes settings the printer stores, the same ones Brother's Printer Setting Tool changes. Supported models: PT-P710BT, PT-P715eBT, PT-P900W, PT-P950NW, PT-D800W, PT-E800W and PT-P910BT. **None of this has been tested on a real printer yet**, so every `set` prints a warning (see [`docs/HARDWARE-TESTS.md`](docs/HARDWARE-TESTS.md) §9).
+`ptouch settings` reads and changes settings the printer stores, the same ones Brother's Printer Setting Tool changes. Supported models: PT-P710BT, PT-P715eBT, PT-P900W, PT-P950NW, PT-D800W, PT-E800W and PT-P910BT. Reading has been tested on a PT-P710BT over USB; **changing a setting has not been tested on a real printer yet**, so every `set` prints a warning (see [`docs/HARDWARE-TESTS.md`](docs/HARDWARE-TESTS.md) §9).
 
 ```sh
 ptouch --usb settings get                          # all three settings
@@ -117,7 +117,7 @@ ptouch --model PT-P710BT settings set auto-power-off 10 --dry-run   # print the 
 
 Settings: `auto-power-on` (`on`/`off`), `auto-power-off` (on external power) and `auto-power-off-battery` (Li-ion). Durations are written `never`, `10`, `10min` or `2h`, and only the values the model offers are accepted: on the PT-P710BT these are never and 10–60 min. After a change, `set` reads the value back and prints `(verified)`. A value that is already set is not written again unless you pass `--force`. If a write fails or is interrupted, the printer may still have stored the new value, so run `settings get`.
 
-On the PT-P710BT it is not yet known which of Brother's two Auto Power Off settings is the USB/AC timer and which is the battery timer: Brother's own definition may have them swapped (docs/PROTOCOL.md §8 #34). `ptouch` changes the same byte as Brother's tool for each name. `(verified)` means the printer stored the value; it does not show which timer uses it.
+On the PT-P710BT and PT-P715eBT, Brother's Printer Setting Tool for macOS has the two Auto Power Off labels the wrong way round: its "Auto Power Off" changes the battery timer and its "Auto Power Off (Li-ion)" changes the USB/AC timer (checked on a PT-P710BT against the printer's own information report, docs/PROTOCOL.md §8 #34). `ptouch` names them after that report instead: `auto-power-off` is `AutoPowerOff(adp)` and `auto-power-off-battery` is `AutoPowerOff(Bat)`.
 
 Exit codes: 0 on success, 1 on a printer, transport or rendering error (with a one-line hint for common problems), 2 on a usage error or a refused request (unknown setting, a value the model does not offer, `set` without `--yes` when stdin is not a terminal, or answering no at the prompt), 130 after Ctrl-C.
 

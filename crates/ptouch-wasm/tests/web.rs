@@ -471,10 +471,20 @@ fn settings_round_trip_through_print_session() {
         get(&info[1], "kind").as_string().as_deref(),
         Some("duration")
     );
+    // P710BT timers are named after the printer's information report (PROTOCOL.md §8 #34).
     assert_eq!(
         get(&info[1], "brotherLabel").as_string().as_deref(),
-        Some("Auto Power Off")
+        Some("AutoPowerOff(adp)")
     );
+    assert_eq!(
+        get(&info[1], "brotherLabelSource").as_string().as_deref(),
+        Some("info-report")
+    );
+    assert_eq!(
+        get(&info[0], "brotherLabelSource").as_string().as_deref(),
+        Some("setting-tool")
+    );
+    assert!(get(&info[1], "selectorUnverified").is_undefined());
     assert_eq!(
         JSON::stringify(&get(&info[0], "choices"))
             .unwrap()
@@ -486,7 +496,8 @@ fn settings_round_trip_through_print_session() {
     assert!(settings_for("nope").unwrap().is_empty());
 
     let mut vp = VirtualPrinter::new("PT-P710BT", "tze128-24", None, None).unwrap();
-    assert!(vp.set_setting_byte(0x41, Some(0), 0x07));
+    // Selector 01 = battery on the PT-P710BT.
+    assert!(vp.set_setting_byte(0x41, Some(1), 0x07));
     let mut s = PrintSession::new(None, None).unwrap();
     let mut now = 1000.0;
     let mut events: Vec<SessionEvent> = Vec::new();
@@ -562,7 +573,12 @@ fn settings_round_trip_through_print_session() {
     assert_eq!(get(&w, "verified").as_bool(), Some(true));
     let r0 = Reflect::get(&get(&w, "report"), &JsValue::from(0)).unwrap();
     assert_eq!(get(&r0, "text").as_string().as_deref(), Some("60 min"));
-    assert_eq!(vp.setting_byte(0x41, Some(0)), Some(6));
+    assert_eq!(vp.setting_byte(0x41, Some(1)), Some(6));
+    assert_eq!(
+        vp.setting_byte(0x41, Some(0)),
+        Some(3),
+        "USB/AC timer untouched"
+    );
     assert_eq!(vp.commits(), 1);
     assert!(vp.violations().is_empty());
 }
@@ -602,4 +618,88 @@ fn settings_timeout_is_reported() {
     );
     let state: JsValue = s.state().unwrap().into();
     assert_eq!(get(&state, "state").as_string().as_deref(), Some("ready"));
+}
+
+/// A real PT-P710BT settings reply (USB, 2026-10-16; HARDWARE-TESTS.md §9 HW-S1).
+fn hw_settings_reply(value: u8) -> [u8; 32] {
+    let mut f = [
+        0x80, 0x20, 0x42, 0x30, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01,
+    ];
+    f[30] = value;
+    f
+}
+
+/// Regression (PROTOCOL.md §8 #34): the real replies of a PT-P710BT whose information report
+/// said "AutoPowerOff(adp) = 60 Minutes" and "AutoPowerOff(Bat)" empty read as USB/AC = 60 min
+/// and battery = never.
+#[wasm_bindgen_test]
+fn p710bt_hardware_settings_replies() {
+    let mut s = PrintSession::new(None, None).unwrap();
+    let mut now = 0.0;
+    s.connect(now);
+    while s.poll_transmit().is_some() {}
+    now += 100.0;
+    s.handle_timeout(now);
+    while s.poll_transmit().is_some() {}
+    s.handle_input(&FIXTURE, now);
+    while s.poll_event().unwrap().is_some() {}
+    s.read_settings(
+        js(r#"["auto-power-on","auto-power-off","auto-power-off-battery"]"#),
+        now,
+    )
+    .unwrap();
+    let mut gets: Vec<Vec<u8>> = Vec::new();
+    let mut read = None;
+    for _ in 0..1000 {
+        let mut replied = false;
+        while let Some(b) = s.poll_transmit() {
+            let reply = match b.as_slice() {
+                [0x1B, 0x69, 0x55, 0x70, 0x01] => Some(hw_settings_reply(0x01)),
+                [0x1B, 0x69, 0x55, 0x41, 0x01, 0x01] => Some(hw_settings_reply(0x00)),
+                [0x1B, 0x69, 0x55, 0x41, 0x01, 0x00] => Some(hw_settings_reply(0x06)),
+                _ => None,
+            };
+            if let Some(r) = reply {
+                gets.push(b);
+                s.handle_input(&r, now);
+                replied = true;
+            }
+        }
+        while let Some(e) = s.poll_event().unwrap() {
+            let e: SessionEvent = e.to_rust().unwrap();
+            if matches!(e, SessionEvent::SettingsRead { .. }) {
+                read = Some(e);
+            }
+        }
+        if read.is_some() {
+            break;
+        }
+        if !replied {
+            now = s.poll_timeout().unwrap_or(now);
+            s.handle_timeout(now);
+        }
+    }
+    assert_eq!(
+        gets,
+        [
+            vec![0x1B, 0x69, 0x55, 0x70, 0x01],
+            vec![0x1B, 0x69, 0x55, 0x41, 0x01, 0x00],
+            vec![0x1B, 0x69, 0x55, 0x41, 0x01, 0x01],
+        ]
+    );
+    let read: JsValue = Ts::<SessionEvent>::from_rust(&read.unwrap())
+        .unwrap()
+        .into();
+    let text = |i: u32| {
+        let r = Reflect::get(&get(&read, "report"), &JsValue::from(i)).unwrap();
+        (
+            get(&r, "id").as_string().unwrap(),
+            get(&r, "text").as_string().unwrap(),
+        )
+    };
+    assert_eq!(text(0), ("auto-power-on".into(), "on".into()));
+    assert_eq!(text(1), ("auto-power-off".into(), "60 min".into()));
+    assert_eq!(text(2), ("auto-power-off-battery".into(), "never".into()));
 }

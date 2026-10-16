@@ -68,7 +68,8 @@ pub fn media_for_status(
 
 /// The printer-stored settings `model` supports (PROTOCOL.md §3.6), in display order, with
 /// their allowed values; `[]` for an unknown model or one without settings support (hide the
-/// feature then). Settings support is untested on hardware for every model so far.
+/// feature then). Reading is hardware-tested on the PT-P710BT over USB only; writes are
+/// untested on every model so far.
 ///
 /// # Errors
 /// Only on an internal serialization failure.

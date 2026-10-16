@@ -1041,7 +1041,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
             "Community measured 80-81 printable px on 12 mm tape [labelo] vs Brother's 70; geometry override may be needed.",
             "High-res ESC i z n2=0x09 with n1|=0x02 comes from the SDK only; unverified on this model.",
             "Min length: D1 4.4 mm (31 dots incl. 2 x 2 mm margins); PTD minlen 4.0 mm; SDK 0 (not checked).",
-            "Settings (PROTOCOL.md §3.6): Brother's definition reads Auto Power Off (USB/AC) with selector 01 and Li-ion with 00, the reverse of every other model; unverified on hardware.",
+            "Settings (PROTOCOL.md §3.6, §8 #34): Auto Power Off selector 00 = USB/AC adapter, 01 = battery, as on every other model [HW 2026-10-16: read matched the printer's information report]. Brother's Mac definition labels them the other way round.",
         ],
         unknown: &[],
     },
@@ -1116,6 +1116,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
             "Sibling of PT-P710BT; no Brother raster reference exists. Half cut listed by SDK (HALFCUT) but unverified.",
             "Do not send ESC i A until verified (sibling P710BT rejects it).",
             "battery_format inferred from PT-P710BT (D1 'reserved'); no Brother doc for this model.",
+            "Settings: same Brother definition as the PT-P710BT (Mac tool labels reversed); Auto Power Off selector 00 = USB/AC, 01 = battery INFERRED from the P710BT, not tested.",
         ],
         unknown: &[
             "raster_is_default",

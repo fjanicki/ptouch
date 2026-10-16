@@ -199,60 +199,62 @@ close/reopen ×3), H5 (WebUSB on macOS), H6 (Windows 11 + Chrome), H7 (Android C
 ## 9. Printer settings (PROTOCOL.md §3.6, §9.1 items 12–14)
 
 `ptouch settings` reads and changes the printer-stored Auto Power On and Auto Power Off
-settings. Nothing about it is verified on hardware yet, so run these in order and stop at the
-first surprise. Check every command offline first: `ptouch settings list` shows the model's
-values, and `ptouch settings set <setting> <value> --dry-run` prints the exact bytes.
+settings. On the PT-P710BT the read path and the timer selectors are verified on hardware
+(HW-S1/HW-S2, 2026-10-16); every write is still untested, so run HW-S3 before anything else
+that writes, and stop at the first surprise. Check every command offline first:
+`ptouch settings list` shows the model's values, and
+`ptouch settings set <setting> <value> --dry-run` prints the exact bytes.
 
-**HW-S1: read-only probe (item 13).** Reads only; no confirmation needed. On the PT-P710BT
-`auto-power-on` sends `1B 69 55 70 01` and `auto-power-off-battery` sends
-`1B 69 55 41 01 00`, the two reads that two independent sources agree on:
+**HW-S1: read-only probe (item 13). PASSED on the PT-P710BT over USB (2026-10-16).** Reads
+only; no confirmation needed:
 
 ```sh
-ptouch $C -v settings get auto-power-on auto-power-off-battery
+ptouch $C -v settings get
 ```
 
-Record the full 32-byte replies (the `<<` lines; mask a serial number if one appears).
-Expected: `st[18] = F0`, the value in `st[30]`, the other bytes like a normal status. Only
-if both behave as documented, read the third timer (`1B 69 55 41 01 01`, Brother's
-definition only), then repeat everything over Bluetooth:
+Raw replies (status type `F0` in `st[18]`, the value in `st[30]`; `st[31]` was `01` in all
+three, meaning unknown; no serial number in the frames):
+
+| Get | Reply | `st[30]` |
+|---|---|---|
+| `1B 69 55 70 01` (Auto Power On) | `80 20 42 30 76 30 00 00 00 00 18 01 00 00 00 00 00 00 F0 00 00 00 00 00 00 00 00 00 00 00 01 01` | `01` on |
+| `1B 69 55 41 01 01` (selector `01`) | `80 20 42 30 76 30 00 00 00 00 18 01 00 00 00 00 00 00 F0 00 00 00 00 00 00 00 00 00 00 00 00 01` | `00` never |
+| `1B 69 55 41 01 00` (selector `00`) | `80 20 42 30 76 30 00 00 00 00 18 01 00 00 00 00 00 00 F0 00 00 00 00 00 00 00 00 00 00 00 06 01` | `06` 60 min |
+
+Bytes 0–17 match the printer's type-`00` idle status (24 mm laminated tape: width `18` in
+`st[10]`, type `01` in `st[11]`); the tape and text colours (`st[24]`, `st[25]`) read `00` in
+the settings replies. Still to do: repeat over Bluetooth.
+
+**HW-S2: which selector is which (item 12). RESOLVED on the PT-P710BT (2026-10-16).** No
+writes from `ptouch`. The printer's own printed information report (printed with Brother's
+app) showed, under `[Printer Settings]`, `AutoPowerOff(adp) = 60 Minutes` and
+`AutoPowerOff(Bat) =  Minutes` (no number: none/never), at the same time as the HW-S1 read
+gave selector `00` = 60 min and selector `01` = never. The printer, left on USB overnight,
+was found switched off. So selector `00` is the USB/AC adapter timer and `01` the battery
+timer, as on every other two-timer model; Brother's Mac Printer Setting Tool definition pairs
+the labels the other way round on this model (PROTOCOL.md §8 #34). `ptouch` follows the
+hardware. The PT-P715eBT shares the definition and the profile; its mapping is INFERRED from
+the P710BT, not tested.
+
+To check another printer of the `p710bt` profile without writing: print its information
+report and compare its `AutoPowerOff(adp)` / `AutoPowerOff(Bat)` lines with
+`ptouch $C settings get` (`auto-power-off` / `auto-power-off-battery`).
+
+**HW-S3: one no-op write (item 14), only with the owner's explicit go-ahead. PENDING.**
+Writes the value the printer already has, so nothing changes if it works:
 
 ```sh
-ptouch $C -v settings get auto-power-off
-```
-
-**HW-S2: which selector is which (item 12).** No writes from `ptouch`. The question
-(PROTOCOL.md §8 #34) is which *physical* timer each selector controls. Only the timing step
-below answers it:
-
-1. In Brother's Printer Setting Tool, set "Auto Power Off" = 10 min and "Auto Power Off
-   (Li-ion)" = 60 min, apply, and close the tool.
-2. Run `ptouch $C settings get`. Expected: `auto-power-off 10 min`, `auto-power-off-battery
-   60 min`. This only shows that both selectors read separately and that the tool writes what
-   its definition says. `ptouch` uses the same bytes as the tool, so it agrees with it whatever
-   the firmware does, and this step cannot detect a swap.
-3. **Timing (the actual test).** Unplug USB, leave the printer idle on battery, and time the
-   auto-off. About 60 min confirms Brother's labels. About 10 min means the selectors are
-   swapped: swap the two `p710bt` rows (SETTINGS-PLAN.md §6), clear
-   `SettingSpec::selector_unverified` for them, and update PROTOCOL.md §3.6.4 and §8 #34.
-4. Optionally, check the USB timer the same way with USB connected and the computer awake.
-
-A `ptouch settings set` read-back cannot replace step 3, because the write and the read-back
-use the same selector.
-
-**HW-S3: one no-op write (item 14), only with the owner's explicit go-ahead.** Writes the
-value the printer already has, so nothing changes if it works:
-
-```sh
-ptouch $C -v settings get auto-power-on          # note the value, e.g. off
-ptouch $C -v settings set auto-power-on off --force
+ptouch $C -v settings get auto-power-on          # note the value, e.g. on
+ptouch $C -v settings set auto-power-on on --force
 # power-cycle the printer
 ptouch $C -v settings get auto-power-on          # must still read the same value
 ```
 
-Expected: `auto-power-on = off (verified)` and the same value after the power cycle. This
+Expected: `auto-power-on = on (verified)` and the same value after the power cycle. This
 exercises `ESC ~ S` (`1B 7E 53`) and persistence before any timer is changed. Only then
-change a timer (`settings set auto-power-off 30`, confirm at the prompt) and check it after
-a power cycle.
+change a timer (`settings set auto-power-off never`, confirm at the prompt; it sends
+`1B 69 55 41 00 00 00`), check it after a power cycle, and compare it with a fresh
+information report (`AutoPowerOff(adp)` should then be empty).
 
 ## Log
 
@@ -268,3 +270,4 @@ a power cycle.
 | 2026-10-08 | macOS 27, Chrome 154 | PT-P710BT | Web Serial, direct RFCOMM entry (SPP `0x1101`) | §1 status | ⚠️ 1 of 5 opens worked | Failing opens reject with `NetworkError` after 10 s. The good one opened in 378 ms, status in 92 ms. Printer auto-power-off probably caused some failures; inconclusive. |
 | 2026-10-08 | macOS 27, Chrome 154 | PT-P710BT | Web Serial, iAP entry (`00000000-deca-fade-…`) | §1 status | ❌ Never opens | Chrome lists the printer's Apple iAP service (RFCOMM ch 2) as a second port. The studio hides it. |
 | 2026-10-08 | macOS 27, Chrome 154 / Firefox 157 | PT-P710BT | Web Serial, `/dev/cu.PT-P710BTxxxx` OS port | §1 status | ❌ Opens, no reply | Same half-open behaviour as the native `--port` path after first use. |
+| 2026-10-16 | not recorded | PT-P710BT | Native USB (`--usb`) | §9 HW-S1 settings read; HW-S2 via the printer's information report | ✅ Read; selector `00` = USB/AC adapter, `01` = battery | Replies in §9 HW-S1. Info report: `AutoPowerOff(adp) = 60 Minutes`, `AutoPowerOff(Bat)` empty, matching selector `00` = `06`, `01` = `00`. Printer left on USB overnight was off in the morning. Brother's Mac tool labels are reversed for this model (PROTOCOL.md §8 #34). Writes not tested. |

@@ -4,13 +4,15 @@ Status: **spec frozen by the protocol lead, 2026-10-16.** The wire facts are in
 [PROTOCOL.md §3.6](PROTOCOL.md). The model data is the `settings_profile` key in
 [models.toml](models.toml), already generated into `ModelProfile::settings_profile` /
 `ptouch::model::SettingsProfile`. This document freezes the API that the implementation packages
-build. Hardware status: **nothing verified on a real printer yet**. The read-only probe was skipped
-because the PT-P710BT was off (PROTOCOL.md §9.1 items 12–14).
+build. Hardware status: the read path and the P710BT timer selectors are **verified over USB on a
+PT-P710BT** (HARDWARE-TESTS.md §9 HW-S1/HW-S2, 2026-10-16). Writes (`ESC i U A 00 sel v`), `ESC ~ S`,
+Bluetooth and every other model are still unverified (PROTOCOL.md §9.1 item 14).
 
 User request: "download the app [Brother's Printer Setting Tool], reverse engineer it to add those
 power commands to our CLI or webapp so we can control this without Brother's tools". The
-PT-P710BT's tool shows "Auto Power Off" (USB/AC: None, 10–60 min), "Auto Power Off (Li-ion)", and
-"Auto Power On".
+PT-P710BT's tool shows "Auto Power Off" (None, 10–60 min), "Auto Power Off (Li-ion)", and
+"Auto Power On". On the PT-P710BT these two timer labels are reversed: the tool's "Auto Power Off"
+is the battery timer and its "Auto Power Off (Li-ion)" is the USB/AC timer (PROTOCOL.md §8 #34).
 
 ---
 
@@ -20,10 +22,10 @@ PT-P710BT's tool shows "Auto Power Off" (USB/AC: None, 10–60 min), "Auto Power
 |---|---|---|
 | D1 | Scope v1 = three settings: `auto-power-on`, `auto-power-off`, `auto-power-off-battery`. All other §3.6.4 items (report contents, length adjustment, margins, print log, special tape feed, Bluetooth) are catalogued only. | They are the user's request. The other items need other reply formats, or have unresolved bytes (§8 #37). |
 | D2 | Models: every model with a `settings_profile`: P710BT, P715eBT (`p710bt`); P900W, P950NW, D800W, E800W (`p900w`); P910BT (`p910bt`). Others: the feature is hidden. | The bytes come from Brother's own definition for each of these models [PST-Mac]. |
-| D3 | Follow Brother's per-model selector: on P710BT `auto-power-off` = selector `01`, battery = `00`. The other profiles use the reverse. | It keeps `ptouch` and Brother's tool in step for the same setting name (PROTOCOL.md §8 #34). Which physical timer each selector controls can only be settled by timing the auto-off (§9.1 item 12), not by comparing with Brother's tool or by a read-back. Until then the CLI and the studio name these rows by Brother's labels and say the mapping is unverified (`SettingSpec::selector_unverified`). |
+| D3 | Selector `00` = `auto-power-off` (USB/AC), `01` = `auto-power-off-battery` on every profile, P710BT/P715eBT included. On the P710BT/P715eBT the timer rows are named after the printer's information report (`AutoPowerOff(adp)` / `AutoPowerOff(Bat)`, `SettingSpec::label_source`), never after Brother's Mac tool. | Hardware (PROTOCOL.md §8 #34, 2026-10-16): a PT-P710BT read matched its own information report with `00` = adapter and `01` = battery. Brother's Mac definition pairs the labels the other way round on these two models, so its labels must not be shown for them. The P715eBT mapping is INFERRED from the P710BT. (Before this, `ptouch` followed the Mac definition, and a user's "never" landed on the battery timer.) |
 | D4 | Values are typed: `Enabled(bool)` or `Minutes(u16)` (0 = never). Each profile maps bytes to values by an explicit table, never by formula. Unlisted bytes are never sent. An unlisted byte in a reply is reported raw (`Unlisted(u8)`). | The P900W-family AC timer is an index (`07` = 2 h); the P910BT one counts 10-minute units (`0C` = 2 h). |
-| D5 | Sequence = Brother's commands and order (§3.6.2), on one open connection, each command a separate transport write. Input is drained before every get (anti-stale), the reply timeout is 1000 ms, and `1B 7E 53` is sent after writes. | It matches the vendor tool; the drain fixes the stale-reply hazard [toml0006]. |
-| D6 | A write sends only the requested items. It is always followed by an automatic read-back of the same items. The result carries `verified`. | Brother never verifies. We must, because the commit (`ESC ~ S`) and the 3-byte replies are unverified. A read-back cannot detect a swapped selector, because the write and the read use the same selector. That is why D3's rows are flagged instead. |
+| D5 | Sequence = Brother's commands (§3.6.2), sent in `SettingId::ALL` order (auto power on, external-power timer, battery timer), on one open connection, each command a separate transport write. Input is drained before every get (anti-stale), the reply timeout is 1000 ms, and `1B 7E 53` is sent after writes. On the P710BT/P715eBT this swaps the two timer gets compared with Brother's tab order; each get names its own selector, so the order does not matter. | It matches the vendor tool's commands; the drain fixes the stale-reply hazard [toml0006]. |
+| D6 | A write sends only the requested items. It is always followed by an automatic read-back of the same items. The result carries `verified`. | Brother never verifies. We must, because the commit (`ESC ~ S`) and the 3-byte replies are unverified. A read-back cannot detect a swapped selector, because the write and the read use the same selector; D3's mapping comes from the hardware read and the information report instead. |
 | D7 | Settings run only from the session's `Ready` state, never during a job. While a settings transaction runs, the session is busy: status requests and submits return `Error::Busy`. | Protocol safety (§6.8). |
 | D8 | Writes need an explicit user confirmation: `--yes` or an interactive prompt in the CLI, a confirm dialog in the studio. Reads need none. | User's printer, persistent state. |
 | D9 | No API emits any byte sequence on the §3.6.6 never-send list. A unit test enforces this over every table. | Safety. |
@@ -47,12 +49,14 @@ The public API below is frozen. Private helpers are free.
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum SettingId {
-    /// "Auto Power On": turn on when external power (USB/AC) is connected.
+    /// Auto power on: turn on when external power (USB/AC) is connected.
     AutoPowerOn,
-    /// "Auto Power Off" on external power (P710BT: USB/AC adapter or computer; P900W family:
-    /// AC/DC; P910BT: USB connection).
+    /// Auto power off on external power (P710BT/P715eBT: USB/AC adapter or computer; P900W
+    /// family: AC/DC; P910BT: USB connection). Brother's per-model name is
+    /// `SettingSpec::brother_label`; on the P710BT/P715eBT it comes from the printer's
+    /// information report (PROTOCOL.md §3.6.5).
     AutoPowerOff,
-    /// "Auto Power Off (Li-ion)": on battery.
+    /// Auto power off on battery. Brother's per-model name is `SettingSpec::brother_label`.
     AutoPowerOffBattery,
 }
 
@@ -108,15 +112,19 @@ pub struct Choice {
 #[non_exhaustive]
 pub struct SettingSpec {
     pub id: SettingId,
-    /// Complete get command, e.g. `1B 69 55 41 01 01`.
+    /// Complete get command, e.g. `1B 69 55 41 01 00`.
     pub get: &'static [u8],
-    /// Set command without the value byte, e.g. `1B 69 55 41 00 01`.
+    /// Set command without the value byte, e.g. `1B 69 55 41 00 00`.
     pub set_prefix: &'static [u8],
     pub reply: ReplyFormat,
     /// Allowed values in Brother's order.
     pub choices: &'static [Choice],
-    /// Brother's UI label for this model (PROTOCOL.md §3.6.5), e.g. "Auto Power Off (Li-ion)".
+    /// Brother's name for this setting on this model (PROTOCOL.md §3.6.5), e.g.
+    /// "Auto Power Off (Li-ion)" or, on the PT-P710BT, "AutoPowerOff(Bat)".
     pub brother_label: &'static str,
+    /// `SettingTool` (Brother's Printer Setting Tool) or `InfoReport` (the printer's printed
+    /// information report; the P710BT/P715eBT timers, whose Setting Tool labels are reversed).
+    pub label_source: LabelSource,
 }
 
 impl SettingSpec {
@@ -175,8 +183,8 @@ text is copied apart from the short UI labels.
 | Profile | Id | get | set_prefix | reply | choices (byte → value) |
 |---|---|---|---|---|---|
 | `P710bt` | AutoPowerOn | `1B 69 55 70 01` | `1B 69 55 70 00` | StatusF0 | `00` off, `01` on |
-| `P710bt` | AutoPowerOff | `1B 69 55 41 01 01` | `1B 69 55 41 00 01` | StatusF0 | `00` 0, `01` 10, `02` 20, `03` 30, `04` 40, `05` 50, `06` 60 |
-| `P710bt` | AutoPowerOffBattery | `1B 69 55 41 01 00` | `1B 69 55 41 00 00` | StatusF0 | as AutoPowerOff |
+| `P710bt` | AutoPowerOff | `1B 69 55 41 01 00` | `1B 69 55 41 00 00` | StatusF0 | `00` 0, `01` 10, `02` 20, `03` 30, `04` 40, `05` 50, `06` 60 |
+| `P710bt` | AutoPowerOffBattery | `1B 69 55 41 01 01` | `1B 69 55 41 00 01` | StatusF0 | as AutoPowerOff |
 | `P900w` | AutoPowerOn | `1B 69 55 70 01` | `1B 69 55 70 00` | StatusF0 | `00`/`01` |
 | `P900w` | AutoPowerOff | `1B 69 55 41 01 00` | `1B 69 55 41 00 00` | LenValue | `00` 0, `01`–`05` 10–50, `06` 60, `07` 120, `08` 240, `09` 480, `0A` 720 |
 | `P900w` | AutoPowerOffBattery | `1B 69 55 41 01 01` | `1B 69 55 41 00 01` | LenValue | `00` 0, `01`–`05` 10–50, `06` 60 |
@@ -184,7 +192,9 @@ text is copied apart from the short UI labels.
 | `P910bt` | AutoPowerOff | `1B 69 55 41 01 00` | `1B 69 55 41 00 00` | LenValue | `00` 0, `01`–`06` 10–60, `0C` 120, `18` 240, `30` 480, `48` 720 |
 | `P910bt` | AutoPowerOffBattery | `1B 69 55 41 01 01` | `1B 69 55 41 00 01` | LenValue | `00` 0, `01`–`06` 10–60 |
 
-Brother labels: P710bt "Auto Power On" / "Auto Power Off" / "Auto Power Off (Li-ion)"; P900w
+Brother names: P710bt "Auto Power On" (Setting Tool) / "AutoPowerOff(adp)" / "AutoPowerOff(Bat)"
+(information report; the Mac tool's "Auto Power Off" / "Auto Power Off (Li-ion)" are reversed on
+this model, PROTOCOL.md §8 #34); P900w
 "Auto Power On" / "Auto Power Off (AC/DC)" / "Auto Power Off (Li-ion)"; P910bt "Auto Power On" /
 "Auto Power Off (USB Connection)" / "Auto Power Off (Li-ion)".
 
@@ -308,8 +318,9 @@ is the same; callers say "the printer may have stored the new value; read the se
 ### 1.4 Core tests (must pass before the CLI/wasm packages merge)
 
 - Exact transmit sequences (one `Vec` per `poll_transmit`):
-  - P710BT read all: `[1B 40 1B 69 61 01] [1B 69 55 70 01] [1B 69 55 41 01 01] [1B 69 55 41 01 00] [1B 69 61 FF]`.
-  - P710BT write `auto-power-off = 10`: `[1B 40 1B 69 61 01] [1B 69 55 41 00 01 01] [1B 7E 53 1B 69 61 FF]`, then the read-back `[1B 40 1B 69 61 01] [1B 69 55 41 01 01] [1B 69 61 FF]`.
+  - P710BT read all: `[1B 40 1B 69 61 01] [1B 69 55 70 01] [1B 69 55 41 01 00] [1B 69 55 41 01 01] [1B 69 61 FF]`.
+  - P710BT write `auto-power-off = 10`: `[1B 40 1B 69 61 01] [1B 69 55 41 00 00 01] [1B 7E 53 1B 69 61 FF]`, then the read-back `[1B 40 1B 69 61 01] [1B 69 55 41 01 00] [1B 69 61 FF]`. The battery timer uses selector `01`.
+  - The real PT-P710BT replies (HARDWARE-TESTS.md §9 HW-S1) decode to auto power on = on, `auto-power-off` = 60 min, `auto-power-off-battery` = never.
 - Encoding:
   - P900W `auto-power-off = 120` → `1B 69 55 41 00 00 07`.
   - P910BT `auto-power-off = 120` → `… 00 00 0C`.
@@ -348,11 +359,12 @@ ptouch settings list [--model M]                      offline: settings + allowe
   - Timers: `never|none|off|0`, `<n>` (minutes), `<n>min`, `<n>h` (e.g. `2h`). The value must be
     in the model's list; otherwise exit 2 with the allowed list
     (`allowed for PT-P710BT: never, 10, 20, 30, 40, 50, 60 min`).
-- **`get` output** (one line per item, aligned; the Brother label in parentheses):
+- **`get` output** (one line per item, aligned; the Brother label in parentheses; on the
+  PT-P710BT/P715eBT the power source plus the printer's information-report name):
   ```
   auto-power-on            off      (Auto Power On)
-  auto-power-off           30 min   (Auto Power Off: USB/AC power)
-  auto-power-off-battery   never    (Auto Power Off (Li-ion))
+  auto-power-off           30 min   (USB/AC power; information report: "AutoPowerOff(adp)")
+  auto-power-off-battery   never    (battery; information report: "AutoPowerOff(Bat)")
   ```
   - `Unlisted(b)` prints `unknown (0xNN)`.
   - `-v` also prints each raw reply (`<<` hex), as the driver already does for frames.
@@ -401,7 +413,7 @@ writeSettings(values: SettingWrite[], nowMs: number): void
 // types (tsify)
 type SettingId = 'auto-power-on' | 'auto-power-off' | 'auto-power-off-battery'
 type SettingValue = { kind: 'enabled'; enabled: boolean } | { kind: 'minutes'; minutes: number }
-interface SettingInfo { id: SettingId; brotherLabel: string; kind: 'toggle' | 'duration'; choices: SettingValue[] }
+interface SettingInfo { id: SettingId; brotherLabel: string; brotherLabelSource: 'setting-tool' | 'info-report'; kind: 'toggle' | 'duration'; choices: SettingValue[] }
 interface SettingWrite { id: SettingId; value: SettingValue }
 interface SettingReport { id: SettingId; value?: SettingValue; unlistedByte?: number; raw: number[] }
 // SessionEvent additions
@@ -440,12 +452,10 @@ Test (`tests/web.rs`): virtual P710BT read/write round trip through `PrintSessio
     - "Auto power on" (switch);
     - "Auto power off: on external power" (select);
     - "Auto power off: on battery" (select).
-    Where the selector is unverified (PT-P710BT), the two timer rows are named by Brother's
-    label instead ("Auto power off: “Auto Power Off”"), and a note says which timer each
-    controls is unverified.
     The select options are the model's `choices` (`Never`, `10 min` … `60 min`, `1 h`, `2 h` …).
-    A subtitle names Brother's label ("Same as 'Auto Power Off' in Brother's Printer Setting
-    Tool").
+    A subtitle names Brother's name for the setting: "Same as 'Auto Power Off (AC/DC)' in
+    Brother's Printer Setting Tool", or, for the PT-P710BT/P715eBT timers (whose Setting Tool
+    labels are reversed), "Shown as 'AutoPowerOff(adp)' in the printer's information report".
   - **Change:** choosing a duration only stages it, and an Apply button opens the confirmation.
     On Windows, Linux and ChromeOS, arrow keys change a closed select at once, so `change` must
     not open a dialog. The confirm dialog says `Change auto power off (external power) from 30 min
@@ -495,11 +505,9 @@ happens only with the user present and their go-ahead for item 14.
 
 ## 6. Unknowns carried into implementation (see PROTOCOL.md §3.6.7)
 
-- **P710BT selector mapping (D3).** Settled only by timing the physical auto-off (PROTOCOL.md
-  §9.1 item 12, HARDWARE-TESTS.md HW-S2 step 3). If it shows the reverse, swap the two `P710bt`
-  rows' selectors, clear `selector_unverified` and update §3.6.4. The API does not change.
-- **`st[30]` and `F0` on the P710BT.** If the reply turns out to be a different layout, only
-  `ReplyFormat` / the table changes.
+- **P710BT selector mapping (D3).** Resolved on hardware (PROTOCOL.md §8 #34, HARDWARE-TESTS.md
+  HW-S1/HW-S2, 2026-10-16): `00` = USB/AC adapter, `01` = battery. The P715eBT is INFERRED.
+- **`st[30]` and `F0` on the P710BT.** Confirmed over USB (HW-S1); `st[31]` = `01` is unexplained.
 - **`ESC ~ S` effect, immediate vs. after-restart effect.** The UI copy says "stored". If a
   restart turns out to be needed, add a note.
 - **The 3-byte `ESC i U A` reply on the P900W family / P910BT.** Unverified. The virtual printer

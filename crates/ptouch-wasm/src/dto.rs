@@ -685,11 +685,12 @@ pub enum SessionEvent {
 #[derive(Tsify, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SettingId {
-    /// "Auto Power On".
+    /// Auto power on.
     AutoPowerOn,
-    /// "Auto Power Off" on external power (USB/AC; P900W family: AC/DC; P910BT: USB).
+    /// Auto power off on external power (USB/AC adapter; P900W family: AC/DC; P910BT: USB
+    /// connection). Brother's per-model name is `SettingInfo.brotherLabel`.
     AutoPowerOff,
-    /// "Auto Power Off (Li-ion)".
+    /// Auto power off on battery. Brother's per-model name is `SettingInfo.brotherLabel`.
     AutoPowerOffBattery,
 }
 
@@ -768,8 +769,13 @@ impl TryFrom<SettingValueWire> for SettingValue {
 pub struct SettingInfo {
     /// Which setting.
     pub id: SettingId,
-    /// Brother's Printer Setting Tool label for this model, e.g. `"Auto Power Off (Li-ion)"`.
+    /// Brother's name for this setting on this model, e.g. `"Auto Power Off (Li-ion)"`, or
+    /// `"AutoPowerOff(adp)"` on the PT-P710BT (see `brotherLabelSource`).
     pub brother_label: String,
+    /// Where `brotherLabel` comes from: Brother's Printer Setting Tool, or the printer's own
+    /// information report (PT-P710BT / P715eBT timers, whose Setting Tool labels are reversed;
+    /// PROTOCOL.md §8 #34).
+    pub brother_label_source: LabelSource,
     /// Switch or duration.
     pub kind: SettingKind,
     /// Allowed values in Brother's order (only these can be written).
@@ -777,9 +783,16 @@ pub struct SettingInfo {
     /// Display text of each choice, parallel to `choices` (`"never"`, `"10 min"`, `"60 min"`
     /// on PT-P710BT, `"1 h"` elsewhere, `"on"` / `"off"`).
     pub choice_labels: Vec<String>,
-    /// `true` when it is UNVERIFIED which physical timer this setting controls (PT-P710BT /
-    /// P715eBT timers, PROTOCOL.md §8 #34). Show it: a read-back cannot detect a swap.
-    pub selector_unverified: bool,
+}
+
+/// Source of `SettingInfo.brotherLabel` (core `LabelSource`).
+#[derive(Tsify, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LabelSource {
+    /// Brother's Printer Setting Tool.
+    SettingTool,
+    /// The `[Printer Settings]` section of the printer's printed information report.
+    InfoReport,
 }
 
 /// One value to write.

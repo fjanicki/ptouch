@@ -6,7 +6,7 @@ import { PacketLog, type ConnectionSnapshot } from '../../../src/printer'
 import { buildReport } from '../../../src/ui/diagnostics/report'
 import { detectSupport } from '../../../src/printer/support'
 import { settingsFor, type SettingReport } from '../../../src/wasm'
-import { ROW_LABELS, SELECTOR_NOTE, brotherNote, choiceIndex, confirmText, displayText, readingText, rowHint, rowLabel, sameValue, savedText, settingsNotes, shortName } from '../../../src/ui/printer-settings/settings-view'
+import { ROW_LABELS, brotherNote, choiceIndex, confirmText, displayText, readingText, rowHint, rowLabel, sameValue, savedText, settingsNotes, shortName } from '../../../src/ui/printer-settings/settings-view'
 import { chipView, isConnected, printBlockReason, printerModel, type PrintGate } from '../../../src/ui/state/view-model'
 import { loadWasmForTests } from '../../helpers/wasm'
 
@@ -20,7 +20,10 @@ describe('settingsFor (wasm) as the panel uses it', () => {
     expect(infos.map((i) => i.id)).toEqual(['auto-power-on', 'auto-power-off', 'auto-power-off-battery'])
     expect(infos.map((i) => i.kind)).toEqual(['toggle', 'duration', 'duration'])
     expect(infos[1]?.choiceLabels).toEqual(['never', '10 min', '20 min', '30 min', '40 min', '50 min', '60 min'])
-    expect(brotherNote(infos[2]!)).toBe('Same as “Auto Power Off (Li-ion)” in Brother’s Printer Setting Tool.')
+    expect(infos.map((i) => i.brotherLabelSource)).toEqual(['setting-tool', 'info-report', 'info-report'])
+    expect(brotherNote(infos[0]!)).toBe('Same as “Auto Power On” in Brother’s Printer Setting Tool.')
+    expect(brotherNote(infos[1]!)).toBe('Shown as “AutoPowerOff(adp)” in the printer’s information report.')
+    expect(brotherNote(infos[2]!)).toBe('Shown as “AutoPowerOff(Bat)” in the printer’s information report.')
   })
   it('PT-P900W lists hours; unsupported and unknown models have none (feature hidden)', () => {
     expect(settingsFor('PT-P900W')[1]?.choiceLabels.slice(-5)).toEqual(['1 h', '2 h', '4 h', '8 h', '12 h'])
@@ -52,40 +55,45 @@ describe('settings-view helpers', () => {
     expect(displayText('never')).toBe('Never')
     expect(readingText(report({ id: 'auto-power-off', text: 'unknown (0x07)', unlistedByte: 7 }))).toBe('Unknown (0x07)')
     expect(readingText(undefined)).toBe('')
-    expect(confirmText(info(), report({ id: 'auto-power-off', text: '30 min' }), '10 min')).toBe('Change “Auto Power Off” from 30 min to 10 min?')
+    expect(confirmText(info(), report({ id: 'auto-power-off', text: '30 min' }), '10 min')).toBe('Change auto power off (external power) from 30 min to 10 min?')
     expect(confirmText(settingsFor('PT-P900W')[1]!, report({ id: 'auto-power-off', text: '30 min' }), '2 h')).toBe('Change auto power off (external power) from 30 min to 2 h?')
     expect(confirmText(settingsFor('PT-P710BT')[0]!, undefined, 'on')).toBe('Change auto power on to on?')
     expect(ROW_LABELS['auto-power-off-battery']).toBe('Auto power off: on battery')
   })
 
-  // Regression: on the PT-P710BT it is unverified which timer each selector controls
-  // (PROTOCOL.md §8 #34), so the rows must not claim a power source as fact.
-  it('PT-P710BT timers are named by Brother’s label and flagged; other models keep power-source names', () => {
+  // Regression (PROTOCOL.md §8 #34): the PT-P710BT selector is settled on hardware (00 = USB /
+  // AC adapter, 01 = battery), so its rows use the standard power-source names, and they never
+  // point at Brother's Printer Setting Tool, whose labels are reversed on this model.
+  it('PT-P710BT timers use the standard names and the information report’s names', () => {
     const [on, ac, bat] = settingsFor('PT-P710BT')
-    expect([on!.selectorUnverified, ac!.selectorUnverified, bat!.selectorUnverified]).toEqual([false, true, true])
-    expect(rowLabel(ac!)).toBe('Auto power off: “Auto Power Off”')
-    expect(rowLabel(bat!)).toBe('Auto power off: “Auto Power Off (Li-ion)”')
     expect(rowLabel(on!)).toBe('Auto power on')
+    expect(rowLabel(ac!)).toBe('Auto power off: on external power')
+    expect(rowLabel(bat!)).toBe('Auto power off: on battery')
+    expect(rowHint(ac!)).toMatch(/external power/)
+    expect(rowHint(bat!)).toMatch(/battery/)
     for (const i of [ac!, bat!]) {
-      expect(rowLabel(i)).not.toMatch(/USB|AC power|battery/)
-      expect(rowHint(i)).toMatch(/unverified/)
+      expect(rowHint(i)).not.toMatch(/unverified/)
+      expect(brotherNote(i)).not.toMatch(/Setting Tool/)
     }
-    expect(shortName(ac!)).toBe('“Auto Power Off”')
-    expect(savedText(ac!, '10 min')).toBe('Saved and verified: “Auto Power Off” is 10 min.')
-    expect(settingsNotes('PT-P710BT', 'usb', settingsFor('PT-P710BT'))).toContain(SELECTOR_NOTE)
-    expect(SELECTOR_NOTE).toMatch(/not which timer/)
+    expect(shortName(ac!)).toBe('auto power off (external power)')
+    expect(savedText(bat!, 'never')).toBe('Saved and verified: auto power off (battery) is never.')
+    expect(settingsNotes('PT-P710BT', 'usb').join(' ')).not.toMatch(/timer|swapped/)
 
     const p900 = settingsFor('PT-P900W')
-    expect(p900.some((i) => i.selectorUnverified)).toBe(false)
     expect(rowLabel(p900[1]!)).toBe('Auto power off: on external power')
     expect(rowLabel(p900[2]!)).toBe('Auto power off: on battery')
-    expect(settingsNotes('PT-P900W', 'usb', p900)).not.toContain(SELECTOR_NOTE)
-    expect(rowLabel(settingsFor('PT-P910BT')[1]!)).toBe('Auto power off: on external power')
+    expect(brotherNote(p900[1]!)).toBe('Same as “Auto Power Off (AC/DC)” in Brother’s Printer Setting Tool.')
+    const p910 = settingsFor('PT-P910BT')
+    expect(rowLabel(p910[1]!)).toBe('Auto power off: on external power')
+    expect(brotherNote(p910[1]!)).toBe('Same as “Auto Power Off (USB Connection)” in Brother’s Printer Setting Tool.')
   })
 
-  it('notes: untested model, Bluetooth untested, virtual simulated', () => {
-    expect(settingsNotes('PT-P710BT', 'usb')).toEqual([expect.stringMatching(/^Untested on the PT-P710BT/)])
-    expect(settingsNotes('PT-P710BT', 'serial-rfcomm')).toEqual([expect.stringMatching(/^Untested/), expect.stringMatching(/^Bluetooth: untested/)])
+  it('notes: reads checked on the P710BT, untested model, Bluetooth untested, virtual simulated', () => {
+    expect(settingsNotes('PT-P710BT', 'usb')).toEqual([
+      'Reading is checked on the PT-P710BT; changing a setting has not been tested on a real printer yet. Each change is read back to check that the printer stored it.',
+    ])
+    expect(settingsNotes('PT-P910BT', 'usb')).toEqual([expect.stringMatching(/^Untested on the PT-P910BT: printer settings have not been checked/)])
+    expect(settingsNotes('PT-P710BT', 'serial-rfcomm')).toEqual([expect.stringMatching(/^Reading is checked on the PT-P710BT/), expect.stringMatching(/^Bluetooth: untested/)])
     expect(settingsNotes('PT-P710BT', 'serial-os-port')[1]).toMatch(/^Bluetooth: untested/)
     expect(settingsNotes('PT-P710BT', 'virtual')).toEqual([expect.stringMatching(/^Virtual printer/)])
   })

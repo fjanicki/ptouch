@@ -388,8 +388,8 @@ fn settings_get_on_virtual_printer() {
     assert_eq!(
         s,
         "auto-power-on            off      (Auto Power On)\n\
-         auto-power-off           30 min   (Brother: \"Auto Power Off\", for USB/AC power per Brother; which timer it controls is unverified)\n\
-         auto-power-off-battery   30 min   (Brother: \"Auto Power Off (Li-ion)\"; which timer it controls is unverified)\n"
+         auto-power-off           30 min   (USB/AC power; information report: \"AutoPowerOff(adp)\")\n\
+         auto-power-off-battery   30 min   (battery; information report: \"AutoPowerOff(Bat)\")\n"
     );
     let o = ok(&[
         "--device",
@@ -423,12 +423,8 @@ fn settings_set_with_yes_verifies() {
         "{}",
         stderr(&o)
     );
-    // The P710BT selector doubt is spelled out (PROTOCOL.md §8 #34).
-    assert!(
-        stderr(&o).contains("unverified which timer this setting changes"),
-        "{}",
-        stderr(&o)
-    );
+    // The P710BT selector is settled (PROTOCOL.md §8 #34): no selector warning any more.
+    assert!(!stderr(&o).contains("which timer"), "{}", stderr(&o));
     // Unchanged value: no write.
     let o = ok(&[
         "--device",
@@ -460,10 +456,23 @@ fn settings_set_with_yes_verifies() {
 
 #[test]
 fn settings_set_dry_run_bytes() {
+    // PT-P710BT: USB/AC timer = selector 00, battery = 01 (PROTOCOL.md §8 #34).
     let o = ok(&["settings", "set", "auto-power-off", "10", "--dry-run"]);
     assert_eq!(
         stdout(&o),
-        "1B 40 1B 69 61 01\n1B 69 55 41 00 01 01\n1B 7E 53 1B 69 61 FF\n\
+        "1B 40 1B 69 61 01\n1B 69 55 41 00 00 01\n1B 7E 53 1B 69 61 FF\n\
+         1B 40 1B 69 61 01\n1B 69 55 41 01 00\n1B 69 61 FF\n"
+    );
+    let o = ok(&[
+        "settings",
+        "set",
+        "auto-power-off-battery",
+        "never",
+        "--dry-run",
+    ]);
+    assert_eq!(
+        stdout(&o),
+        "1B 40 1B 69 61 01\n1B 69 55 41 00 01 00\n1B 7E 53 1B 69 61 FF\n\
          1B 40 1B 69 61 01\n1B 69 55 41 01 01\n1B 69 61 FF\n"
     );
     let o = ok(&[

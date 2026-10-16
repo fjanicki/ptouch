@@ -14,7 +14,11 @@
 //! - No table entry, prologue or epilogue starts with a sequence of the PROTOCOL.md §3.6.6
 //!   "never send" list ([`NEVER_SEND`]; enforced by tests).
 //!
-//! UNVERIFIED on hardware: the P710BT timer selector (PROTOCOL.md §8 #34), the meaning of
+//! Hardware-verified (PT-P710BT over USB, 2026-10-16, PROTOCOL.md §8 #34): the P710BT read
+//! path and its timer selectors (`00` = USB/AC adapter, `01` = battery, as on every other
+//! two-timer model; Brother's Mac definition labels them the other way round).
+//!
+//! UNVERIFIED on hardware: every write (`ESC i U … 00 …` + `ESC ~ S`), the meaning of
 //! `ESC ~ S`, and the 3-byte reply of the P900W family / P910BT (Brother's definition gives
 //! only its length and the value offset 2; bytes 0–1 are not checked).
 
@@ -32,12 +36,14 @@ use crate::status::{STATUS_HEADER, STATUS_LEN};
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum SettingId {
-    /// "Auto Power On": turn on when external power (USB/AC) is connected.
+    /// Auto power on: turn on when external power (USB/AC) is connected.
     AutoPowerOn,
-    /// "Auto Power Off" on external power (P710BT: USB/AC adapter or computer; P900W family:
-    /// AC/DC; P910BT: USB connection).
+    /// Auto power off on external power (P710BT/P715eBT: USB/AC adapter or computer; P900W
+    /// family: AC/DC; P910BT: USB connection). Brother's per-model name is
+    /// [`SettingSpec::brother_label`]; on the P710BT/P715eBT it comes from the printer's
+    /// information report (PROTOCOL.md §3.6.5).
     AutoPowerOff,
-    /// "Auto Power Off (Li-ion)": on battery.
+    /// Auto power off on battery. Brother's per-model name is [`SettingSpec::brother_label`].
     AutoPowerOffBattery,
 }
 
@@ -239,6 +245,19 @@ enum HourStyle {
     Minutes,
 }
 
+/// Where [`SettingSpec::brother_label`] comes from (PROTOCOL.md §3.6.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub enum LabelSource {
+    /// The label of Brother's Printer Setting Tool for this model.
+    SettingTool,
+    /// The name in the `[Printer Settings]` section of the printer's own printed information
+    /// report. Used where the Setting Tool's label is wrong for the model (the PT-P710BT /
+    /// P715eBT timers, PROTOCOL.md §8 #34).
+    InfoReport,
+}
+
 /// One setting on one profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -254,25 +273,16 @@ pub struct SettingSpec {
     pub reply: ReplyFormat,
     /// Allowed values in Brother's order.
     pub choices: &'static [Choice],
-    /// Brother's UI label for this model (PROTOCOL.md §3.6.5), e.g. "Auto Power Off (Li-ion)".
+    /// Brother's name for this setting on this model (PROTOCOL.md §3.6.5), e.g.
+    /// "Auto Power Off (Li-ion)" or, on the PT-P710BT, "AutoPowerOff(Bat)".
     pub brother_label: &'static str,
+    /// Where [`SettingSpec::brother_label`] comes from.
+    pub label_source: LabelSource,
     #[cfg_attr(feature = "serde", serde(skip))]
     hours: HourStyle,
-    /// See [`SettingSpec::selector_unverified`].
-    selector_unverified: bool,
 }
 
 impl SettingSpec {
-    /// `true` when it is in doubt which physical timer this setting's selector byte controls:
-    /// the PT-P710BT/P715eBT timers, where Brother's definition pairs selector `01` with
-    /// "Auto Power Off" and `00` with "Auto Power Off (Li-ion)", the reverse of every other
-    /// model (PROTOCOL.md §8 #34, UNVERIFIED). UIs must say so: a read-back after a write
-    /// cannot detect a swap, because the write and the read-back use the same selector.
-    #[must_use]
-    pub const fn selector_unverified(&self) -> bool {
-        self.selector_unverified
-    }
-
     /// The get command (`self.get`).
     #[must_use]
     pub const fn encode_read(&self) -> &'static [u8] {
@@ -556,33 +566,37 @@ const POWER_ON: SettingSpec = SettingSpec {
     reply: ReplyFormat::StatusF0,
     choices: &ON_OFF,
     brother_label: LABEL_POWER_ON,
+    label_source: LabelSource::SettingTool,
     hours: HourStyle::Hours,
-    selector_unverified: false,
 };
 
-/// PT-P710BT / PT-P715eBT. Selector `01` = USB/AC, `00` = Li-ion as in Brother's definition
-/// (PROTOCOL.md §8 #34, UNVERIFIED).
+/// PT-P710BT / PT-P715eBT. Selector `00` = USB/AC adapter ("adp"), `01` = battery ("Bat"), as
+/// on every other two-timer model: hardware-verified on a PT-P710BT (2026-10-16, a read
+/// matched the printer's own information report; PROTOCOL.md §8 #34). Brother's Mac
+/// definition pairs the labels the other way round, so the timer rows are named after the
+/// information report instead. The PT-P715eBT shares the definition; its mapping is INFERRED
+/// from the P710BT.
 static P710BT: [SettingSpec; 3] = [
     POWER_ON,
     SettingSpec {
         id: SettingId::AutoPowerOff,
-        get: GET_POWER_OFF_01,
-        set_prefix: SET_POWER_OFF_01,
-        reply: ReplyFormat::StatusF0,
-        choices: &UP_TO_60,
-        brother_label: "Auto Power Off",
-        hours: HourStyle::Minutes,
-        selector_unverified: true,
-    },
-    SettingSpec {
-        id: SettingId::AutoPowerOffBattery,
         get: GET_POWER_OFF_00,
         set_prefix: SET_POWER_OFF_00,
         reply: ReplyFormat::StatusF0,
         choices: &UP_TO_60,
-        brother_label: LABEL_LI_ION,
+        brother_label: "AutoPowerOff(adp)",
+        label_source: LabelSource::InfoReport,
         hours: HourStyle::Minutes,
-        selector_unverified: true,
+    },
+    SettingSpec {
+        id: SettingId::AutoPowerOffBattery,
+        get: GET_POWER_OFF_01,
+        set_prefix: SET_POWER_OFF_01,
+        reply: ReplyFormat::StatusF0,
+        choices: &UP_TO_60,
+        brother_label: "AutoPowerOff(Bat)",
+        label_source: LabelSource::InfoReport,
+        hours: HourStyle::Minutes,
     },
 ];
 
@@ -596,8 +610,8 @@ static P900W: [SettingSpec; 3] = [
         reply: ReplyFormat::LenValue,
         choices: &P900W_AC,
         brother_label: "Auto Power Off (AC/DC)",
+        label_source: LabelSource::SettingTool,
         hours: HourStyle::Hours,
-        selector_unverified: false,
     },
     SettingSpec {
         id: SettingId::AutoPowerOffBattery,
@@ -606,8 +620,8 @@ static P900W: [SettingSpec; 3] = [
         reply: ReplyFormat::LenValue,
         choices: &UP_TO_60,
         brother_label: LABEL_LI_ION,
+        label_source: LabelSource::SettingTool,
         hours: HourStyle::Hours,
-        selector_unverified: false,
     },
 ];
 
@@ -621,8 +635,8 @@ static P910BT: [SettingSpec; 3] = [
         reply: ReplyFormat::LenValue,
         choices: &P910BT_USB,
         brother_label: "Auto Power Off (USB Connection)",
+        label_source: LabelSource::SettingTool,
         hours: HourStyle::Hours,
-        selector_unverified: false,
     },
     SettingSpec {
         id: SettingId::AutoPowerOffBattery,
@@ -631,8 +645,8 @@ static P910BT: [SettingSpec; 3] = [
         reply: ReplyFormat::LenValue,
         choices: &UP_TO_60,
         brother_label: LABEL_LI_ION,
+        label_source: LabelSource::SettingTool,
         hours: HourStyle::Hours,
-        selector_unverified: false,
     },
 ];
 
@@ -701,14 +715,19 @@ mod tests {
 
     #[test]
     fn exact_bytes_per_profile() {
+        // P710BT: selector 00 = USB/AC adapter, 01 = battery (hardware, PROTOCOL.md §8 #34).
         let p = spec(SettingsProfile::P710bt, SettingId::AutoPowerOff);
-        assert_eq!(p.get, [0x1B, 0x69, 0x55, 0x41, 0x01, 0x01]);
+        assert_eq!(p.get, [0x1B, 0x69, 0x55, 0x41, 0x01, 0x00]);
         assert_eq!(
             p.encode_write(SettingValue::Minutes(10)),
-            Ok(vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x01, 0x01])
+            Ok(vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x00, 0x01])
         );
         let b = spec(SettingsProfile::P710bt, SettingId::AutoPowerOffBattery);
-        assert_eq!(b.get, [0x1B, 0x69, 0x55, 0x41, 0x01, 0x00]);
+        assert_eq!(b.get, [0x1B, 0x69, 0x55, 0x41, 0x01, 0x01]);
+        assert_eq!(
+            b.encode_write(SettingValue::Minutes(60)),
+            Ok(vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x01, 0x06])
+        );
         let on = spec(SettingsProfile::P710bt, SettingId::AutoPowerOn);
         assert_eq!(on.encode_read(), [0x1B, 0x69, 0x55, 0x70, 0x01]);
         assert_eq!(
@@ -894,13 +913,97 @@ mod tests {
         assert_eq!(on.allowed_values_text(), "off, on");
     }
 
+    /// Real PT-P710BT replies (USB, 2026-10-16; HARDWARE-TESTS.md §9 HW-S1). The printer's
+    /// own information report showed "AutoPowerOff(adp) = 60 Minutes" and an empty
+    /// "AutoPowerOff(Bat)" (never) at the same time.
+    const HW_REPLY_POWER_ON: [u8; 32] = [
+        0x80, 0x20, 0x42, 0x30, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01, 0x01,
+    ];
+    /// Reply to `1B 69 55 41 01 01` (selector `01`).
+    const HW_REPLY_SEL_01: [u8; 32] = [
+        0x80, 0x20, 0x42, 0x30, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01,
+    ];
+    /// Reply to `1B 69 55 41 01 00` (selector `00`).
+    const HW_REPLY_SEL_00: [u8; 32] = [
+        0x80, 0x20, 0x42, 0x30, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x06, 0x01,
+    ];
+
+    /// Regression (PROTOCOL.md §8 #34): the P710BT USB/AC timer is selector `00` and the
+    /// battery timer `01`. With the old (Brother Mac tool) pairing the user's "never" on USB
+    /// read as the battery value and the printer still switched itself off after 60 min.
     #[test]
-    fn selector_doubt_is_flagged_only_for_p710bt_timers() {
+    fn p710bt_hardware_replies_decode_to_the_right_timers() {
+        let read = |id, get: &[u8], reply: &[u8]| {
+            let s = spec(SettingsProfile::P710bt, id);
+            assert_eq!(s.encode_read(), get, "{id:?}");
+            s.decode_reply(reply)
+        };
+        assert_eq!(
+            read(
+                SettingId::AutoPowerOn,
+                &[0x1B, 0x69, 0x55, 0x70, 0x01],
+                &HW_REPLY_POWER_ON
+            ),
+            Ok(SettingReading::Value(SettingValue::Enabled(true)))
+        );
+        assert_eq!(
+            read(
+                SettingId::AutoPowerOff,
+                &[0x1B, 0x69, 0x55, 0x41, 0x01, 0x00],
+                &HW_REPLY_SEL_00
+            ),
+            Ok(SettingReading::Value(SettingValue::Minutes(60)))
+        );
+        assert_eq!(
+            read(
+                SettingId::AutoPowerOffBattery,
+                &[0x1B, 0x69, 0x55, 0x41, 0x01, 0x01],
+                &HW_REPLY_SEL_01
+            ),
+            Ok(SettingReading::Value(SettingValue::Minutes(0)))
+        );
+    }
+
+    #[test]
+    fn every_profile_uses_selector_00_for_external_power() {
         for p in ALL_PROFILES {
-            for s in settings_for_profile(p) {
-                let expected = p == SettingsProfile::P710bt && s.kind() == SettingKind::Duration;
-                assert_eq!(s.selector_unverified(), expected, "{p:?} {:?}", s.id);
-            }
+            let ac = spec(p, SettingId::AutoPowerOff);
+            let bat = spec(p, SettingId::AutoPowerOffBattery);
+            assert_eq!(ac.get, GET_POWER_OFF_00, "{p:?}");
+            assert_eq!(ac.set_prefix, SET_POWER_OFF_00, "{p:?}");
+            assert_eq!(bat.get, GET_POWER_OFF_01, "{p:?}");
+            assert_eq!(bat.set_prefix, SET_POWER_OFF_01, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn labels_name_their_source() {
+        let p710 = settings_for_profile(SettingsProfile::P710bt);
+        let labels: Vec<(&str, LabelSource)> = p710
+            .iter()
+            .map(|s| (s.brother_label, s.label_source))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("Auto Power On", LabelSource::SettingTool),
+                ("AutoPowerOff(adp)", LabelSource::InfoReport),
+                ("AutoPowerOff(Bat)", LabelSource::InfoReport),
+            ]
+        );
+        for p in [SettingsProfile::P900w, SettingsProfile::P910bt] {
+            assert!(
+                settings_for_profile(p)
+                    .iter()
+                    .all(|s| s.label_source == LabelSource::SettingTool),
+                "{p:?}"
+            );
         }
     }
 

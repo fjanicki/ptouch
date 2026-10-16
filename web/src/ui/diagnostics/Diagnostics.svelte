@@ -435,7 +435,7 @@
       <!-- Printer settings -->
       <section class="panel card" aria-labelledby="settings-h">
         <h2 id="settings-h">Printer settings</h2>
-        <p class="hint">Stored in the {conn.model}: the same values as Brother’s Printer Setting Tool shows.</p>
+        <p class="hint">Stored in the {conn.model}.</p>
         <PrinterSettings />
       </section>
     {/if}

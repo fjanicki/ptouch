@@ -30,6 +30,25 @@ const FIXTURE: [u8; 32] = [
 const GET_ON: [u8; 5] = [0x1B, 0x69, 0x55, 0x70, 0x01];
 const GET_OFF_01: [u8; 6] = [0x1B, 0x69, 0x55, 0x41, 0x01, 0x01];
 const GET_OFF_00: [u8; 6] = [0x1B, 0x69, 0x55, 0x41, 0x01, 0x00];
+/// PT-P710BT Auto Power Off (USB/AC adapter) set prefix: selector `00` (PROTOCOL.md §8 #34).
+const SET_OFF_00: [u8; 6] = [0x1B, 0x69, 0x55, 0x41, 0x00, 0x00];
+
+/// Real PT-P710BT settings replies (USB, 2026-10-16; HARDWARE-TESTS.md §9 HW-S1), in the
+/// order they were read: Auto Power On (`st[30]` = 01, on), selector `01` (00, never),
+/// selector `00` (06, 60 min). The printer's information report showed
+/// "AutoPowerOff(adp) = 60 Minutes" and an empty "AutoPowerOff(Bat)".
+const HW_POWER_ON: [u8; 32] = [
+    0x80, 0x20, 0x42, 0x30, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01,
+];
+const HW_SEL_01: [u8; 32] = [
+    0x80, 0x20, 0x42, 0x30, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+];
+const HW_SEL_00: [u8; 32] = [
+    0x80, 0x20, 0x42, 0x30, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x01,
+];
 
 use SettingId::{AutoPowerOff, AutoPowerOffBattery, AutoPowerOn};
 use SettingValue::{Enabled, Minutes};
@@ -185,9 +204,10 @@ fn v(value: SettingValue) -> SettingReading {
 
 #[test]
 fn p710bt_read_all_sequence() {
+    // Selector 00 = USB/AC adapter, 01 = battery (PROTOCOL.md §8 #34).
     let vp = printer(Model::PtP710bt, Behaviour::Normal)
-        .with_setting(0x41, Some(0x01), 0x01)
-        .with_setting(0x41, Some(0x00), 0x00);
+        .with_setting(0x41, Some(0x00), 0x01)
+        .with_setting(0x41, Some(0x01), 0x00);
     let mut h = Harness::new(vp);
     h.connect();
     let report = h.read(&SettingId::ALL);
@@ -196,8 +216,8 @@ fn p710bt_read_all_sequence() {
         vec![
             SETTINGS_PROLOGUE.to_vec(),
             GET_ON.to_vec(),
-            GET_OFF_01.to_vec(),
             GET_OFF_00.to_vec(),
+            GET_OFF_01.to_vec(),
             SETTINGS_READ_EPILOGUE.to_vec(),
         ]
     );
@@ -229,24 +249,108 @@ fn p710bt_write_sequence_and_verify() {
         h.sent,
         vec![
             SETTINGS_PROLOGUE.to_vec(),
-            vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x01, 0x01],
+            vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x00, 0x01],
             SETTINGS_WRITE_EPILOGUE.to_vec(),
             SETTINGS_PROLOGUE.to_vec(),
-            GET_OFF_01.to_vec(),
+            GET_OFF_00.to_vec(),
             SETTINGS_READ_EPILOGUE.to_vec(),
         ]
     );
     assert!(verified);
     assert_eq!(readings(&report), vec![(AutoPowerOff, v(Minutes(10)))]);
-    assert_eq!(h.vp.setting_byte(0x41, Some(0x01)), Some(0x01));
+    assert_eq!(h.vp.setting_byte(0x41, Some(0x00)), Some(0x01));
     assert_eq!(
-        h.vp.setting_byte(0x41, Some(0x00)),
+        h.vp.setting_byte(0x41, Some(0x01)),
         Some(0x03),
         "battery untouched"
     );
     assert_eq!(h.vp.commits(), 1);
     assert_eq!(h.s.state(), SessionState::Ready);
     assert!(h.vp.violations().is_empty(), "{:?}", h.vp.violations());
+}
+
+/// Regression (PROTOCOL.md §8 #34; HARDWARE-TESTS.md §9 HW-S1): the real replies of a
+/// PT-P710BT whose information report said "AutoPowerOff(adp) = 60 Minutes" and
+/// "AutoPowerOff(Bat)" empty. The old (Brother Mac tool) selector pairing showed the USB timer
+/// as "never", and the printer, left on USB overnight, switched itself off.
+#[test]
+fn p710bt_hardware_replies_read_as_the_information_report() {
+    let (mut s, mut now) = ready_session();
+    s.read_settings(&SettingId::ALL, now).unwrap();
+    let mut gets = Vec::new();
+    for _ in 0..3 {
+        let sent = to_first_get(&mut s, &mut now);
+        let get = sent.last().cloned().unwrap();
+        let reply = match get.as_slice() {
+            g if g == GET_ON => HW_POWER_ON,
+            g if g == GET_OFF_01 => HW_SEL_01,
+            g if g == GET_OFF_00 => HW_SEL_00,
+            g => panic!("unexpected get {g:02X?}"),
+        };
+        gets.push(get);
+        s.handle_input(&reply, now);
+    }
+    assert_eq!(
+        gets,
+        vec![GET_ON.to_vec(), GET_OFF_00.to_vec(), GET_OFF_01.to_vec()]
+    );
+    let ev = drain_events(&mut s);
+    let [Event::SettingsRead(report)] = &ev[..] else {
+        panic!("{ev:?}");
+    };
+    assert_eq!(
+        readings(report),
+        vec![
+            (AutoPowerOn, v(Enabled(true))),
+            (AutoPowerOff, v(Minutes(60))),
+            (AutoPowerOffBattery, v(Minutes(0))),
+        ]
+    );
+    assert_eq!(report[1].raw, HW_SEL_00.to_vec());
+    assert_eq!(report[2].raw, HW_SEL_01.to_vec());
+    assert_eq!(s.poll_transmit(), Some(SETTINGS_READ_EPILOGUE.to_vec()));
+}
+
+/// A P710BT write of the USB/AC timer uses selector `00` (set and read-back); the battery
+/// timer uses `01`. The write path itself is UNVERIFIED on hardware (HW-S3).
+#[test]
+fn p710bt_write_selectors() {
+    let mut h = Harness::new(printer(Model::PtP710bt, Behaviour::Normal));
+    h.connect();
+    let (_, verified) = h.write(&[(AutoPowerOff, Minutes(0))]);
+    assert!(verified);
+    let mut set = SET_OFF_00.to_vec();
+    set.push(0x00);
+    assert!(h.sent.contains(&set), "{:02X?}", h.sent);
+    assert!(h.sent.contains(&GET_OFF_00.to_vec()));
+    // Nothing touches selector 01 (the battery timer).
+    assert!(
+        !h.sent
+            .iter()
+            .any(|b| b[..] == GET_OFF_01 || b.starts_with(&[0x1B, 0x69, 0x55, 0x41, 0x00, 0x01])),
+        "{:02X?}",
+        h.sent
+    );
+    assert_eq!(h.vp.setting_byte(0x41, Some(0x00)), Some(0x00));
+    assert_eq!(h.vp.setting_byte(0x41, Some(0x01)), Some(0x03));
+
+    let mut h = Harness::new(printer(Model::PtP710bt, Behaviour::Normal));
+    h.connect();
+    let (_, verified) = h.write(&[(AutoPowerOffBattery, Minutes(60))]);
+    assert!(verified);
+    assert_eq!(
+        h.sent,
+        vec![
+            SETTINGS_PROLOGUE.to_vec(),
+            vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x01, 0x06],
+            SETTINGS_WRITE_EPILOGUE.to_vec(),
+            SETTINGS_PROLOGUE.to_vec(),
+            GET_OFF_01.to_vec(),
+            SETTINGS_READ_EPILOGUE.to_vec(),
+        ]
+    );
+    assert_eq!(h.vp.setting_byte(0x41, Some(0x01)), Some(0x06));
+    assert_eq!(h.vp.setting_byte(0x41, Some(0x00)), Some(0x03));
 }
 
 #[test]
@@ -275,7 +379,7 @@ fn write_timing_follows_the_config() {
     h.s.handle_timeout(t);
     assert_eq!(
         h.s.poll_transmit(),
-        Some(vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x01, 0x02])
+        Some(vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x00, 0x02])
     );
     t += cfg.settings_gap_ms;
     h.s.handle_timeout(t);
@@ -441,19 +545,15 @@ fn stale_frame_is_drained() {
         let mut h = Harness::new(vp);
         h.connect();
         let r = h.read(&SettingId::ALL);
-        let battery_or_ac = if m == Model::PtP710bt {
-            AutoPowerOff
-        } else {
-            AutoPowerOffBattery
-        };
-        let got = r.iter().find(|r| r.id == battery_or_ac).unwrap();
+        // Selector 01 is the battery timer on every profile.
+        let got = r.iter().find(|r| r.id == AutoPowerOffBattery).unwrap();
         assert_eq!(got.reading, v(Minutes(20)), "{m:?}");
     }
 }
 
 #[test]
 fn unlisted_byte_is_reported_raw() {
-    let vp = printer(Model::PtP710bt, Behaviour::Normal).with_setting(0x41, Some(0x01), 0x07);
+    let vp = printer(Model::PtP710bt, Behaviour::Normal).with_setting(0x41, Some(0x00), 0x07);
     let mut h = Harness::new(vp);
     h.connect();
     let r = h.read(&[AutoPowerOff]);
@@ -589,7 +689,7 @@ fn cancel_during_settings() {
     );
     assert_eq!(h.s.state(), SessionState::Ready);
     assert_eq!(h.s.poll_timeout(), None);
-    assert_eq!(h.vp.setting_byte(0x41, Some(0x01)), Some(0x03));
+    assert_eq!(h.vp.setting_byte(0x41, Some(0x00)), Some(0x03));
 }
 
 #[test]
@@ -656,7 +756,7 @@ fn input_during_drain_and_gap_is_discarded() {
     // An F0 frame during the drain must not count as the reply.
     s.handle_input(&f0(0x05), now + 1);
     let sent = to_first_get(&mut s, &mut now);
-    assert_eq!(sent.last(), Some(&GET_OFF_01.to_vec()));
+    assert_eq!(sent.last(), Some(&GET_OFF_00.to_vec()));
     assert!(drain_events(&mut s).is_empty());
     s.handle_input(&f0(0x02), now + 10);
     assert_eq!(
@@ -934,19 +1034,19 @@ fn late_reply_after_timeout_does_not_verify_a_write() {
     s.write_settings(&[(AutoPowerOff, Minutes(10))], now)
         .unwrap();
     let sent = advance_to(&mut s, &mut now, failed_at + 750);
-    assert!(!sent.contains(&GET_OFF_01.to_vec()), "{sent:02X?}");
+    assert!(!sent.contains(&GET_OFF_00.to_vec()), "{sent:02X?}");
     s.handle_input(&f0(0x01), now);
     assert!(drain_events(&mut s).is_empty());
     // Run on to the read-back get; the printer then still reports 30 min.
     let mut sent = Vec::new();
-    while !sent.contains(&GET_OFF_01.to_vec()) {
+    while !sent.contains(&GET_OFF_00.to_vec()) {
         now = s.poll_timeout().expect("transaction running");
         s.handle_timeout(now);
         while let Some(b) = s.poll_transmit() {
             sent.push(b);
         }
     }
-    assert!(sent.contains(&vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x01, 0x01]));
+    assert!(sent.contains(&vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x00, 0x01]));
     s.handle_input(&f0(0x03), now);
     let ev = drain_events(&mut s);
     assert!(
@@ -959,7 +1059,7 @@ fn late_reply_after_timeout_does_not_verify_a_write() {
 /// still sends it (and not a second time once the write epilogue went out).
 #[test]
 fn cancel_after_a_set_still_sends_the_commit() {
-    let set = vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x01, 0x01];
+    let set = vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x00, 0x01];
     let mut h = Harness::new(printer(Model::PtP710bt, Behaviour::Normal));
     h.connect();
     h.s.write_settings(&[(AutoPowerOff, Minutes(10))], h.now)
@@ -1030,7 +1130,7 @@ fn late_settings_reply_is_not_a_status() {
 #[test]
 fn virtual_printer_rejects_unlisted_and_unsupported() {
     let mut vp = printer(Model::PtP710bt, Behaviour::Normal);
-    vp.handle_input(&[0x1B, 0x69, 0x55, 0x41, 0x00, 0x01, 0x07], 0);
+    vp.handle_input(&[0x1B, 0x69, 0x55, 0x41, 0x00, 0x00, 0x07], 0);
     assert_eq!(
         vp.violations(),
         &[Violation::InvalidSettingValue {
@@ -1038,7 +1138,7 @@ fn virtual_printer_rejects_unlisted_and_unsupported() {
             byte: 0x07
         }]
     );
-    assert_eq!(vp.setting_byte(0x41, Some(0x01)), Some(0x03));
+    assert_eq!(vp.setting_byte(0x41, Some(0x00)), Some(0x03));
     // Unknown selector.
     vp.handle_input(&[0x1B, 0x69, 0x55, 0x41, 0x01, 0x02], 0);
     assert!(matches!(
@@ -1083,10 +1183,13 @@ fn table_models_and_labels() {
             .map(|s| s.brother_label)
             .collect()
     };
+    // P710BT timers: named as in the printer's information report (Brother's Mac tool labels
+    // are reversed on this model, PROTOCOL.md §8 #34).
     assert_eq!(
         labels(Model::PtP710bt),
-        ["Auto Power On", "Auto Power Off", "Auto Power Off (Li-ion)"]
+        ["Auto Power On", "AutoPowerOff(adp)", "AutoPowerOff(Bat)"]
     );
+    assert_eq!(labels(Model::PtP715ebt), labels(Model::PtP710bt));
     assert_eq!(
         labels(Model::PtP950nw),
         [
@@ -1103,7 +1206,10 @@ fn table_models_and_labels() {
             "Auto Power Off (Li-ion)"
         ]
     );
+    // The PT-P715eBT shares the P710BT profile (mapping INFERRED from the P710BT).
     let spec = setting_spec(model(Model::PtP715ebt), AutoPowerOffBattery).unwrap();
+    assert_eq!(spec.get, GET_OFF_01);
+    let spec = setting_spec(model(Model::PtP715ebt), AutoPowerOff).unwrap();
     assert_eq!(spec.get, GET_OFF_00);
     assert_eq!(spec.reply, ReplyFormat::StatusF0);
     assert!(setting_spec(model(Model::PtE560bt), AutoPowerOn).is_none());

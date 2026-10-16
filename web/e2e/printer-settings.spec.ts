@@ -2,8 +2,8 @@
 // VirtualPrinter behind MockTransport): opened from the connect dialog, read on open (30 min),
 // choosing a duration only stages it (Apply asks), a change needs confirmation (Cancel keeps the
 // value, Change writes + reads back → "Saved and verified"), focus comes back after each action,
-// the toggle, the PT-P710BT timer rows named by Brother's label (selector unverified), the
-// Diagnostics card, hidden for a model without settings, a read-back that differs (Try again asks
+// the toggle, the PT-P710BT timer rows named by power source with the information report's
+// names underneath (PROTOCOL.md §8 #34), the Diagnostics card, hidden for a model without settings, a read-back that differs (Try again asks
 // again), a write whose read-back gets no answer ("may have stored"), no settings while a print
 // is being prepared, a printer that doesn't answer (stubbed Bluetooth: error + "Bluetooth:
 // untested"), and the layout at 375 px.
@@ -15,10 +15,9 @@ import { stubVirtualSerial, type VirtualSerialWindow } from './fixtures/virtual-
 const chip = (page: Page) => page.getByRole('button', { name: /^Connection:/ })
 const connectDialog = (page: Page) => page.getByRole('dialog', { name: /Connect your printer|Printer connected|Printer settings/ })
 const settingsList = (page: Page) => page.getByRole('list', { name: 'Printer settings' })
-// PT-P710BT rows are named by Brother's label (which timer each controls is unverified); other
-// models by the power source.
-const powerOff = (page: Page) => settingsList(page).getByRole('combobox', { name: /^Auto power off: (“Auto Power Off”|on external power)$/ })
-const battery = (page: Page) => settingsList(page).getByRole('combobox', { name: /^Auto power off: (“Auto Power Off \(Li-ion\)”|on battery)$/ })
+// Every model's timer rows are named by the power source.
+const powerOff = (page: Page) => settingsList(page).getByRole('combobox', { name: 'Auto power off: on external power' })
+const battery = (page: Page) => settingsList(page).getByRole('combobox', { name: 'Auto power off: on battery' })
 const powerOn = (page: Page) => settingsList(page).getByRole('switch', { name: 'Auto power on' })
 const apply = (page: Page) => settingsList(page).getByRole('button', { name: /^Apply / })
 const confirm = (page: Page) => page.getByRole('alertdialog')
@@ -56,17 +55,20 @@ test('read on open, confirm a change, saved and verified', async ({ page }) => {
   await expect(powerOff(page).locator('option:checked')).toHaveText('30 min')
   await expect(battery(page).locator('option:checked')).toHaveText('30 min')
   await expect(powerOn(page)).toHaveAttribute('aria-checked', 'false')
-  await expect(page.getByText('Same as “Auto Power Off (Li-ion)” in Brother’s Printer Setting Tool.', { exact: false })).toBeVisible()
+  // PT-P710BT timers: the printer's information report names, never Brother's Printer Setting
+  // Tool labels (reversed on this model, PROTOCOL.md §8 #34).
+  await expect(page.getByText('Shown as “AutoPowerOff(adp)” in the printer’s information report.', { exact: false })).toBeVisible()
+  await expect(page.getByText('Shown as “AutoPowerOff(Bat)” in the printer’s information report.', { exact: false })).toBeVisible()
+  await expect(page.getByText('Same as “Auto Power On” in Brother’s Printer Setting Tool.', { exact: false })).toBeVisible()
+  await expect(settingsList(page).getByText(/Same as “Auto Power Off/)).toHaveCount(0)
   await expect(page.getByText(/^Virtual printer: the values are simulated/)).toBeVisible()
-  // The PT-P710BT timer rows don't claim a power source as fact (PROTOCOL.md §8 #34).
-  await expect(settingsList(page).getByRole('combobox', { name: /USB|AC power|on battery/ })).toHaveCount(0)
-  await expect(page.getByText(/^Auto power off on this model: Brother’s definition may have the external-power and battery timers swapped/)).toBeVisible()
+  await expect(page.getByText(/timers swapped|which timer/)).toHaveCount(0)
 
   // Choosing a value only stages it (arrow keys change a closed select at once on
   // Windows/Linux/ChromeOS): nothing is asked until Apply.
   await powerOff(page).selectOption({ label: '10 min' })
   await expect(confirm(page)).toBeHidden()
-  await expect(apply(page)).toHaveAccessibleName('Apply “Auto Power Off”')
+  await expect(apply(page)).toHaveAccessibleName('Apply auto power off (external power)')
   // Back to the stored value: nothing to apply.
   await powerOff(page).selectOption({ label: '30 min' })
   await expect(apply(page)).toHaveCount(0)
@@ -75,7 +77,7 @@ test('read on open, confirm a change, saved and verified', async ({ page }) => {
   await powerOff(page).selectOption({ label: '10 min' })
   await apply(page).click()
   await expect(confirm(page)).toBeVisible()
-  await expect(confirm(page)).toHaveAccessibleName('Change “Auto Power Off” from 30 min to 10 min?')
+  await expect(confirm(page)).toHaveAccessibleName('Change auto power off (external power) from 30 min to 10 min?')
   await expect(confirm(page).getByRole('button', { name: 'Cancel' })).toBeFocused()
   await confirm(page).getByRole('button', { name: 'Cancel' }).click()
   await expect(confirm(page)).toBeHidden()
@@ -92,7 +94,7 @@ test('read on open, confirm a change, saved and verified', async ({ page }) => {
   await page.keyboard.press('Tab')
   await expect(confirm(page).getByRole('button', { name: 'Change' })).toBeFocused()
   await page.keyboard.press('Enter')
-  await expect(page.getByText('Saved and verified: “Auto Power Off” is 10 min.')).toBeVisible()
+  await expect(page.getByText('Saved and verified: auto power off (external power) is 10 min.')).toBeVisible()
   await expect(powerOff(page).locator('option:checked')).toHaveText('10 min')
   await expect(powerOff(page)).toBeFocused()
   // The other timer is untouched; a fresh read agrees, and focus stays on "Read again".
@@ -144,7 +146,7 @@ test('arrow keys on a timer select do not ask', async ({ page }) => {
     await expect(powerOff(page).locator('option:checked')).toHaveText('50 min')
     await expect(apply(page)).toBeVisible()
     await apply(page).click()
-    await expect(confirm(page)).toHaveAccessibleName('Change “Auto Power Off” from 30 min to 50 min?')
+    await expect(confirm(page)).toHaveAccessibleName('Change auto power off (external power) from 30 min to 50 min?')
   }
 })
 
@@ -155,7 +157,7 @@ test('other profile: PT-P900W lists hours', async ({ page }) => {
   await expect(powerOff(page)).toBeEnabled()
   await expect(settingsList(page).getByRole('combobox', { name: 'Auto power off: on external power' })).toBeVisible()
   await expect(settingsList(page).getByRole('combobox', { name: 'Auto power off: on battery' })).toBeVisible()
-  await expect(page.getByText(/^Auto power off on this model/)).toHaveCount(0)
+  await expect(page.getByText('Same as “Auto Power Off (AC/DC)” in Brother’s Printer Setting Tool.', { exact: false })).toBeVisible()
   await expect(powerOff(page).locator('option')).toHaveText(['Never', '10 min', '20 min', '30 min', '40 min', '50 min', '1 h', '2 h', '4 h', '8 h', '12 h'])
   await powerOff(page).selectOption({ label: '2 h' })
   await apply(page).click()
@@ -179,8 +181,8 @@ test('Diagnostics card and the report', async ({ page, context }) => {
   await page.getByRole('button', { name: /^diagnostics$/i }).click()
   const card = page.getByRole('region', { name: 'Printer settings' })
   await expect(card).toBeVisible()
-  await expect(card.getByRole('combobox', { name: 'Auto power off: “Auto Power Off (Li-ion)”' })).toBeEnabled()
-  await expect(card.getByRole('combobox', { name: 'Auto power off: “Auto Power Off (Li-ion)”' }).locator('option:checked')).toHaveText('30 min')
+  await expect(card.getByRole('combobox', { name: 'Auto power off: on battery' })).toBeEnabled()
+  await expect(card.getByRole('combobox', { name: 'Auto power off: on battery' }).locator('option:checked')).toHaveText('30 min')
   await page.getByRole('button', { name: 'Copy diagnostics' }).click()
   const report = await page.evaluate(() => navigator.clipboard.readText())
   expect(report).toContain('## Printer settings (last read)')
@@ -237,7 +239,7 @@ test.describe('wasm virtual printer over (stubbed) Bluetooth', () => {
 
     // Try again is a new change: it asks again; Cancel sends nothing.
     await warn.getByRole('button', { name: 'Try again' }).click()
-    await expect(confirm(page)).toHaveAccessibleName('Change “Auto Power Off” from 30 min to 10 min?')
+    await expect(confirm(page)).toHaveAccessibleName('Change auto power off (external power) from 30 min to 10 min?')
     await confirm(page).getByRole('button', { name: 'Cancel' }).click()
     await expect(confirm(page)).toBeHidden()
     expect(await setsSent(page)).toBe(1)
@@ -318,7 +320,7 @@ test.describe('phone width (375 px)', () => {
     const cbox = await confirm(page).boundingBox()
     expect(cbox!.x + cbox!.width).toBeLessThanOrEqual(375)
     await confirm(page).getByRole('button', { name: 'Change' }).click()
-    await expect(page.getByText('Saved and verified: “Auto Power Off (Li-ion)” is never.')).toBeVisible()
+    await expect(page.getByText('Saved and verified: auto power off (battery) is never.')).toBeVisible()
     // The other rows keep the values read on open.
     await expect(powerOff(page).locator('option:checked')).toHaveText('30 min')
     await expect(powerOn(page)).toHaveAttribute('aria-checked', 'false')

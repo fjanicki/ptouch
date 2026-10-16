@@ -73,8 +73,9 @@ describe('PrinterClient settings (virtual PT-P710BT)', () => {
     expect(report[1]?.raw).toHaveLength(32)
     expect(states().slice(-2)).toEqual(['settings', 'ready'])
     expect(client.state).toBe('ready')
-    // Brother's order on one connection, each command its own write (SETTINGS-PLAN.md §1.4).
-    expect(transport.written.slice(before).map(hex)).toEqual(['1b 40 1b 69 61 01', '1b 69 55 70 01', '1b 69 55 41 01 01', '1b 69 55 41 01 00', '1b 69 61 ff'])
+    // One connection, each command its own write (SETTINGS-PLAN.md §1.4); on the PT-P710BT the
+    // USB / AC timer is selector 00 and the battery timer 01 (PROTOCOL.md §8 #34).
+    expect(transport.written.slice(before).map(hex)).toEqual(['1b 40 1b 69 61 01', '1b 69 55 70 01', '1b 69 55 41 01 00', '1b 69 55 41 01 01', '1b 69 61 ff'])
     expect(transport.printer?.commits()).toBe(0)
     expect(transport.violations()).toEqual([])
   })
@@ -89,14 +90,14 @@ describe('PrinterClient settings (virtual PT-P710BT)', () => {
     expect(r.report[0]).toMatchObject({ id: 'auto-power-off', text: '10 min', value: { kind: 'minutes', minutes: 10 } })
     expect(transport.written.slice(before).map(hex)).toEqual([
       '1b 40 1b 69 61 01',
-      '1b 69 55 41 00 01 01',
+      '1b 69 55 41 00 00 01',
       '1b 7e 53 1b 69 61 ff',
       '1b 40 1b 69 61 01',
-      '1b 69 55 41 01 01',
+      '1b 69 55 41 01 00',
       '1b 69 61 ff',
     ])
-    expect(transport.printer?.settingByte(OP_POWER_OFF, 1)).toBe(1)
-    expect(transport.printer?.settingByte(OP_POWER_OFF, 0)).toBe(3) // battery timer untouched
+    expect(transport.printer?.settingByte(OP_POWER_OFF, 0)).toBe(1)
+    expect(transport.printer?.settingByte(OP_POWER_OFF, 1)).toBe(3) // battery timer untouched
     expect(transport.printer?.commits()).toBe(1)
     expect(client.state).toBe('ready')
   })
@@ -122,7 +123,7 @@ describe('PrinterClient settings (virtual PT-P710BT)', () => {
   it('an unlisted byte is reported raw', async () => {
     const { clock, client, transport } = setup()
     await run(clock, client.connect())
-    transport.printer?.setSettingByte(OP_POWER_OFF, 1, 0x07)
+    transport.printer?.setSettingByte(OP_POWER_OFF, 0, 0x07)
     const [r] = await run(clock, client.readSettings(['auto-power-off']))
     expect(r?.value).toBeUndefined()
     expect(r?.unlistedByte).toBe(7)

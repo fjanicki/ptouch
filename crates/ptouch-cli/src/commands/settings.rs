@@ -14,7 +14,7 @@
 
 use std::io::{BufRead as _, IsTerminal as _, Write as _};
 
-use ptouch::settings::SettingSpec;
+use ptouch::settings::{LabelSource, SettingSpec};
 use ptouch::virtual_printer::{Behaviour, VirtualPrinter};
 use ptouch::{
     Event, Model, ModelProfile, Session, SessionConfig, SettingId, SettingReading, SettingReport,
@@ -108,30 +108,23 @@ fn check_offered(
     )))
 }
 
-/// Brother's label, with the power source spelled out where the label does not say it. Where
-/// the selector is in doubt (PT-P710BT timers, PROTOCOL.md §8 #34) the power source is
-/// attributed to Brother and marked unverified.
+/// Brother's name for the setting. A name from the printer's information report (PT-P710BT
+/// timers, whose Setting Tool labels are reversed; PROTOCOL.md §8 #34) does not say which
+/// power source the timer is for in plain words, so that is spelled out.
 fn label(spec: &SettingSpec) -> String {
-    let plain = spec.id == SettingId::AutoPowerOff && !spec.brother_label.contains('(');
-    match (plain, spec.selector_unverified()) {
-        (true, true) => format!(
-            "Brother: \"{}\", for USB/AC power per Brother; which timer it controls is unverified",
-            spec.brother_label
-        ),
-        (false, true) => format!(
-            "Brother: \"{}\"; which timer it controls is unverified",
-            spec.brother_label
-        ),
-        (true, false) => format!("{}: USB/AC power", spec.brother_label),
-        (false, false) => spec.brother_label.to_owned(),
+    match spec.label_source {
+        LabelSource::InfoReport => {
+            let power = match spec.id {
+                SettingId::AutoPowerOffBattery => "battery",
+                SettingId::AutoPowerOff => "USB/AC power",
+                _ => "",
+            };
+            let sep = if power.is_empty() { "" } else { "; " };
+            format!("{power}{sep}information report: \"{}\"", spec.brother_label)
+        }
+        _ => spec.brother_label.to_owned(),
     }
 }
-
-/// Printed before a change of a setting whose selector is in doubt.
-const SELECTOR_WARNING: &str = "warning: on this model it is unverified which timer this \
-     setting changes (Brother's tool may have the USB/AC and battery timers swapped; \
-     PROTOCOL.md §8 #34). \"(verified)\" only confirms that the printer stored the value, \
-     not which timer uses it";
 
 /// A failed write: the printer may already hold the new value, whatever ended the write
 /// (an error reply, a lost link, Ctrl-C). Keeps the original exit code.
@@ -245,9 +238,6 @@ fn set_on<T: Transport>(
         ),
         (true, Some(note)) => eprintln!("warning: {note}"),
         (true, None) => {}
-    }
-    if spec.selector_unverified() {
-        eprintln!("{SELECTOR_WARNING}");
     }
 
     let current = driver.read_settings(&[id])?;
@@ -456,17 +446,27 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{e}"));
         assert!(verified);
         let hexes: Vec<String> = bufs.iter().map(|b| hex(b)).collect();
+        // PT-P710BT USB/AC timer = selector 00 (PROTOCOL.md §8 #34).
         assert_eq!(
             hexes,
             [
                 "1B 40 1B 69 61 01",
-                "1B 69 55 41 00 01 01",
+                "1B 69 55 41 00 00 01",
                 "1B 7E 53 1B 69 61 FF",
                 "1B 40 1B 69 61 01",
-                "1B 69 55 41 01 01",
+                "1B 69 55 41 01 00",
                 "1B 69 61 FF",
             ]
         );
+        let (bufs, _) = simulate_write(
+            p710(),
+            SettingId::AutoPowerOffBattery,
+            SettingValue::Minutes(60),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let hexes: Vec<String> = bufs.iter().map(|b| hex(b)).collect();
+        assert_eq!(hexes[1], "1B 69 55 41 00 01 06");
+        assert_eq!(hexes[4], "1B 69 55 41 01 01");
     }
 
     #[test]
@@ -482,17 +482,19 @@ mod tests {
             spec_for(e560, SettingId::AutoPowerOn),
             Err(CliError::SettingsUnsupported(m)) if m == "PT-E560BT"
         ));
+        // Never Brother's Mac tool label on the P710BT timers: it is reversed there.
         assert_eq!(
             label(spec),
-            "Brother: \"Auto Power Off\", for USB/AC power per Brother; which timer it controls \
-             is unverified"
+            "USB/AC power; information report: \"AutoPowerOff(adp)\""
         );
         let bat =
             setting_spec(p710(), SettingId::AutoPowerOffBattery).unwrap_or_else(|| unreachable!());
         assert_eq!(
             label(bat),
-            "Brother: \"Auto Power Off (Li-ion)\"; which timer it controls is unverified"
+            "battery; information report: \"AutoPowerOff(Bat)\""
         );
+        let on = setting_spec(p710(), SettingId::AutoPowerOn).unwrap_or_else(|| unreachable!());
+        assert_eq!(label(on), "Auto Power On");
         let p900 = ptouch::profile(Model::PtP900w).unwrap_or_else(|| unreachable!());
         let ac = setting_spec(p900, SettingId::AutoPowerOff).unwrap_or_else(|| unreachable!());
         assert_eq!(label(ac), "Auto Power Off (AC/DC)");

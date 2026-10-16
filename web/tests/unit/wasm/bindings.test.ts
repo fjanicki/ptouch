@@ -480,3 +480,67 @@ describe('PrintSession ↔ VirtualPrinter', () => {
     release(null)
   })
 })
+
+/** A real PT-P710BT settings reply (USB, 2026-10-16; docs/HARDWARE-TESTS.md §9 HW-S1): status
+ * type F0 at byte 18, the value at byte 30, byte 31 = 01. */
+function hwSettingsReply(value: number): Uint8Array {
+  return new Uint8Array([
+    0x80, 0x20, 0x42, 0x30, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, value, 0x01,
+  ])
+}
+
+describe('PrintSession settings with real PT-P710BT replies', () => {
+  // Regression (PROTOCOL.md §8 #34): the printer's information report said
+  // "AutoPowerOff(adp) = 60 Minutes" and "AutoPowerOff(Bat)" empty (never). Selector 00 is the
+  // USB / AC adapter timer and 01 the battery timer; the old Brother-Mac-tool pairing showed the
+  // USB timer as "never" and the printer, left on USB overnight, switched itself off.
+  it('reads auto power on = on, external power = 60 min, battery = never', () => {
+    const hexOf = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(' ')
+    const replies: Record<string, Uint8Array> = {
+      '1b 69 55 70 01': hwSettingsReply(0x01),
+      '1b 69 55 41 01 01': hwSettingsReply(0x00),
+      '1b 69 55 41 01 00': hwSettingsReply(0x06),
+    }
+    const s = new PrintSession(MODEL)
+    let now = 0
+    const sent: string[] = []
+    const drain = () => {
+      for (let b = s.pollTransmit(); b; b = s.pollTransmit()) sent.push(hexOf(b))
+    }
+    s.connect(now)
+    drain()
+    now += 100
+    s.handleTimeout(now)
+    drain()
+    s.handleInput(P710BT_STATUS_24MM, now)
+    expect(s.state()).toEqual({ state: 'ready' })
+    while (s.pollEvent()) {
+      /* drain */
+    }
+    sent.length = 0
+    s.readSettings(['auto-power-on', 'auto-power-off', 'auto-power-off-battery'], now)
+    const events: SessionEvent[] = []
+    for (let i = 0; i < 1000 && !events.some((e) => e.type === 'settings-read'); i++) {
+      const before = sent.length
+      drain()
+      const get = sent.slice(before).find((h) => h.startsWith('1b 69 55'))
+      if (get) s.handleInput(replies[get]!, now)
+      else {
+        now = s.pollTimeout() ?? now
+        s.handleTimeout(now)
+      }
+      for (let e = s.pollEvent(); e; e = s.pollEvent()) events.push(e)
+    }
+    expect(sent.filter((h) => h.startsWith('1b 69 55'))).toEqual(['1b 69 55 70 01', '1b 69 55 41 01 00', '1b 69 55 41 01 01'])
+    const read = events.find(isType('settings-read'))
+    expect(read?.report.map((r) => [r.id, r.text])).toEqual([
+      ['auto-power-on', 'on'],
+      ['auto-power-off', '60 min'],
+      ['auto-power-off-battery', 'never'],
+    ])
+    expect(read?.report[1]?.value).toEqual({ kind: 'minutes', minutes: 60 })
+    expect(read?.report[2]?.value).toEqual({ kind: 'minutes', minutes: 0 })
+    s.free()
+  })
+})

@@ -220,7 +220,9 @@ pub enum BatteryFormat {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SettingsProfile {
     /// PT-P710BT, PT-P715eBT: `ESC i U` replies are 32-byte status frames (type `F0`, value
-    /// at `st[30]`); Auto Power Off selector `01` = USB/AC, `00` = Li-ion.
+    /// at `st[30]`); Auto Power Off selector `00` = USB/AC adapter, `01` = battery, as on the
+    /// other profiles (hardware-verified on the PT-P710BT, PROTOCOL.md §8 #34; Brother's Mac
+    /// definition labels them the other way round; P715eBT inferred).
     P710bt,
     /// PT-P900W, PT-P950NW, PT-D800W, PT-E800W: Auto Power Off replies are 3 bytes
     /// (`01 00 v`); selector `00` = AC/DC, `01` = Li-ion; AC values are indices up to 12 h.

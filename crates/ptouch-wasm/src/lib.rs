@@ -45,11 +45,13 @@
 //! - Printer settings (docs/SETTINGS-PLAN.md §3): `settingsFor`, `PrintSession.readSettings` /
 //!   `writeSettings`, events `settings-read` / `settings-written`, state `settings`. Additive
 //!   beyond the plan: `SettingInfo.choiceLabels`, `SettingReport.text` (the core's per-model
-//!   display text, so the UI never re-implements it), `SettingInfo.selectorUnverified` (from
-//!   `SettingSpec::selector_unverified`: PT-P710BT timer selector in doubt, PROTOCOL.md §8 #34)
-//!   and `VirtualPrinter.settingByte` / `setSettingByte` / `commits` for tests.
+//!   display text, so the UI never re-implements it), `SettingInfo.brotherLabelSource` (from
+//!   `SettingSpec::label_source`: Setting Tool label or printer information report name,
+//!   PROTOCOL.md §8 #34) and `VirtualPrinter.settingByte` / `setSettingByte` / `commits` for
+//!   tests.
 //!
-//! No core (`crates/ptouch`) API was added or changed for these bindings.
+//! No core (`crates/ptouch`) API was added or changed for these bindings, except
+//! `SettingSpec::label_source` (shared with the CLI).
 
 pub mod codes;
 pub mod convert;

@@ -6,9 +6,9 @@
      Windows/Linux/ChromeOS, so `change` must not ask). A confirmed change is written, read back,
      and the outcome is shown (verified, still the old value + Try again (asks again), or the error
      + Read again). One change at a time; every control is disabled while a transaction runs or a
-     print is in progress, and focus returns to the row's control afterwards. Where it is
-     unverified which timer a setting controls (PT-P710BT, `SettingInfo.selectorUnverified`), rows
-     are named by Brother's label and a note says so. USB, Bluetooth and the virtual printer all go
+     print is in progress, and focus returns to the row's control afterwards. Under each row,
+     Brother's own name for the setting (the information report's name on the PT-P710BT timers,
+     `SettingInfo.brotherLabelSource`). USB, Bluetooth and the virtual printer all go
      through ConnectionManager → PrinterClient, so nothing here depends on the link. -->
 <script lang="ts">
   import { onDestroy, tick } from 'svelte'
@@ -34,7 +34,7 @@
   /** The connection's last read (ConnectionManager keeps it per connection). */
   const readings = $derived<SettingReport[]>(conn.settings ?? [])
   const reportOf = (sid: SettingId): SettingReport | undefined => readings.find((r) => r.id === sid)
-  const notes = $derived(settingsNotes(model, conn.transport?.kind, infos))
+  const notes = $derived(settingsNotes(model, conn.transport?.kind))
 
   type Phase = 'idle' | 'reading' | 'writing'
   let phase = $state<Phase>('idle')

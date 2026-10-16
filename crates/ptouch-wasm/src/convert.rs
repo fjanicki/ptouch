@@ -493,6 +493,10 @@ pub fn settings_info(model: &str) -> Vec<dto::SettingInfo> {
             Some(dto::SettingInfo {
                 id: setting_id_dto(spec.id)?,
                 brother_label: spec.brother_label.to_owned(),
+                brother_label_source: match spec.label_source {
+                    ptouch::settings::LabelSource::InfoReport => dto::LabelSource::InfoReport,
+                    _ => dto::LabelSource::SettingTool,
+                },
                 kind: match spec.kind() {
                     ptouch::settings::SettingKind::Toggle => dto::SettingKind::Toggle,
                     _ => dto::SettingKind::Duration,
@@ -507,7 +511,6 @@ pub fn settings_info(model: &str) -> Vec<dto::SettingInfo> {
                     .iter()
                     .map(|c| spec.display_value(c.value))
                     .collect(),
-                selector_unverified: spec.selector_unverified(),
             })
         })
         .collect()
@@ -1201,9 +1204,17 @@ mod tests {
         );
         assert_eq!(p710[0].kind, dto::SettingKind::Toggle);
         assert_eq!(p710[0].choice_labels, ["off", "on"]);
-        assert_eq!(p710[1].brother_label, "Auto Power Off");
-        assert!(!p710[0].selector_unverified);
-        assert!(p710[1].selector_unverified && p710[2].selector_unverified);
+        // Timer rows are named after the printer's information report (Brother's Mac tool
+        // labels are reversed on this model, PROTOCOL.md §8 #34).
+        assert_eq!(p710[0].brother_label, "Auto Power On");
+        assert_eq!(p710[0].brother_label_source, dto::LabelSource::SettingTool);
+        assert_eq!(p710[1].brother_label, "AutoPowerOff(adp)");
+        assert_eq!(p710[2].brother_label, "AutoPowerOff(Bat)");
+        assert!(
+            p710[1..]
+                .iter()
+                .all(|i| i.brother_label_source == dto::LabelSource::InfoReport)
+        );
         assert_eq!(p710[1].kind, dto::SettingKind::Duration);
         assert_eq!(p710[1].choices.len(), 7);
         assert_eq!(
@@ -1219,7 +1230,11 @@ mod tests {
             p910[1].choice_labels.last().map(String::as_str),
             Some("12 h")
         );
-        assert!(p910.iter().all(|i| !i.selector_unverified));
+        assert_eq!(p910[1].brother_label, "Auto Power Off (USB Connection)");
+        assert!(
+            p910.iter()
+                .all(|i| i.brother_label_source == dto::LabelSource::SettingTool)
+        );
         assert!(settings_info("PT-E560BT").is_empty());
         assert!(settings_info("PT-NOPE").is_empty());
     }
