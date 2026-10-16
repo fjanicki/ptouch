@@ -48,13 +48,13 @@ jobs:
       - name: build wasm package (release)
         run: npm run wasm
         working-directory: web
-      - name: wasm size budget (150 KB gzipped)
+      - name: wasm size budget (176 KB gzipped)
         working-directory: web/src/wasm/pkg
         run: |
           size=$(gzip -9 -c ptouch_bg.wasm | wc -c)
           echo "ptouch_bg.wasm: $(wc -c < ptouch_bg.wasm) B raw, ${size} B gzipped"
-          echo "### ptouch_bg.wasm: ${size} B gzipped (budget 153600)" >> "$GITHUB_STEP_SUMMARY"
-          test "$size" -le 153600
+          echo "### ptouch_bg.wasm: ${size} B gzipped (budget 180224)" >> "$GITHUB_STEP_SUMMARY"
+          test "$size" -le 180224
       - name: svelte-check
         run: npm run check
         working-directory: web

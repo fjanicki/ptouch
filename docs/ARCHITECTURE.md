@@ -479,8 +479,11 @@ pub fn encode_job(model_code: u8, width_mm: u8, pages: Vec<Bitmap1>, opts: Ts<Jo
 #[wasm_bindgen] pub struct VirtualPrinter { /* wraps ptouch::VirtualPrinter for MockTransport */ }
 ```
 
-Size budget: the prototype with tsify + serde-wasm-bindgen is 70.4 KB (31.8 KB gzip); ≤ 150 KB gzip
-total wasm is the ceiling. If it grows, drop serde on hot paths and move message formatting to TS.
+Size budget: the prototype with tsify + serde-wasm-bindgen is 70.4 KB (31.8 KB gzip); ≤ 176 KB gzip
+total wasm is the ceiling (CI `web.yml`). It was 150 KB until printer settings (session state machine,
+VirtualPrinter emulation, DTOs) took the build from 151.6 to 168.1 KB gzip; `opt-level = "z"` only
+reached 154.7 KB and slows rendering, so the budget was raised instead. If it grows again, drop serde
+on hot paths and move message formatting to TS.
 
 ### 4.3 `web/src/printer` — transport layer (TypeScript)
 
