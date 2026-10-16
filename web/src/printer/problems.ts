@@ -2,7 +2,7 @@
 // actionable, user-facing Problem. The UI (W4) only renders Problems; all copy lives here so
 // hints stay consistent between the connect panel, print bar and diagnostics page.
 import type { PrinterErrorInfo, PrinterStatus } from '../wasm'
-import { LinkLostError, NotConnectedError, OpenFailedError, SessionFailedError, WrongPortError, errorText } from './errors'
+import { LinkLostError, NotConnectedError, OpenFailedError, SessionFailedError, UsbOpenError, WrongPortError, errorText } from './errors'
 import type { ConnectPath, SupportInfo } from './support'
 import type { TransportInfo } from './transport'
 
@@ -14,6 +14,8 @@ export type ProblemId =
   | 'no-reply-firefox' // Firefox OS port on macOS: dead after first use → use Chrome/Edge or re-pair
   | 'link-lost' // read/write failed, disconnect event, printer powered off
   | 'permission-denied' // Bluetooth TCC / SecurityError
+  | 'usb-busy' // claimInterface failed: Linux usblp driver (no AutomaticUsbDetach), P-touch Editor, another tab
+  | 'usb-access' // WebUSB open() SecurityError: Linux udev permissions
   | 'unsupported-browser'
   | 'no-media'
   | 'wrong-media' // loaded tape ≠ design tape (offer "switch design to N mm")
@@ -45,6 +47,8 @@ export interface Problem {
   /** One or two sentences: what happened and what to do. Plain text. */
   detail: string
   actions: ProblemAction[]
+  /** A flag, command or config line the detail refers to (rendered as selectable code). */
+  command?: string
   /** Raw error code / message for "copy diagnostics". */
   technical?: string
   printerErrors?: PrinterErrorInfo[]
@@ -64,6 +68,10 @@ export interface ProblemContext {
 }
 
 const CHROME_EDGE = 'Chrome or Edge'
+/** Chromium only detaches kernel drivers (usblp) from a claimed interface on Linux with this. */
+export const LINUX_USB_DETACH_FLAG = '--enable-features=AutomaticUsbDetach'
+/** udev rule giving the logged-in user access to Brother USB devices (Linux). */
+export const LINUX_USB_UDEV_RULE = 'SUBSYSTEM=="usb", ATTR{idVendor}=="04f9", TAG+="uaccess"'
 
 /** `true` for a cancelled chooser or operation (NotFoundError / AbortError / CANCELLED): silently ignore. */
 export function isUserCancel(error: unknown): boolean {
@@ -108,6 +116,8 @@ function mm(n: number | undefined): string {
 }
 
 const isMacOsPort = (ctx: ProblemContext) => ctx.transport?.kind === 'serial-os-port' && ctx.support.platform === 'mac'
+/** USB failures: retry, or fall back to Bluetooth where this browser offers it. */
+const usbFallback = (ctx: ProblemContext): ProblemAction[] => (ctx.support.paths.includes('bluetooth') ? ['retry', 'connect-bluetooth', 'dismiss'] : ['retry', 'dismiss'])
 
 /** Problem for one decoded printer error id (from a status frame or a failed job). */
 function printerProblem(errors: PrinterErrorInfo[], ctx: ProblemContext): Problem {
@@ -211,6 +221,7 @@ function openFailed(ctx: ProblemContext, cause: unknown): Problem {
       actions: ctx.support.bluetoothFilter ? ['retry', 'connect-bluetooth', 'open-diagnostics'] : ['retry', 'open-diagnostics', 'dismiss'],
     }
   }
+  if (kind === 'usb' && /claim/i.test(msg)) return usbBusy(ctx)
   if (kind === 'usb') {
     return {
       id: 'open-failed',
@@ -220,7 +231,7 @@ function openFailed(ctx: ProblemContext, cause: unknown): Problem {
         ctx.support.platform === 'windows'
           ? 'Windows’ printer driver holds the device, so the browser can’t use it. Connect via Bluetooth instead.'
           : 'Another app (such as P-touch Editor or the system print queue) may be using it. Close it, unplug and replug the cable, then try again.',
-      actions: ctx.support.paths.includes('bluetooth') ? ['retry', 'connect-bluetooth', 'dismiss'] : ['retry', 'dismiss'],
+      actions: usbFallback(ctx),
     }
   }
   return {
@@ -232,7 +243,56 @@ function openFailed(ctx: ProblemContext, cause: unknown): Problem {
   }
 }
 
+/** The printer interface is held by someone else (on Linux: the kernel's usblp driver). */
+function usbBusy(ctx: ProblemContext): Problem {
+  if (ctx.support.platform === 'linux')
+    return {
+      id: 'usb-busy',
+      severity: 'error',
+      title: 'Linux’s printer driver is holding the printer',
+      detail:
+        'The kernel’s usblp driver claims USB printers, and Chrome on Linux doesn’t take the printer from it unless started with the flag below. Quit the browser completely and relaunch it with that flag (Arch: add it to ~/.config/chromium-flags.conf or chrome-flags.conf), or block the driver with “blacklist usblp” in /etc/modprobe.d/ and run “sudo rmmod usblp”.',
+      command: LINUX_USB_DETACH_FLAG,
+      actions: usbFallback(ctx),
+    }
+  return {
+    id: 'usb-busy',
+    severity: 'error',
+    title: 'The USB printer is in use',
+    detail:
+      ctx.support.platform === 'windows'
+        ? 'Windows’ printer driver holds the device, so the browser can’t use it. Connect via Bluetooth instead.'
+        : 'Another app (such as P-touch Editor, the system print queue, the ptouch command-line tool or another tab) is using it. Close it, unplug and replug the cable, then try again.',
+    actions: usbFallback(ctx),
+  }
+}
+
+/** WebUSB open() was refused by the OS (on Linux: no write access to the USB device node). */
+function usbAccess(ctx: ProblemContext): Problem {
+  if (ctx.support.platform === 'linux')
+    return {
+      id: 'usb-access',
+      severity: 'error',
+      title: 'No permission to open the USB printer',
+      detail:
+        'Your user can’t open the printer’s USB device. Add the udev rule below to /etc/udev/rules.d/60-ptouch.rules, run “sudo udevadm control --reload” and replug the printer, then try again.',
+      command: LINUX_USB_UDEV_RULE,
+      actions: usbFallback(ctx),
+    }
+  return {
+    id: 'usb-access',
+    severity: 'error',
+    title: 'Access to the USB printer was denied',
+    detail:
+      ctx.support.platform === 'windows'
+        ? 'Windows’ printer driver holds the device, so the browser can’t use it. Connect via Bluetooth instead.'
+        : 'The system refused access to the printer. Close other apps using it, unplug and replug the cable, then try again.',
+    actions: usbFallback(ctx),
+  }
+}
+
 function permissionDenied(ctx: ProblemContext): Problem {
+  if (ctx.transport?.kind === 'usb') return usbAccess(ctx)
   const mac = ctx.support.platform === 'mac'
   return {
     id: 'permission-denied',
@@ -286,6 +346,7 @@ function classify(error: unknown, ctx: ProblemContext): Problem {
       actions: [...(ctx.support.paths.includes('usb') ? (['connect-usb'] as const) : []), ...(ctx.support.paths.includes('bluetooth') ? (['connect-bluetooth'] as const) : []), 'dismiss'],
     }
   }
+  if (error instanceof UsbOpenError) return error.reason === 'interface-busy' ? usbBusy(ctx) : usbAccess(ctx)
   if (error instanceof OpenFailedError) return openFailed(ctx, error.cause)
   if (error instanceof LinkLostError) return linkLost(ctx)
   if (error instanceof NotConnectedError) return { id: 'link-lost', severity: 'warning', title: 'No printer connected', detail: 'Connect a printer first.', actions: ctx.support.paths.includes('bluetooth') ? ['connect-bluetooth', 'dismiss'] : ['dismiss'] }

@@ -14,6 +14,7 @@
     MockTransport,
     WebSerialTransport,
     WebUsbTransport,
+    LINUX_USB_DETACH_FLAG,
     describeProblem,
     isUserCancel,
     toHex,
@@ -152,7 +153,7 @@
       if (isUserCancel(e)) probeMessage = 'No device chosen.'
       else {
         const p = describeProblem(e, { support: studio.support, stage: 'open' })
-        probeMessage = `${p.title}. ${p.detail}`
+        probeMessage = `${p.title}. ${p.detail}${p.command ? ` ${p.command}` : ''}`
       }
     } finally {
       await disposeTransport(transport).catch(() => {})
@@ -347,7 +348,7 @@
         <dt>Browser</dt><dd>{studio.support.browser}{studio.support.version ? ` ${studio.support.version}` : ''} · {studio.support.engine} · {studio.support.platform}</dd>
         <dt>Web Serial</dt><dd>{studio.support.serial ? 'available' : 'not available'}</dd>
         <dt>Bluetooth filter</dt><dd>{yesNo(studio.support.bluetoothFilter)}</dd>
-        <dt>WebUSB</dt><dd>{studio.support.usb ? (studio.support.usbHidden ? 'available, hidden on Windows' : 'available') : 'not available'}</dd>
+        <dt>WebUSB</dt><dd>{studio.support.usb ? (studio.support.usbHidden ? 'available, hidden on Windows' : studio.support.platform === 'linux' ? `available (needs ${LINUX_USB_DETACH_FLAG} or usblp blacklisted)` : 'available') : 'not available'}</dd>
         <dt>Brave</dt><dd>{yesNo(studio.support.brave)}</dd>
         <dt>Can print</dt><dd>{yesNo(studio.support.canPrint)}</dd>
         <dt>Connect paths</dt><dd>{studio.support.paths.map((p) => PATH_LABELS[p]).join(', ')}</dd>

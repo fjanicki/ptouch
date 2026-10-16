@@ -57,7 +57,7 @@ Pair the printer in your system's Bluetooth settings first. Then choose a connec
 | `--tcp HOST[:PORT]` | a network printer (raw TCP, port 9100) |
 | `--device ENDPOINT` | `serial:/dev/cu.PT-P710BTxxxx`, `bt:…`, `usb:`, `tcp:host`, `virtual:24` |
 
-`$PTOUCH_DEVICE` sets a default endpoint. With no flag and no variable, `ptouch` uses the printer it discovers, if there is exactly one (`ptouch list` shows the candidates). On macOS, native Bluetooth needs your terminal app to be allowed Bluetooth access (System Settings → Privacy & Security → Bluetooth).
+`$PTOUCH_DEVICE` sets a default endpoint. With no flag and no variable, `ptouch` uses the printer it discovers, if there is exactly one (`ptouch list` shows the candidates). On macOS, native Bluetooth needs your terminal app to be allowed Bluetooth access (System Settings → Privacy & Security → Bluetooth). On Linux, `--usb` detaches the kernel's `usblp` driver itself and hands it back on exit. It only needs write access to the USB device (the `lp` group, or the udev rule under *USB on Linux* below).
 
 `PT-P710BTxxxx` stands for your printer's device name; the last four characters differ per printer.
 
@@ -110,7 +110,7 @@ Exit codes: 0 on success, 1 on a printer, transport or rendering error (with a o
 
 | Browser | Printing |
 |---|---|
-| Chrome / Edge 117+ on macOS, Windows, Linux, ChromeOS | Bluetooth (Web Serial), plus USB on macOS/Linux/ChromeOS |
+| Chrome / Edge 117+ on macOS, Windows, Linux, ChromeOS | Bluetooth (Web Serial), plus USB on macOS/Linux/ChromeOS (Linux needs one browser flag, see *USB on Linux* below) |
 | Chrome on Android 138+ | Bluetooth |
 | Firefox 151+ | Serial ports only. On macOS the `/dev/cu.*` port of a Bluetooth printer stops answering after its first use, so use Chrome or Edge there |
 | Safari, any browser on iOS | Not possible (no Web Serial). You can still design labels and send them to a computer to print (see *On an iPhone* below) |
@@ -122,6 +122,13 @@ To print over Bluetooth:
 3. Design the label and click **Print**. Tape width and colours are read from the printer.
 
 On macOS the first connection after the printer has been idle often fails while it wakes up (the browser reports "Failed to open serial port" after about 10 s). The studio retries automatically and shows *Waking printer…*; the second attempt usually connects in under half a second. Chrome remembers the printer, so later visits reconnect without asking.
+
+**USB on Linux.** The kernel's `usblp` driver claims the printer as soon as it is plugged in, and Chrome, Chromium and Edge on Linux don't take a USB interface away from a kernel driver by default. The browser lists the printer, but connecting fails with "Unable to claim interface". The studio explains this when it happens. Fix it in either of two ways:
+
+- Start the browser with `--enable-features=AutomaticUsbDetach`. The browser then detaches `usblp` while it uses the printer and gives it back afterwards. Quit every browser window first. On Arch-based systems you can make this permanent by adding the flag on its own line to `~/.config/chromium-flags.conf` (Chromium) or `~/.config/chrome-flags.conf` (Google Chrome).
+- Or stop the kernel driver from loading: `echo 'blacklist usblp' | sudo tee /etc/modprobe.d/no-usblp.conf && sudo rmmod usblp`. CUPS doesn't need `usblp`, because its USB backend uses libusb.
+
+The browser also needs write access to the printer's `/dev/bus/usb/…` node. Most distributions give it to members of the `lp` group. Otherwise, add `SUBSYSTEM=="usb", ATTR{idVendor}=="04f9", TAG+="uaccess"` to `/etc/udev/rules.d/60-ptouch.rules`, run `sudo udevadm control --reload` and replug the printer.
 
 **What you can make.**
 

@@ -74,7 +74,7 @@ fact-check pass against Chromium/Gecko source, chromestatus, MDN BCD 8.1.5 and t
 | macOS + Safari | ❌ | ❌ |
 | **Windows + Chrome/Edge ≥117** | ✅ direct RFCOMM (recommended); fallback outgoing "Standard Serial over Bluetooth link (COMn)" | ❌ by default (`usbprint.sys`); ✅ only after WinUSB swap via Zadig (breaks Windows printing) |
 | Windows + Firefox ≥151 | ✅ COM port | ❌ |
-| **Linux + Chrome ≥117** | ✅ direct RFCOMM via BlueZ; fallback `/dev/rfcommN` (`rfcomm bind`, `dialout` group) | ✅ Chromium auto-detaches `usblp`; needs a udev `uaccess` rule |
+| **Linux + Chrome ≥117** | ✅ direct RFCOMM via BlueZ; fallback `/dev/rfcommN` (`rfcomm bind`, `dialout` group) | ⚠️ only with `--enable-features=AutomaticUsbDetach` (or `usblp` blacklisted): `usblp` owns interface 0 and Chromium detaches kernel drivers on Linux only behind that feature, off by default (on by default on Android). Without it `claimInterface` → `NetworkError` "Unable to claim interface" (studio problem `usb-busy`). Also needs write access to the usbfs node (`lp` group or a udev `uaccess` rule) |
 | Linux + Firefox ≥151 | ✅ `/dev/rfcommN` only | ❌ |
 | ChromeOS | ✅ direct RFCOMM | probably ✅ (**UNCERTAIN**) |
 | **Android Chrome ≥138** | ✅ direct RFCOMM only (pair in Android settings first). `SerialPort.connected` and connect/disconnect events are **not** exposed on Android | ✅ (OTG) |

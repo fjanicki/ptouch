@@ -1,9 +1,9 @@
 // W2 — detectSupport() for UA fixtures: Chrome mac/win/linux/android, Edge, Firefox 151/156,
 // Safari macOS/iOS, Brave; describeProblem() / describeStatus() / describeSupport() tables.
 import { describe, expect, it } from 'vitest'
-import { LinkLostError, NotConnectedError, OpenFailedError, SessionFailedError } from '../../../src/printer/errors'
+import { LinkLostError, NotConnectedError, OpenFailedError, SessionFailedError, UsbOpenError } from '../../../src/printer/errors'
 import { fromHex, PacketLog, toHex } from '../../../src/printer/packetlog'
-import { describeProblem, describeStatus, describeSupport, isUserCancel, type ProblemContext, type ProblemId } from '../../../src/printer/problems'
+import { LINUX_USB_DETACH_FLAG, LINUX_USB_UDEV_RULE, describeProblem, describeStatus, describeSupport, isUserCancel, type ProblemContext, type ProblemId } from '../../../src/printer/problems'
 import { detectSupport, type NavigatorLike } from '../../../src/printer/support'
 import type { TransportInfo } from '../../../src/printer/transport'
 import { SPP_UUID } from '../../../src/printer/webserial'
@@ -119,6 +119,7 @@ describe('describeProblem', () => {
   const chrome = d({ userAgent: UA.chromeMac, serial, usb })
   const firefox = d({ userAgent: UA.firefoxMac156, serial })
   const windows = d({ userAgent: UA.chromeWin, serial, usb }, { usbOnWindows: true })
+  const linux = d({ userAgent: UA.chromeLinux, serial, usb })
   const rfcomm: TransportInfo = { kind: 'serial-rfcomm', label: 'Bluetooth printer', persistentGrant: true, bluetoothServiceClassId: SPP_UUID }
   const osPort: TransportInfo = { kind: 'serial-os-port', label: 'Serial port', persistentGrant: false }
   const usbInfo: TransportInfo = { kind: 'usb', label: 'USB 04f9:20af', persistentGrant: true }
@@ -131,8 +132,11 @@ describe('describeProblem', () => {
     ['bluetooth chooser cancelled → hint choose-port', dom('NotFoundError'), { support: chrome, stage: 'open', path: 'bluetooth' }, 'cancelled', 'choose-port'],
     ['open retries exhausted (RFCOMM)', new OpenFailedError(3, dom('NetworkError', 'Failed to open serial port.')), { support: chrome, stage: 'open', transport: rfcomm }, 'open-failed', 'choose-port'],
     ['open failed on macOS OS port → port in use', new OpenFailedError(3, dom('NetworkError')), { support: chrome, stage: 'open', transport: osPort }, 'port-in-use', 'connect-bluetooth'],
-    ['USB open failed', dom('NetworkError', 'Unable to claim interface.'), { support: chrome, stage: 'open', transport: usbInfo }, 'open-failed'],
-    ['USB on Windows', dom('SecurityError'), { support: windows, stage: 'open', transport: usbInfo }, 'permission-denied'],
+    ['USB claim failed (raw)', dom('NetworkError', 'Unable to claim interface.'), { support: chrome, stage: 'open', transport: usbInfo }, 'usb-busy', 'connect-bluetooth'],
+    ['USB claim failed (no transport in context)', new UsbOpenError('interface-busy', dom('NetworkError', 'Unable to claim interface.')), { support: chrome, stage: 'open' }, 'usb-busy', 'retry'],
+    ['USB other open failure', dom('NetworkError', 'Failed to open the device.'), { support: chrome, stage: 'open', transport: usbInfo }, 'open-failed'],
+    ['USB access denied', new UsbOpenError('access-denied', dom('SecurityError', 'Access denied.')), { support: chrome, stage: 'open' }, 'usb-access'],
+    ['USB on Windows', dom('SecurityError'), { support: windows, stage: 'open', transport: usbInfo }, 'usb-access', 'connect-bluetooth'],
     ['Bluetooth permission (TCC)', dom('SecurityError'), { support: chrome, stage: 'open' }, 'permission-denied'],
     ['Firefox site permission denied', dom('NotAllowedError'), { support: firefox, stage: 'open' }, 'permission-denied'],
     ['port already open elsewhere', dom('InvalidStateError', 'The port is already open.'), { support: chrome, stage: 'open' }, 'port-in-use'],
@@ -169,6 +173,25 @@ describe('describeProblem', () => {
       if (action) expect(p.actions).toContain(action)
     })
   }
+
+  it('Linux USB claim failure explains usblp and the AutomaticUsbDetach flag', () => {
+    const p = describeProblem(new UsbOpenError('interface-busy', dom('NetworkError', 'Unable to claim interface.')), { support: linux, stage: 'open', path: 'usb' })
+    expect(p).toMatchObject({ id: 'usb-busy', command: LINUX_USB_DETACH_FLAG })
+    expect(p.detail).toMatch(/usblp/)
+    expect(p.technical).toMatch(/Unable to claim interface/)
+    const mac = describeProblem(new UsbOpenError('interface-busy', dom('NetworkError')), { support: chrome, stage: 'open' })
+    expect(mac.command).toBeUndefined()
+    expect(mac.detail).toMatch(/P-touch Editor/)
+  })
+
+  it('Linux USB access denied gives the udev rule', () => {
+    const raw = describeProblem(dom('SecurityError', 'Access denied.'), { support: linux, stage: 'open', transport: usbInfo })
+    const typed = describeProblem(new UsbOpenError('access-denied', dom('SecurityError', 'Access denied.')), { support: linux, stage: 'open' })
+    for (const p of [raw, typed]) {
+      expect(p).toMatchObject({ id: 'usb-access', command: LINUX_USB_UDEV_RULE })
+      expect(p.detail).toMatch(/udev/)
+    }
+  })
 
   it('wrong-media copy names both widths', () => {
     const p = describeProblem(pe('MEDIA_MISMATCH'), { support: chrome, stage: 'print', status: { mediaWidthMm: 12 } as PrinterStatus, designWidthMm: 24 })

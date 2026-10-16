@@ -5,7 +5,7 @@
 // One transferIn(IN, 64) loop feeds 'data'; only close() ends it (an abandoned transferIn
 // would swallow the next status frame). transferOut may block for the whole print because
 // the printer back-pressures USB: no write timeout, and a partially sent job is never retried.
-import { LinkLostError, abortError, isDomError } from './errors'
+import { LinkLostError, UsbOpenError, abortError, isDomError } from './errors'
 import { sleep } from './retry'
 import { WRITE_TUNING, realClock, type Clock, type OpenOptions, type Transport, type TransportEvent, type TransportInfo, type WriteTuning } from './transport'
 
@@ -130,11 +130,21 @@ export class WebUsbTransport implements Transport {
     if (this.#loop) await this.#loop
     opts.onProgress?.({ attempt: 1, of: 1 })
     if (opts.signal?.aborted) throw abortError()
-    if (!this.device.opened) await this.device.open()
+    if (!this.device.opened) {
+      try {
+        await this.device.open()
+      } catch (e) {
+        throw isDomError(e, 'SecurityError') ? new UsbOpenError('access-denied', e) : e
+      }
+    }
     try {
       if (this.device.configuration === null) await this.device.selectConfiguration(1)
       this.#endpoints = findEndpoints(this.device.configuration)
-      await this.device.claimInterface(this.#endpoints.iface)
+      try {
+        await this.device.claimInterface(this.#endpoints.iface)
+      } catch (e) {
+        throw isDomError(e, 'NetworkError') ? new UsbOpenError('interface-busy', e) : e
+      }
     } catch (e) {
       await this.device.close().catch(() => {})
       throw e

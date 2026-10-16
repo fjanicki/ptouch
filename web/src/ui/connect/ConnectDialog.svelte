@@ -4,7 +4,7 @@
      Shows openProgress ("Waking printer… attempt 2 of 3"), the connected printer, and Problems. -->
 <script lang="ts">
   import { tick, untrack } from 'svelte'
-  import { describeSupport, type ConnectPath } from '../../printer'
+  import { LINUX_USB_DETACH_FLAG, describeSupport, type ConnectPath } from '../../printer'
   import Icon from '../common/Icon.svelte'
   import ProblemBanner from '../common/ProblemBanner.svelte'
   import { getStudio } from '../state/studio.svelte'
@@ -99,7 +99,17 @@
         ? 'Shows every serial port. Pick “PT-P710BT…” or “cu.PT-P710BT…” if Bluetooth shows nothing.'
         : 'Pair the printer in system settings first, then pick “cu.PT-P710BT…” (macOS) or its COM port.',
     },
-    { path: 'usb', title: 'USB cable', icon: 'usb', recommended: usbFirst, hint: 'Most reliable: answers instantly, no pairing or waking. Close P-touch Editor first.' },
+    {
+      path: 'usb',
+      title: 'USB cable',
+      icon: 'usb',
+      recommended: usbFirst,
+      // Linux: the kernel's usblp driver holds the printer unless Chromium may detach it (problems.ts usb-busy).
+      hint:
+        studio.support.platform === 'linux'
+          ? `Most reliable: answers instantly, no pairing or waking. On Linux, start the browser with ${LINUX_USB_DETACH_FLAG} first.`
+          : 'Most reliable: answers instantly, no pairing or waking. Close P-touch Editor first.',
+    },
     { path: 'virtual', title: 'No printer', icon: 'monitor', hint: 'Design and test with a virtual PT-P710BT.' },
   ])
   // Shown in the order support.paths recommends (USB first where it is the dependable path).

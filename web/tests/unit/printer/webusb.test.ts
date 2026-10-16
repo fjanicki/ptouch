@@ -1,7 +1,7 @@
 // W2 — WebUsbTransport against a UsbDeviceLike fake: open sequence, endpoint discovery, the
 // single transferIn loop, chunked transferOut, close cancelling the pending read, unplug → lost.
 import { describe, expect, it } from 'vitest'
-import { LinkLostError } from '../../../src/printer/errors'
+import { LinkLostError, UsbOpenError } from '../../../src/printer/errors'
 import type { TransportEvent } from '../../../src/printer/transport'
 import { BROTHER_VENDOR_ID, WebUsbTransport, type UsbDeviceLike, type UsbLike } from '../../../src/printer/webusb'
 import { P710BT_STATUS_24MM } from '../../helpers/wasm'
@@ -19,9 +19,12 @@ class FakeUsbDevice implements UsbDeviceLike {
   out: { ep: number; data: Uint8Array }[] = []
   pendingIn: InResolver[] = []
   outError: unknown = null
+  openError: unknown = null
+  claimError: unknown = null
 
   async open() {
     this.calls.push('open')
+    if (this.openError) throw this.openError
     this.opened = true
   }
   async close() {
@@ -56,6 +59,7 @@ class FakeUsbDevice implements UsbDeviceLike {
   }
   async claimInterface(n: number) {
     this.calls.push(`claim:${n}`)
+    if (this.claimError) throw this.claimError
   }
   async releaseInterface(n: number) {
     this.calls.push(`release:${n}`)
@@ -90,6 +94,32 @@ describe('WebUsbTransport', () => {
     expect(dev.calls).toEqual(['open', 'config:1', 'claim:0', 'in:1:64'])
     expect(t.isOpen).toBe(true)
     await t.close()
+  })
+
+  it('claim NetworkError (Linux usblp) → UsbOpenError interface-busy, device closed', async () => {
+    const dev = new FakeUsbDevice()
+    const cause = new DOMException('Unable to claim interface.', 'NetworkError')
+    dev.claimError = cause
+    const t = new WebUsbTransport(dev)
+    const err = await t.open().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(UsbOpenError)
+    expect(err).toMatchObject({ reason: 'interface-busy', cause })
+    expect(dev.calls).toEqual(['open', 'config:1', 'claim:0', 'close'])
+    expect(t.isOpen).toBe(false)
+  })
+
+  it('open SecurityError (no udev access) → UsbOpenError access-denied', async () => {
+    const dev = new FakeUsbDevice()
+    dev.openError = new DOMException('Access denied.', 'SecurityError')
+    const err = await new WebUsbTransport(dev).open().catch((e: unknown) => e)
+    expect(err).toMatchObject({ name: 'UsbOpenError', reason: 'access-denied' })
+  })
+
+  it('other claim errors pass through unchanged', async () => {
+    const dev = new FakeUsbDevice()
+    const cause = new DOMException('The device was disconnected.', 'NotFoundError')
+    dev.claimError = cause
+    expect(await new WebUsbTransport(dev).open().catch((e: unknown) => e)).toBe(cause)
   })
 
   it('forwards IN data and keeps exactly one transferIn pending', async () => {

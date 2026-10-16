@@ -58,6 +58,24 @@ export class WrongPortError extends Error {
   }
 }
 
+/**
+ * WebUSB could not take the printer (cause = the platform error):
+ * - 'interface-busy': claimInterface() → NetworkError "Unable to claim interface". On Linux the
+ *   kernel's usblp driver owns interface 0 and Chromium only detaches it with
+ *   --enable-features=AutomaticUsbDetach (off by default on Linux); elsewhere another app
+ *   (P-touch Editor, a print queue, another tab) holds it.
+ * - 'access-denied': open() → SecurityError "Access denied" (Linux: the user can't write the
+ *   /dev/bus/usb node, i.e. no udev rule).
+ */
+export class UsbOpenError extends Error {
+  override readonly name = 'UsbOpenError'
+  readonly reason: 'interface-busy' | 'access-denied'
+  constructor(reason: 'interface-busy' | 'access-denied', cause: unknown) {
+    super(`${reason === 'interface-busy' ? 'Could not claim the USB printer interface' : 'Access to the USB printer was denied'}: ${errorText(cause)}`, { cause })
+    this.reason = reason
+  }
+}
+
 /** Operation needs a connected, idle printer. */
 export class NotConnectedError extends Error {
   override readonly name = 'NotConnectedError'

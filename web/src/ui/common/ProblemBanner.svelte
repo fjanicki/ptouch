@@ -25,6 +25,7 @@
   <div class="body">
     <strong class="title">{problem.title}</strong>
     <p class="detail">{problem.detail}</p>
+    {#if problem.command}<code class="cmd">{problem.command}</code>{/if}
     {#if problem.printerErrors?.length}
       <ul class="errs">
         {#each problem.printerErrors as e (e.id)}<li>{e.message}</li>{/each}
@@ -84,6 +85,16 @@
   .detail {
     margin: 2px 0 0;
     color: var(--text);
+  }
+  .cmd {
+    display: block;
+    margin-top: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-s);
+    background: var(--surface);
+    font: 12px/1.4 var(--font-mono);
+    word-break: break-all;
+    user-select: all;
   }
   .errs {
     margin: var(--space-1) 0 0;

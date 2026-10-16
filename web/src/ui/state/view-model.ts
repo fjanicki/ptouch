@@ -53,7 +53,7 @@ export function openProgressText(p: OpenProgress | null | undefined, state?: Cli
 }
 
 /** Problem ids of a connection that never got as far as talking to the printer. */
-const NEVER_CONNECTED: ReadonlySet<string> = new Set(['open-failed', 'wrong-port', 'port-in-use', 'permission-denied', 'unsupported-browser'])
+const NEVER_CONNECTED: ReadonlySet<string> = new Set(['open-failed', 'wrong-port', 'port-in-use', 'permission-denied', 'usb-busy', 'usb-access', 'unsupported-browser'])
 
 /** `true` when the snapshot's error is a failed connect (nothing was ever opened / talked to). */
 export function connectFailed(conn: Pick<ConnectionSnapshot, 'state' | 'problem' | 'status'>): boolean {
