@@ -5,8 +5,9 @@
 use ptouch::encode::CutMode as CoreCutMode;
 use ptouch::status::{Battery, PowerSource};
 use ptouch::{
-    Compression, Dither, Event, MediaType, ModelProfile, Notification, Phase, PrinterError, Status,
-    StatusType as CoreStatusType, TapeSpec, TimeoutKind as CoreTimeoutKind, ToneAdjust,
+    Compression, Dither, Event, MediaType, ModelProfile, Notification, Phase, PrinterError,
+    SettingId, SettingReading, SettingReport, SettingValue, Status, StatusType as CoreStatusType,
+    TapeSpec, TimeoutKind as CoreTimeoutKind, ToneAdjust,
 };
 
 use crate::dto;
@@ -316,6 +317,9 @@ pub fn error_info(e: &ptouch::Error) -> dto::ErrorInfo {
         ptouch::Error::Timeout(CoreTimeoutKind::Handshake) => Some(dto::TimeoutKind::Handshake),
         ptouch::Error::Timeout(CoreTimeoutKind::Status) => Some(dto::TimeoutKind::Status),
         ptouch::Error::Timeout(CoreTimeoutKind::Page { .. }) => Some(dto::TimeoutKind::Page),
+        ptouch::Error::Timeout(CoreTimeoutKind::SettingsReply) => {
+            Some(dto::TimeoutKind::SettingsReply)
+        }
         _ => None,
     };
     dto::ErrorInfo {
@@ -327,9 +331,24 @@ pub fn error_info(e: &ptouch::Error) -> dto::ErrorInfo {
 }
 
 /// Core session event → DTO (`None` for a future core variant the bindings do not know yet).
+/// Settings reports get the generic display text; [`event_dto_for`] applies the model's.
 #[must_use]
 pub fn event_dto(e: &Event) -> Option<dto::SessionEvent> {
+    event_dto_for(e, None)
+}
+
+/// [`event_dto`] with the session's model, for model-specific setting display text.
+#[must_use]
+pub fn event_dto_for(e: &Event, profile: Option<&ModelProfile>) -> Option<dto::SessionEvent> {
+    let reports = |r: &[SettingReport]| -> Vec<dto::SettingReport> {
+        r.iter().map(|r| setting_report_dto(profile, r)).collect()
+    };
     Some(match e {
+        Event::SettingsRead(r) => dto::SessionEvent::SettingsRead { report: reports(r) },
+        Event::SettingsWritten { report, verified } => dto::SessionEvent::SettingsWritten {
+            report: reports(report),
+            verified: *verified,
+        },
         Event::Status(s) => dto::SessionEvent::Status {
             status: status_dto(s),
         },
@@ -364,6 +383,7 @@ pub fn state_dto(s: ptouch::SessionState) -> dto::SessionState {
         S::Printing { page, of } => dto::SessionState::Printing { page, of },
         S::Draining => dto::SessionState::Draining,
         S::Recovering => dto::SessionState::Recovering,
+        S::Settings => dto::SessionState::Settings,
         _ => dto::SessionState::Failed,
     }
 }
@@ -402,7 +422,118 @@ pub fn session_config(d: &dto::SessionConfig) -> ptouch::SessionConfig {
     if let Some(v) = d.phase_frame_wait_ms {
         c.phase_frame_wait_ms = ms(v);
     }
+    if let Some(v) = d.settings_drain_ms {
+        c.settings_drain_ms = ms(v);
+    }
+    if let Some(v) = d.settings_gap_ms {
+        c.settings_gap_ms = ms(v);
+    }
+    if let Some(v) = d.settings_reply_timeout_ms {
+        c.settings_reply_timeout_ms = ms(v);
+    }
+    if let Some(v) = d.settings_settle_ms {
+        c.settings_settle_ms = ms(v);
+    }
     c
+}
+
+// ---------------------------------------------------------------------------------------------
+// Printer settings
+// ---------------------------------------------------------------------------------------------
+
+/// Core setting id → DTO (`None` for a future core id the bindings do not know yet).
+#[must_use]
+pub fn setting_id_dto(id: SettingId) -> Option<dto::SettingId> {
+    Some(match id {
+        SettingId::AutoPowerOn => dto::SettingId::AutoPowerOn,
+        SettingId::AutoPowerOff => dto::SettingId::AutoPowerOff,
+        SettingId::AutoPowerOffBattery => dto::SettingId::AutoPowerOffBattery,
+        _ => return None,
+    })
+}
+
+/// DTO setting id → core.
+#[must_use]
+pub fn setting_id_core(id: dto::SettingId) -> SettingId {
+    match id {
+        dto::SettingId::AutoPowerOn => SettingId::AutoPowerOn,
+        dto::SettingId::AutoPowerOff => SettingId::AutoPowerOff,
+        dto::SettingId::AutoPowerOffBattery => SettingId::AutoPowerOffBattery,
+    }
+}
+
+/// Core setting value → DTO (`None` for a future core value kind).
+#[must_use]
+pub fn setting_value_dto(v: SettingValue) -> Option<dto::SettingValue> {
+    Some(match v {
+        SettingValue::Enabled(enabled) => dto::SettingValue::Enabled { enabled },
+        SettingValue::Minutes(minutes) => dto::SettingValue::Minutes { minutes },
+        _ => return None,
+    })
+}
+
+/// DTO setting value → core.
+#[must_use]
+pub fn setting_value_core(v: dto::SettingValue) -> SettingValue {
+    match v {
+        dto::SettingValue::Enabled { enabled } => SettingValue::Enabled(enabled),
+        dto::SettingValue::Minutes { minutes } => SettingValue::Minutes(minutes),
+    }
+}
+
+/// The settings `model` supports (empty for an unknown or unsupported model).
+#[must_use]
+pub fn settings_info(model: &str) -> Vec<dto::SettingInfo> {
+    let Ok(p) = resolve_model(model) else {
+        return Vec::new();
+    };
+    ptouch::settings_for(p)
+        .iter()
+        .filter_map(|spec| {
+            Some(dto::SettingInfo {
+                id: setting_id_dto(spec.id)?,
+                brother_label: spec.brother_label.to_owned(),
+                kind: match spec.kind() {
+                    ptouch::settings::SettingKind::Toggle => dto::SettingKind::Toggle,
+                    _ => dto::SettingKind::Duration,
+                },
+                choices: spec
+                    .choices
+                    .iter()
+                    .filter_map(|c| setting_value_dto(c.value))
+                    .collect(),
+                choice_labels: spec
+                    .choices
+                    .iter()
+                    .map(|c| spec.display_value(c.value))
+                    .collect(),
+                selector_unverified: spec.selector_unverified(),
+            })
+        })
+        .collect()
+}
+
+/// Core report → DTO; `profile` supplies the model's display text when known.
+#[must_use]
+pub fn setting_report_dto(profile: Option<&ModelProfile>, r: &SettingReport) -> dto::SettingReport {
+    let spec = profile.and_then(|p| ptouch::setting_spec(p, r.id));
+    let (value, unlisted_byte) = match r.reading {
+        SettingReading::Value(v) => (setting_value_dto(v), None),
+        SettingReading::Unlisted(b) => (None, Some(b)),
+    };
+    let text = match (spec, r.reading) {
+        (Some(spec), reading) => spec.display_reading(reading),
+        (None, SettingReading::Value(v)) => v.to_string(),
+        (None, SettingReading::Unlisted(b)) => format!("unknown (0x{b:02X})"),
+    };
+    dto::SettingReport {
+        // A future core id cannot appear: the session only reads ids the caller passed in.
+        id: setting_id_dto(r.id).unwrap_or(dto::SettingId::AutoPowerOn),
+        value,
+        unlisted_byte,
+        text,
+        raw: r.raw.clone(),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -517,6 +648,11 @@ pub fn behaviour(b: dto::VirtualBehaviour) -> ptouch::Behaviour {
         dto::VirtualBehaviour::ExtraFrames { count } => ptouch::Behaviour::ExtraFrames(count),
         dto::VirtualBehaviour::CoolingOnPage { page } => ptouch::Behaviour::CoolingOnPage(page),
         dto::VirtualBehaviour::NoMedia => ptouch::Behaviour::NoMedia,
+        dto::VirtualBehaviour::SettingsSilent => ptouch::Behaviour::SettingsSilent,
+        dto::VirtualBehaviour::SettingsWritesIgnored => ptouch::Behaviour::SettingsWritesIgnored,
+        dto::VirtualBehaviour::StaleFrameBeforeSettingsReply => {
+            ptouch::Behaviour::StaleFrameBeforeSettingsReply
+        }
     }
 }
 
@@ -895,9 +1031,10 @@ mod tests {
             };
             *now = (*now).max(next);
             while let Some(frame) = vp.poll_output(*now) {
-                // RFCOMM-like fragmentation: 7 + 25 bytes.
-                session.handle_input(&frame[..7], *now);
-                session.handle_input(&frame[7..], *now);
+                // RFCOMM-like fragmentation: 7 + 25 bytes (3-byte settings replies whole).
+                let (a, b) = frame.split_at(frame.len().min(7));
+                session.handle_input(a, *now);
+                session.handle_input(b, *now);
             }
             if session.poll_timeout().is_some_and(|t| t <= *now) {
                 session.handle_timeout(*now);
@@ -1048,5 +1185,140 @@ mod tests {
                 .any(|t| t.starts_with("RasterLine(") && t.ends_with(" bytes)"))
         );
         assert!(text.iter().any(|t| t == "PrintLast"));
+    }
+
+    #[test]
+    fn settings_info_per_model() {
+        let p710 = settings_info("PT-P710BT");
+        let ids: Vec<dto::SettingId> = p710.iter().map(|i| i.id).collect();
+        assert_eq!(
+            ids,
+            [
+                dto::SettingId::AutoPowerOn,
+                dto::SettingId::AutoPowerOff,
+                dto::SettingId::AutoPowerOffBattery
+            ]
+        );
+        assert_eq!(p710[0].kind, dto::SettingKind::Toggle);
+        assert_eq!(p710[0].choice_labels, ["off", "on"]);
+        assert_eq!(p710[1].brother_label, "Auto Power Off");
+        assert!(!p710[0].selector_unverified);
+        assert!(p710[1].selector_unverified && p710[2].selector_unverified);
+        assert_eq!(p710[1].kind, dto::SettingKind::Duration);
+        assert_eq!(p710[1].choices.len(), 7);
+        assert_eq!(
+            p710[1].choice_labels.last().map(String::as_str),
+            Some("60 min")
+        );
+        let p910 = settings_info("PT-P910BT");
+        assert_eq!(
+            p910[1].choices.last(),
+            Some(&dto::SettingValue::Minutes { minutes: 720 })
+        );
+        assert_eq!(
+            p910[1].choice_labels.last().map(String::as_str),
+            Some("12 h")
+        );
+        assert!(p910.iter().all(|i| !i.selector_unverified));
+        assert!(settings_info("PT-E560BT").is_empty());
+        assert!(settings_info("PT-NOPE").is_empty());
+    }
+
+    #[test]
+    fn setting_value_wire_round_trip() {
+        for v in [
+            dto::SettingValue::Enabled { enabled: true },
+            dto::SettingValue::Minutes { minutes: 120 },
+        ] {
+            assert_eq!(setting_value_dto(setting_value_core(v)), Some(v));
+        }
+        let w = dto::SettingValueWire {
+            kind: dto::SettingValueKind::Minutes,
+            enabled: None,
+            minutes: None,
+        };
+        assert!(dto::SettingValue::try_from(w).is_err());
+    }
+
+    #[test]
+    fn setting_report_text_uses_the_model() {
+        let r = ptouch::SettingReport {
+            id: SettingId::AutoPowerOff,
+            reading: SettingReading::Value(SettingValue::Minutes(60)),
+            raw: vec![0; 32],
+        };
+        assert_eq!(setting_report_dto(Some(p710()), &r).text, "60 min");
+        assert_eq!(setting_report_dto(None, &r).text, "1 h");
+        let u = ptouch::SettingReport {
+            reading: SettingReading::Unlisted(7),
+            ..r
+        };
+        let d = setting_report_dto(Some(p710()), &u);
+        assert_eq!((d.value, d.unlisted_byte), (None, Some(7)));
+        assert_eq!(d.text, "unknown (0x07)");
+        let e = error_info(&ptouch::Error::Timeout(CoreTimeoutKind::SettingsReply));
+        assert_eq!(e.code, "TIMEOUT");
+        assert_eq!(e.timeout, Some(dto::TimeoutKind::SettingsReply));
+        let c = session_config(&dto::SessionConfig {
+            settings_reply_timeout_ms: Some(250.0),
+            ..Default::default()
+        });
+        assert_eq!(c.settings_reply_timeout_ms, 250);
+    }
+
+    #[test]
+    fn session_settings_round_trip_on_virtual_printer() {
+        for (model, media) in [("PT-P710BT", "tze128-24"), ("PT-P950NW", "tze-24")] {
+            let Ok(p) = resolve_model(model) else {
+                panic!("{model}")
+            };
+            let media = resolve_media(p, media)
+                .map(|t| t.id)
+                .unwrap_or_else(|_| p.media[0].id);
+            let mut vp = virtual_printer(
+                model,
+                media,
+                dto::VirtualBehaviour::Normal,
+                &dto::VirtualTiming::default(),
+            )
+            .unwrap();
+            let mut s = ptouch::Session::new(None, ptouch::SessionConfig::default());
+            let mut now = 0;
+            s.connect(now);
+            run(&mut s, &mut vp, &mut now, |e| {
+                e.iter()
+                    .any(|e| matches!(e, dto::SessionEvent::Ready { .. }))
+            });
+            s.read_settings(&SettingId::ALL, now).unwrap();
+            assert_eq!(state_dto(s.state()), dto::SessionState::Settings);
+            let ev = run(&mut s, &mut vp, &mut now, |e| {
+                e.iter()
+                    .any(|e| matches!(e, dto::SessionEvent::SettingsRead { .. }))
+            });
+            let Some(dto::SessionEvent::SettingsRead { report }) = ev.last() else {
+                panic!("{ev:?}")
+            };
+            assert_eq!(report.len(), 3);
+            assert_eq!(
+                report[1].value,
+                Some(dto::SettingValue::Minutes { minutes: 30 })
+            );
+            s.write_settings(&[(SettingId::AutoPowerOff, SettingValue::Minutes(10))], now)
+                .unwrap();
+            let ev = run(&mut s, &mut vp, &mut now, |e| {
+                e.iter()
+                    .any(|e| matches!(e, dto::SessionEvent::SettingsWritten { .. }))
+            });
+            assert!(
+                matches!(
+                    ev.last(),
+                    Some(dto::SessionEvent::SettingsWritten { verified: true, report })
+                        if report[0].value == Some(dto::SettingValue::Minutes { minutes: 10 })
+                ),
+                "{model}: {ev:?}"
+            );
+            assert_eq!(vp.commits(), 1);
+            assert!(vp.violations().is_empty(), "{:?}", vp.violations());
+        }
     }
 }

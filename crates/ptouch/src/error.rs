@@ -27,6 +27,9 @@ pub enum TimeoutKind {
         /// 1-based page number that was printing.
         page: u16,
     },
+    /// No complete reply to a settings get within `settings_reply_timeout_ms`
+    /// (PROTOCOL.md §3.6.2).
+    SettingsReply,
 }
 
 /// Every error the protocol core can report.
@@ -218,6 +221,9 @@ impl fmt::Display for Error {
             Self::Timeout(TimeoutKind::Status) => f.write_str("status request timed out"),
             Self::Timeout(TimeoutKind::Page { page }) => {
                 write!(f, "page {page} did not complete in time")
+            }
+            Self::Timeout(TimeoutKind::SettingsReply) => {
+                f.write_str("the printer did not answer the settings request")
             }
             Self::Cancelled => f.write_str("cancelled"),
             Self::Unsupported(what) => write!(f, "not supported by this model: {what}"),

@@ -8,5 +8,5 @@ export { DEFAULT_OPEN_RETRY, openWithRetry, type OpenRetryPolicy } from './retry
 export { WebSerialTransport, SPP_UUID, type PortLike, type SerialLike, type SerialMode, type WebSerialOptions } from './webserial'
 export { WebUsbTransport, BROTHER_VENDOR_ID, type UsbDeviceLike, type UsbLike, type WebUsbOptions } from './webusb'
 export { MockTransport, DEFAULT_SCENARIO, type MockScenario } from './mock'
-export { PrinterClient, type ClientState, type PrintProgress, type PrinterEvent, type PrinterClientOptions } from './client'
+export { PrinterClient, type ClientState, type PrintProgress, type PrinterEvent, type PrinterClientOptions, type SettingsWriteResult } from './client'
 export { ConnectionManager, INITIAL_SNAPSHOT, type ConnectionSnapshot, type ConnectionManagerOptions, type RememberedConnection } from './connect'

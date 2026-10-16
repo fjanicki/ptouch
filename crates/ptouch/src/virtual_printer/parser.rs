@@ -64,6 +64,26 @@ pub enum Command {
     Print,
     /// `1A`.
     PrintLast,
+    /// A settings get (PROTOCOL.md §3.6.1): `1B 69 55 70 01` (`op` = `70`, no selector) or
+    /// `1B 69 55 41 01 s` (`op` = `41`, selector `s`; every table model is a series-`30` PT,
+    /// whose Auto Power Off command carries a selector).
+    SettingGet {
+        /// `ESC i U` operation byte (`70` Auto Power On, `41` Auto Power Off).
+        op: u8,
+        /// Selector byte (`41` only).
+        selector: Option<u8>,
+    },
+    /// A settings set: `1B 69 55 70 00 v` or `1B 69 55 41 00 s v`.
+    SettingSet {
+        /// `ESC i U` operation byte.
+        op: u8,
+        /// Selector byte (`41` only).
+        selector: Option<u8>,
+        /// Value byte.
+        value: u8,
+    },
+    /// `1B 7E 53` (`ESC ~ S`), sent after settings writes (meaning UNKNOWN; INFERRED commit).
+    SettingsCommit,
     /// A recognised optional command from PROTOCOL.md §3.4 (firmware/serial/battery queries,
     /// job ID, after-job command, …), with all its bytes. It plays no part in printing.
     NonPrint(Vec<u8>),
@@ -132,6 +152,14 @@ pub enum Violation {
         page: u16,
         /// Raster line within the page.
         line: u32,
+    },
+    /// A settings set with a value byte outside the model's list (PROTOCOL.md §3.6.4). The
+    /// value is not stored.
+    InvalidSettingValue {
+        /// Byte offset in the stream.
+        offset: usize,
+        /// The value byte.
+        byte: u8,
     },
     /// `ESC i z` n9 does not match the page's position for the model's `page_command`
     /// (PROTOCOL.md §3.2.1).
@@ -333,6 +361,15 @@ fn parse_esc(data: &[u8]) -> Parse {
     match second {
         0x40 => return Parse::Done(Command::Initialize, 2),
         0x69 => {}
+        // `ESC ~ S` settings commit; other `ESC ~` commands (cleaning, PJ reset, …) are never
+        // sent by ptouch and stay unknown.
+        0x7E => {
+            return match data.get(2) {
+                None => Parse::Incomplete,
+                Some(0x53) => Parse::Done(Command::SettingsCommit, 3),
+                Some(_) => unknown(data, 3),
+            };
+        }
         _ => return unknown(data, 2),
     }
     let Some(&op) = data.get(2) else {
@@ -395,12 +432,34 @@ fn parse_esc(data: &[u8]) -> Parse {
                 }
                 // After-job command `1B 69 55 74 1C 00`.
                 0x74 => non_print(data, 6),
+                // Settings (§3.6.1): `70` Auto Power On, `41` Auto Power Off (+ selector).
+                0x70 | 0x41 => parse_setting(data, sub),
                 _ => unknown(data, 4),
             }
         }
         // Internal model flag `1B 69 46 53` / `1B 69 46 69`.
         0x46 => non_print(data, 4),
         _ => unknown(data, 3),
+    }
+}
+
+/// `1B 69 55 <op> <flag> [sel] [v]`: settings get (`flag` = `01`) or set (`00`).
+fn parse_setting(data: &[u8], op: u8) -> Parse {
+    let Some(&flag) = data.get(4) else {
+        return Parse::Incomplete;
+    };
+    let sel = usize::from(op == 0x41);
+    match flag {
+        0x01 => fixed(data, 5 + sel, |d| Command::SettingGet {
+            op,
+            selector: (sel == 1).then(|| d[5]),
+        }),
+        0x00 => fixed(data, 6 + sel, |d| Command::SettingSet {
+            op,
+            selector: (sel == 1).then(|| d[5]),
+            value: d[5 + sel],
+        }),
+        _ => unknown(data, 5),
     }
 }
 
@@ -520,6 +579,62 @@ mod tests {
                 Command::Unknown(vec![0x1B, 0x77]),
                 Command::Unknown(vec![0xEE]),
             ]
+        );
+    }
+
+    #[test]
+    fn settings_commands() {
+        let cmds = parse_all(&[
+            0x1B, 0x69, 0x55, 0x70, 0x01, // get auto power on
+            0x1B, 0x69, 0x55, 0x70, 0x00, 0x01, // set auto power on
+            0x1B, 0x69, 0x55, 0x41, 0x01, 0x01, // get timer 01
+            0x1B, 0x69, 0x55, 0x41, 0x00, 0x00, 0x06, // set timer 00
+            0x1B, 0x7E, 0x53, // commit
+            0x1B, 0x7E, 0x63, // never-send cleaning: unknown
+            0x1B, 0x69, 0x55, 0x41, 0x02, // bad flag
+            0x1B, 0x69, 0x55, 0x58, // factory reset: unknown, never sent
+        ]);
+        assert_eq!(
+            cmds,
+            vec![
+                Command::SettingGet {
+                    op: 0x70,
+                    selector: None
+                },
+                Command::SettingSet {
+                    op: 0x70,
+                    selector: None,
+                    value: 1
+                },
+                Command::SettingGet {
+                    op: 0x41,
+                    selector: Some(1)
+                },
+                Command::SettingSet {
+                    op: 0x41,
+                    selector: Some(0),
+                    value: 6
+                },
+                Command::SettingsCommit,
+                Command::Unknown(vec![0x1B, 0x7E, 0x63]),
+                Command::Unknown(vec![0x1B, 0x69, 0x55, 0x41, 0x02]),
+                Command::Unknown(vec![0x1B, 0x69, 0x55, 0x58]),
+            ]
+        );
+        // Split byte by byte: held until complete.
+        let mut p = JobParser::new();
+        for b in [0x1B, 0x69, 0x55, 0x41, 0x00, 0x01] {
+            p.push(&[b]);
+            assert_eq!(p.next_command(), None);
+        }
+        p.push(&[0x03]);
+        assert_eq!(
+            p.next_command(),
+            Some(Command::SettingSet {
+                op: 0x41,
+                selector: Some(1),
+                value: 3
+            })
         );
     }
 

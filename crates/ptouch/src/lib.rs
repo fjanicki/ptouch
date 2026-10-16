@@ -21,6 +21,7 @@
 //! encode ────────────► EncodedJob { preamble, pages } (byte-exact job, PROTOCOL.md §6)
 //! status ────────────► Status (32-byte reply), StatusFramer (stream reassembly)
 //! session ───────────► Session (print state machine: bytes + time in, bytes + events out)
+//! settings ──────────► SettingSpec tables + encode/decode of printer-stored settings (§3.6)
 //! virtual_printer ───► VirtualPrinter (device-side test double; feature "virtual")
 //! ```
 //!
@@ -44,6 +45,7 @@ pub mod model;
 pub mod packbits;
 pub mod raster;
 pub mod session;
+pub mod settings;
 pub mod status;
 #[cfg(feature = "virtual")]
 pub mod virtual_printer;
@@ -63,6 +65,9 @@ pub use model::{
 pub use packbits::{packbits_decode, packbits_encode};
 pub use raster::{LabelRaster, ModuleMatrix};
 pub use session::{Event, Session, SessionConfig, SessionState};
+pub use settings::{
+    SettingId, SettingReading, SettingReport, SettingSpec, SettingValue, setting_spec, settings_for,
+};
 pub use status::{
     MediaType, Notification, Phase, PrinterError, PrinterErrors, STATUS_LEN, Status, StatusFramer,
     StatusType, TapeColor, TextColor, parse_status,

@@ -4,7 +4,10 @@
      download .bin → decode → decoded pages as PNG/PBM), orientation + ruler test labels, and
      "Copy diagnostics" (report.ts, device names masked).
      Printer models (docs/MODELS-PLAN.md; P-core-ui): virtual runs and the virtual probe use the
-     studio's active model, the tape list is that model's widths, and the report names the model. -->
+     studio's active model, the tape list is that model's widths, and the report names the model.
+     Printer settings (docs/SETTINGS-PLAN.md §4): a card with the same PrinterSettings component
+     as the connect dialog, while a model with settings is connected; the report lists the last
+     values read. -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
   import { getStudio } from '../state/studio.svelte'
@@ -27,14 +30,15 @@
     type Transport,
   } from '../../printer'
   import { buildPrintJob, canvasReadbackIsNoisy, paintPreview } from '../../render'
-  import { isWasmLoaded, version } from '../../wasm'
+  import { isWasmLoaded, settingsFor, version } from '../../wasm'
+  import PrinterSettings from '../printer-settings/PrinterSettings.svelte'
   import { probeTransport, type ProbeResult, type ProbeStep } from './probe'
   import { buildReport, formatLogEntry, maskText } from './report'
   import { orientationDoc, rulerDoc, type TestLabelKind } from './testlabels'
   import { bitmapPng, freeRun, resolveTarget, runFileBase, runVirtual, type VirtualRun } from './virtual'
   import { virtualScenarioFor } from '../state/virtual-printer'
   import { isVerifiedModel } from '../state/models'
-  import { formatMm, nearestTapeWidth } from '../state/view-model'
+  import { formatMm, isConnected, nearestTapeWidth } from '../state/view-model'
 
   let { onclose }: { onclose: () => void } = $props()
   const studio = getStudio()
@@ -85,6 +89,7 @@
   const conn = $derived(studio.conn)
   const studioBusy = $derived(conn.state !== 'disconnected' && conn.state !== 'lost' && conn.state !== 'error')
   const statusHex = $derived(conn.status ? toHex(Uint8Array.from(conn.status.raw)) : '')
+  const hasSettings = $derived(isConnected(conn.state) && !studio.designOnly && !!conn.model && (safe(() => settingsFor(conn.model ?? '').length) ?? 0) > 0)
 
   function connectStudio(path: ConnectPath): void {
     // Must stay synchronous up to requestPort()/requestDevice() (user gesture).
@@ -425,6 +430,15 @@
         {/if}
       </div>
     </section>
+
+    {#if hasSettings}
+      <!-- Printer settings -->
+      <section class="panel card" aria-labelledby="settings-h">
+        <h2 id="settings-h">Printer settings</h2>
+        <p class="hint">Stored in the {conn.model}: the same values as Brother’s Printer Setting Tool shows.</p>
+        <PrinterSettings />
+      </section>
+    {/if}
 
     <!-- Raw probe -->
     <section class="panel card wide" aria-labelledby="probe-h">

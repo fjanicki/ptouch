@@ -62,6 +62,11 @@
 #                             "legacy" (00-04/FF, P900 family [D2]), "level_ac" (2x/3x/37 [D2 P910BT, D4]),
 #                             "none" (no battery data, SDK PS_BAT_NON). Values without a Brother doc are marked
 #                             "inferred" in the model's quirks.
+#   settings_profile          printer-stored settings command set (PROTOCOL.md §3.6): "p710bt" (PT-P710BT/P715eBT),
+#                             "p900w" (PT-P900W/P950NW/D800W/E800W) or "p910bt" (PT-P910BT), each from Brother's
+#                             per-model Printer Setting Tool definition [PST-Mac]. Absent (and not in `unknown`) = no
+#                             source describes stored settings for the model; in `unknown` = a source says the model
+#                             has them (SDK appendix or community hardware tests) but no Brother definition gives bytes.
 #   media                     ids of [[media]] entries the model supports
 #
 # Media keys:
@@ -140,6 +145,7 @@ min_length_mm = 4.4
 battery_format = "reserved"
 editor_min_label_mm = 4.0
 max_length_mm = 1000.0
+settings_profile = "p710bt"
 media = ["tze128-3.5", "tze128-6", "tze128-9", "tze128-12", "tze128-18", "tze128-24",
          "hs2-128-5.8", "hs2-128-8.8", "hs2-128-11.7", "hs2-128-17.7", "hs2-128-23.6"]
 quirks = [
@@ -153,6 +159,7 @@ quirks = [
   "Community measured 80-81 printable px on 12 mm tape [labelo] vs Brother's 70; geometry override may be needed.",
   "High-res ESC i z n2=0x09 with n1|=0x02 comes from the SDK only; unverified on this model.",
   "Min length: D1 4.4 mm (31 dots incl. 2 x 2 mm margins); PTD minlen 4.0 mm; SDK 0 (not checked).",
+  "Settings (PROTOCOL.md §3.6): Brother's definition reads Auto Power Off (USB/AC) with selector 01 and Li-ion with 00, the reverse of every other model; unverified on hardware.",
 ]
 unknown = []
 
@@ -197,6 +204,7 @@ min_feed_dots = 14
 battery_format = "reserved"
 editor_min_label_mm = 4.0
 max_length_mm = 1000.0
+settings_profile = "p710bt"
 media = ["tze128-3.5", "tze128-6", "tze128-9", "tze128-12", "tze128-18", "tze128-24",
          "hs2-128-5.8", "hs2-128-8.8", "hs2-128-11.7", "hs2-128-17.7", "hs2-128-23.6"]
 quirks = [
@@ -347,6 +355,7 @@ min_length_mm = 4.0
 battery_format = "level_ac"
 editor_min_label_mm = 4.0
 max_length_mm = 1000.0
+settings_profile = "p910bt"
 media = ["tze560-3.5", "tze560-6", "tze560-9", "tze560-12", "tze560-18", "tze560-24", "tze560-36"]
 quirks = [
   "ESC i ! 00 is REQUIRED for any status during printing; ESC i z PI_RECOVER does not enable it on this model [D2].",
@@ -420,7 +429,7 @@ quirks = [
   "ESC i M bit 7 (mirror) is documented in D4, but the SDK VariousMode lacks MIRROR: hardware mirror is documented-but-unverified; the library mirrors in software.",
   "min_length_mm 4.8 [D4, SDK] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
 ]
-unknown = []
+unknown = ["settings_profile"]
 
 [[model]]
 name = "PT-E310BT"
@@ -476,7 +485,7 @@ quirks = [
   "ESC i M bit 7 (mirror) is documented in D4 without model exception, but the SDK never sets it: hardware mirror is documented-but-unverified; the library mirrors in software.",
   "min_length_mm 4.8 [D4, SDK] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
 ]
-unknown = ["rfcomm_channel_observed"]
+unknown = ["rfcomm_channel_observed", "settings_profile"]
 
 [[model]]
 name = "PT-D610BT"
@@ -790,7 +799,7 @@ quirks = [
   "ESC i M bit 7 (mirror) is documented in D4, but the SDK VariousMode lacks MIRROR: documented-but-unverified; mirror in software.",
   "min_length_mm 4.8 [D4, SDK] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
 ]
-unknown = []
+unknown = ["settings_profile"]
 
 [[model]]
 name = "PT-D410"
@@ -999,7 +1008,7 @@ quirks = [
   "HS 3:1 listed in PTD only (SDK paper list PT).",
   "min_length_mm 4.4 [D3] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
 ]
-unknown = []
+unknown = ["settings_profile"]
 
 [[model]]
 name = "PT-H500"
@@ -1247,7 +1256,7 @@ quirks = [
   "ESC i !: D2's command reference lists it with no model exception, but D2's own print-sequence table marks the step '(PT-P910BT only)' and the SDK has no ChangeStatusMode for the P900 family. Library does not send it; PI_RECOVER gives pushed status instead. Whether the firmware accepts ESC i ! is UNVERIFIED.",
   "min_length_mm 4.0 [D2] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
 ]
-unknown = ["protocol_version"]
+unknown = ["protocol_version", "settings_profile"]
 
 [[model]]
 name = "PT-P900W"
@@ -1292,6 +1301,7 @@ min_length_mm = 4.0
 battery_format = "legacy"
 editor_min_label_mm = 4.0
 max_length_mm = 1000.0
+settings_profile = "p900w"
 media = ["tze560-3.5", "tze560-6", "tze560-9", "tze560-12", "tze560-18", "tze560-24", "tze560-36",
          "hs2-560-5.8", "hs2-560-8.8", "hs2-560-11.7", "hs2-560-17.7", "hs2-560-23.6",
          "hs3-560-5.2", "hs3-560-9.0", "hs3-560-11.2", "hs3-560-21.0", "hs3-560-31.0",
@@ -1349,6 +1359,7 @@ min_length_mm = 4.0
 battery_format = "legacy"
 editor_min_label_mm = 4.0
 max_length_mm = 1000.0
+settings_profile = "p900w"
 media = ["tze560-3.5", "tze560-6", "tze560-9", "tze560-12", "tze560-18", "tze560-24", "tze560-36",
          "hs2-560-5.8", "hs2-560-8.8", "hs2-560-11.7", "hs2-560-17.7", "hs2-560-23.6",
          "hs3-560-5.2", "hs3-560-9.0", "hs3-560-11.2", "hs3-560-21.0", "hs3-560-31.0",
@@ -1401,6 +1412,7 @@ cancel_command = "esc_at"
 min_feed_dots = 14
 editor_min_label_mm = 4.0
 max_length_mm = 1000.0
+settings_profile = "p900w"
 media = ["tze560-3.5", "tze560-6", "tze560-9", "tze560-12", "tze560-18", "tze560-24", "tze560-36",
          "hs2-560-5.8", "hs2-560-8.8", "hs2-560-11.7", "hs2-560-17.7", "hs2-560-23.6",
          "hs3-560-5.2", "hs3-560-9.0", "hs3-560-11.2", "hs3-560-21.0", "hs3-560-31.0",
@@ -1448,6 +1460,7 @@ cancel_command = "esc_at"
 min_feed_dots = 14
 editor_min_label_mm = 4.0
 max_length_mm = 1000.0
+settings_profile = "p900w"
 media = ["tze560-3.5", "tze560-6", "tze560-9", "tze560-12", "tze560-18", "tze560-24", "tze560-36",
          "hs2-560-5.8", "hs2-560-8.8", "hs2-560-11.7", "hs2-560-17.7", "hs2-560-23.6",
          "hs3-560-5.2", "hs3-560-9.0", "hs3-560-11.2", "hs3-560-21.0", "hs3-560-31.0",

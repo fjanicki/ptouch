@@ -4,7 +4,10 @@
      Shows openProgress ("Waking printer… attempt 2 of 3"), the connected printer, and Problems.
      Printer models (docs/MODELS-PLAN.md §3.5, §3.8): the copy is model-generic (copy.ts; examples
      name the PT-P710BT), "Printer model" picks the virtual printer's model (and the model designed
-     for while nothing is connected), and a connected model nobody has tested says so. -->
+     for while nothing is connected), and a connected model nobody has tested says so.
+     Printer settings (docs/SETTINGS-PLAN.md §4): "Printer settings…" (connected, model with
+     settings, not the iPhone design-only mode) swaps the content for the lazy PrinterSettings
+     chunk, with a back button. -->
 <script lang="ts">
   import { tick, untrack } from 'svelte'
   import { describeSupport, type ConnectPath } from '../../printer'
@@ -13,6 +16,7 @@
   import ModelPicker from '../media/ModelPicker.svelte'
   import { getStudio } from '../state/studio.svelte'
   import { isVerifiedModel } from '../state/models'
+  import { settingsFor } from '../../wasm'
   import { batteryText, chipView, isConnected, openProgressText, tapeText, transportKindLabel } from '../state/view-model'
   import { EXAMPLE_DEVICE, connectSubtitle, optionHints } from './copy'
 
@@ -37,6 +41,27 @@
   const hasPort = $derived(paths.includes('serial-port'))
   const hasUsb = $derived(paths.includes('usb'))
   const usbFirst = $derived(paths[0] === 'usb')
+
+  // Printer settings view (a separate chunk, loaded on first open).
+  const loadSettings = () => import('../printer-settings/PrinterSettings.svelte')
+  let settingsView = $state(false)
+  let settingsBtn: HTMLButtonElement | undefined = $state()
+  let backBtn: HTMLButtonElement | undefined = $state()
+  const hasSettings = $derived.by(() => {
+    if (!connected || studio.designOnly || !conn.model) return false
+    try {
+      return settingsFor(conn.model).length > 0
+    } catch {
+      return false
+    }
+  })
+  $effect(() => {
+    if (!studio.connectOpen || !hasSettings) settingsView = false
+  })
+  function showSettings(on: boolean): void {
+    settingsView = on
+    void tick().then(() => (on ? backBtn : settingsBtn)?.focus())
+  }
 
   // Copy follows the paths this browser really offers (Firefox: ports only; Safari: none).
   const subtitle = $derived(connectSubtitle({ designOnly: studio.designOnly, designModel: studio.designModel, bluetooth: hasBluetooth, port: hasPort, usb: hasUsb }))
@@ -111,10 +136,15 @@
 
 <dialog class="modal connect" bind:this={dialog} onclose={() => (studio.connectOpen = false)} aria-labelledby="connect-title" aria-describedby="connect-desc">
   <header>
-    <div>
-      <h2 id="connect-title">{connected ? 'Printer connected' : 'Connect your printer'}</h2>
+    {#if settingsView}
+      <button type="button" class="btn ghost icon" aria-label="Back" bind:this={backBtn} onclick={() => showSettings(false)}><Icon name="chevron-left" /></button>
+    {/if}
+    <div class="titles">
+      <h2 id="connect-title">{settingsView ? 'Printer settings' : connected ? 'Printer connected' : 'Connect your printer'}</h2>
       <p id="connect-desc" class="sub">
-        {#if connected}
+        {#if settingsView}
+          {conn.model} · stored in the printer
+        {:else if connected}
           {transportKindLabel(conn.transport?.kind)}{conn.transport?.label ? ` · ${conn.transport.label}` : ''}
         {:else}
           {subtitle}
@@ -125,6 +155,15 @@
   </header>
 
   <div class="content" bind:this={content}>
+    {#if settingsView}
+      {#await loadSettings()}
+        <p class="sub" role="status">Loading…</p>
+      {:then { default: PrinterSettings }}
+        <PrinterSettings />
+      {:catch}
+        <p class="sub" role="alert">Printer settings could not be loaded. Check your connection and reload the page.</p>
+      {/await}
+    {:else}
     {#if conn.problem}
       <ProblemBanner problem={conn.problem} compact onaction={(a) => studio.handleProblemAction(a)} />
     {:else if supportNote && !connected && !connecting}
@@ -162,6 +201,9 @@
       <div class="row-actions">
         <button type="button" class="btn" disabled={conn.state !== 'ready'} onclick={() => void studio.connection.refreshStatus().catch(() => {})}><Icon name="refresh" size={16} />Refresh status</button>
         <button type="button" class="btn" disabled={conn.state === 'printing'} onclick={() => studio.disconnect()}><Icon name="eject" size={16} />Disconnect</button>
+        {#if hasSettings}
+          <button type="button" class="btn" disabled={conn.state !== 'ready' || studio.printing} bind:this={settingsBtn} onclick={() => showSettings(true)}><Icon name="settings" size={16} />Printer settings…</button>
+        {/if}
         {#if conn.transport?.kind !== 'virtual'}
           <button type="button" class="btn ghost danger" disabled={conn.state === 'printing'} onclick={() => studio.disconnect(true)}>Forget printer</button>
         {/if}
@@ -201,6 +243,7 @@
         </details>
       {/if}
     {/if}
+    {/if}
   </div>
 </dialog>
 
@@ -214,6 +257,10 @@
     justify-content: space-between;
     gap: var(--space-3);
     padding: var(--space-5) var(--space-4) var(--space-2) var(--space-5);
+  }
+  .titles {
+    flex: 1;
+    min-width: 0;
   }
   h2 {
     margin: 0;

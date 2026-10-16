@@ -49,11 +49,33 @@ impl VirtualPrinter {
         self.inner.handle_input(bytes, ms(now_ms));
     }
 
-    /// Next 32-byte status frame due at `nowMs`, or `undefined`.
+    /// Next reply due at `nowMs` (a 32-byte status frame, or a 3-byte printer-settings
+    /// reply), or `undefined`.
     #[wasm_bindgen(js_name = pollOutput)]
     #[must_use]
     pub fn poll_output(&mut self, now_ms: f64) -> Option<Vec<u8>> {
-        self.inner.poll_output(ms(now_ms)).map(|f| f.to_vec())
+        self.inner.poll_output(ms(now_ms))
+    }
+
+    /// Stored byte of a printer setting (`op` = `0x70` Auto Power On, `0x41` Auto Power Off
+    /// with `selector` `0`/`1`), or `undefined` when the model has no such setting.
+    #[wasm_bindgen(js_name = settingByte)]
+    #[must_use]
+    pub fn setting_byte(&self, op: u8, selector: Option<u8>) -> Option<u8> {
+        self.inner.setting_byte(op, selector)
+    }
+
+    /// Replaces a stored setting byte (any byte, listed or not, to simulate other software);
+    /// returns `false` when the model has no such setting.
+    #[wasm_bindgen(js_name = setSettingByte)]
+    pub fn set_setting_byte(&mut self, op: u8, selector: Option<u8>, byte: u8) -> bool {
+        self.inner.set_setting(op, selector, byte)
+    }
+
+    /// Number of settings commits (`ESC ~ S`) received.
+    #[must_use]
+    pub fn commits(&self) -> u32 {
+        u32::try_from(self.inner.commits()).unwrap_or(u32::MAX)
     }
 
     /// When the next frame becomes due (absolute ms), or `undefined`.

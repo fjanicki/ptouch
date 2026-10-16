@@ -543,6 +543,18 @@ pub struct SessionConfig {
     /// Wait for the trailing phase-change frame after "printing completed" (2000).
     #[tsify(optional)]
     pub phase_frame_wait_ms: Option<f64>,
+    /// Input discarded after the settings prologue (100).
+    #[tsify(optional)]
+    pub settings_drain_ms: Option<f64>,
+    /// Input discarded before each settings get; gap between set writes (50).
+    #[tsify(optional)]
+    pub settings_gap_ms: Option<f64>,
+    /// Wait for a complete settings get reply (1000).
+    #[tsify(optional)]
+    pub settings_reply_timeout_ms: Option<f64>,
+    /// Input discarded after a settings write, before the read-back (500).
+    #[tsify(optional)]
+    pub settings_settle_ms: Option<f64>,
 }
 
 /// Coarse session state (core `SessionState`).
@@ -569,6 +581,8 @@ pub enum SessionState {
     Draining,
     /// Cancel / error recovery in progress.
     Recovering,
+    /// A printer-settings read or write is running (status requests and jobs are `BUSY`).
+    Settings,
     /// Needs a new `connect()`.
     Failed,
 }
@@ -599,6 +613,8 @@ pub enum TimeoutKind {
     Status,
     /// A page never completed.
     Page,
+    /// No complete reply to a printer-settings get.
+    SettingsReply,
 }
 
 /// Session event (core `Event`).
@@ -632,7 +648,21 @@ pub enum SessionEvent {
         /// Which.
         notification: NotificationKind,
     },
-    /// Handshake / job / status request failed (or cancelled: code `CANCELLED`).
+    /// A `readSettings` finished; items in request order.
+    SettingsRead {
+        /// The values read.
+        report: Vec<SettingReport>,
+    },
+    /// A `writeSettings` finished: the read-back, and whether every value equals what was
+    /// written.
+    SettingsWritten {
+        /// The values read back.
+        report: Vec<SettingReport>,
+        /// Every read-back value equals the value written.
+        verified: bool,
+    },
+    /// Handshake / job / status request / settings transaction failed (or cancelled: code
+    /// `CANCELLED`). After a failed `writeSettings` the printer may have stored the new value.
     Failed {
         /// Why.
         error: ErrorInfo,
@@ -645,6 +675,145 @@ pub enum SessionEvent {
         )]
         resume_from_page: Option<u16>,
     },
+}
+
+// ---------------------------------------------------------------------------------------------
+// Printer settings (PROTOCOL.md §3.6)
+// ---------------------------------------------------------------------------------------------
+
+/// A printer-stored setting (core `SettingId`).
+#[derive(Tsify, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettingId {
+    /// "Auto Power On".
+    AutoPowerOn,
+    /// "Auto Power Off" on external power (USB/AC; P900W family: AC/DC; P910BT: USB).
+    AutoPowerOff,
+    /// "Auto Power Off (Li-ion)".
+    AutoPowerOffBattery,
+}
+
+/// List of setting ids (`SettingId[]`).
+#[derive(Tsify, Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct SettingIdList(pub Vec<SettingId>);
+
+/// UI shape of a setting.
+#[derive(Tsify, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettingKind {
+    /// On/off switch (`{ kind: "enabled" }` values).
+    Toggle,
+    /// Duration (`{ kind: "minutes" }` values; 0 = never).
+    Duration,
+}
+
+/// A typed setting value (core `SettingValue`). Deserialized through the flat
+/// [`SettingValueWire`] (see [`CodeSpec`]).
+#[derive(Tsify, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case", try_from = "SettingValueWire")]
+pub enum SettingValue {
+    /// On/off.
+    Enabled {
+        /// On.
+        enabled: bool,
+    },
+    /// Minutes; 0 = never.
+    Minutes {
+        /// Minutes.
+        minutes: u16,
+    },
+}
+
+/// Tag of [`SettingValue`].
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettingValueKind {
+    /// See [`SettingValue::Enabled`].
+    Enabled,
+    /// See [`SettingValue::Minutes`].
+    Minutes,
+}
+
+/// Wire form of [`SettingValue`].
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingValueWire {
+    /// Tag.
+    pub kind: SettingValueKind,
+    /// `enabled`.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// `minutes`.
+    #[serde(default)]
+    pub minutes: Option<u16>,
+}
+
+impl TryFrom<SettingValueWire> for SettingValue {
+    type Error = &'static str;
+
+    fn try_from(w: SettingValueWire) -> Result<Self, &'static str> {
+        Ok(match w.kind {
+            SettingValueKind::Enabled => Self::Enabled {
+                enabled: w.enabled.ok_or("missing field `enabled`")?,
+            },
+            SettingValueKind::Minutes => Self::Minutes {
+                minutes: w.minutes.ok_or("missing field `minutes`")?,
+            },
+        })
+    }
+}
+
+/// One setting a model supports (`settingsFor`).
+#[derive(Tsify, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingInfo {
+    /// Which setting.
+    pub id: SettingId,
+    /// Brother's Printer Setting Tool label for this model, e.g. `"Auto Power Off (Li-ion)"`.
+    pub brother_label: String,
+    /// Switch or duration.
+    pub kind: SettingKind,
+    /// Allowed values in Brother's order (only these can be written).
+    pub choices: Vec<SettingValue>,
+    /// Display text of each choice, parallel to `choices` (`"never"`, `"10 min"`, `"60 min"`
+    /// on PT-P710BT, `"1 h"` elsewhere, `"on"` / `"off"`).
+    pub choice_labels: Vec<String>,
+    /// `true` when it is UNVERIFIED which physical timer this setting controls (PT-P710BT /
+    /// P715eBT timers, PROTOCOL.md §8 #34). Show it: a read-back cannot detect a swap.
+    pub selector_unverified: bool,
+}
+
+/// One value to write.
+#[derive(Tsify, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingWrite {
+    /// Which setting.
+    pub id: SettingId,
+    /// The new value (must be one of the model's `choices`).
+    pub value: SettingValue,
+}
+
+/// List of writes (`SettingWrite[]`).
+#[derive(Tsify, Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct SettingWriteList(pub Vec<SettingWrite>);
+
+/// One value read from the printer.
+#[derive(Tsify, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingReport {
+    /// Which setting.
+    pub id: SettingId,
+    /// The value, when the byte is in the model's list.
+    #[tsify(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<SettingValue>,
+    /// The raw value byte, when it is not in the model's list (e.g. set by other software).
+    #[tsify(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlisted_byte: Option<u8>,
+    /// Display text (`"30 min"`, `"on"`, `"unknown (0x07)"`).
+    pub text: String,
+    /// The full reply as received (32 or 3 bytes), for diagnostics.
+    pub raw: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -686,6 +855,12 @@ pub enum VirtualBehaviour {
     },
     /// No cassette loaded.
     NoMedia,
+    /// Never answers a printer-settings get.
+    SettingsSilent,
+    /// Accepts settings writes but keeps the old values (read-back unverified).
+    SettingsWritesIgnored,
+    /// Pushes a stale status frame after every `ESC i a 01` (exercises the session's drain).
+    StaleFrameBeforeSettingsReply,
 }
 
 /// Tag of [`VirtualBehaviour`].
@@ -708,6 +883,12 @@ pub enum BehaviourKind {
     CoolingOnPage,
     /// See [`VirtualBehaviour::NoMedia`].
     NoMedia,
+    /// See [`VirtualBehaviour::SettingsSilent`].
+    SettingsSilent,
+    /// See [`VirtualBehaviour::SettingsWritesIgnored`].
+    SettingsWritesIgnored,
+    /// See [`VirtualBehaviour::StaleFrameBeforeSettingsReply`].
+    StaleFrameBeforeSettingsReply,
 }
 
 /// Wire form of [`VirtualBehaviour`].
@@ -739,6 +920,9 @@ impl TryFrom<VirtualBehaviourWire> for VirtualBehaviour {
             },
             BehaviourKind::CoolingOnPage => Self::CoolingOnPage { page: page()? },
             BehaviourKind::NoMedia => Self::NoMedia,
+            BehaviourKind::SettingsSilent => Self::SettingsSilent,
+            BehaviourKind::SettingsWritesIgnored => Self::SettingsWritesIgnored,
+            BehaviourKind::StaleFrameBeforeSettingsReply => Self::StaleFrameBeforeSettingsReply,
         })
     }
 }

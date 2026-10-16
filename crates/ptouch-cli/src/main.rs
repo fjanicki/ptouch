@@ -5,8 +5,9 @@
 //! loop ([`driver`]) that runs the sans-IO [`ptouch::Session`] over a
 //! [`ptouch_transport::Transport`]. No protocol logic lives here.
 //!
-//! Exit codes: 0 success, 1 runtime error (printer/transport), 2 usage error (clap), 130
-//! interrupted with Ctrl-C (after a clean cancel and link teardown).
+//! Exit codes: 0 success, 1 runtime error (printer/transport), 2 usage error (clap, or a
+//! refused settings request), 130 interrupted with Ctrl-C (after a clean cancel and link
+//! teardown).
 
 mod cli;
 mod commands;
@@ -43,16 +44,12 @@ fn main() -> ExitCode {
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e @ error::CliError::Interrupted) => {
-            eprintln!("error: {e}");
-            ExitCode::from(interrupt::EXIT_CODE)
-        }
         Err(e) => {
             eprintln!("error: {e}");
             if let Some(hint) = e.hint() {
                 eprintln!("hint: {hint}");
             }
-            ExitCode::FAILURE
+            ExitCode::from(e.exit_code())
         }
     }
 }

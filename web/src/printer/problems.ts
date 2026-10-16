@@ -58,7 +58,7 @@ export interface ProblemContext {
   support: SupportInfo
   transport?: TransportInfo
   /** Stage in which the error happened. */
-  stage: 'open' | 'handshake' | 'status' | 'print' | 'idle'
+  stage: 'open' | 'handshake' | 'status' | 'print' | 'settings' | 'idle'
   /** Connect path in use (picks fallbacks, e.g. "Choose port…" after a Bluetooth failure). */
   path?: ConnectPath
   /** Last known status (wrong-media copy names the loaded tape). */
@@ -166,6 +166,8 @@ function capitalize(s: string): string {
 }
 
 function noReply(ctx: ProblemContext): Problem {
+  if (ctx.stage === 'settings')
+    return { id: 'no-reply', severity: 'warning', title: 'The printer didn’t answer the settings request', detail: 'It may be asleep, or it may not support this over this connection. Wake it and try again.', actions: ['dismiss'] }
   const gecko = ctx.support.engine === 'gecko'
   if (gecko && (ctx.support.platform === 'mac' || ctx.transport?.kind === 'serial-os-port')) {
     return {
@@ -385,6 +387,7 @@ function classify(error: unknown, ctx: ProblemContext): Problem {
       case 'BITMAP_SIZE':
       case 'DATA_LENGTH':
       case 'INVALID_INPUT':
+        if (ctx.stage === 'settings') return { id: 'unknown', severity: 'warning', title: 'This printer doesn’t offer that value', detail: 'Pick one of the listed values.', actions: ['dismiss'] }
         return { id: 'unknown', severity: 'warning', title: 'This label can’t be printed as is', detail: `${capitalize(errorText(error).replace(/^PtouchError: /, ''))}. Adjust the label and try again.`, actions: ['dismiss'] }
       case 'UNSUPPORTED':
         return { id: 'unknown', severity: 'warning', title: 'Not available yet', detail: 'This feature isn’t available in this version of the studio.', actions: ['dismiss'] }

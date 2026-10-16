@@ -1,6 +1,6 @@
 # Brother P-touch raster protocol — implementation specification
 
-Status: research synthesis, 2026-10-08. Primary target: **PT-P710BT**. Companion data file: [`models.toml`](models.toml).
+Status: research synthesis, 2026-10-08; printer settings (§3.6) added 2026-10-16. Primary target: **PT-P710BT**. Companion data file: [`models.toml`](models.toml).
 
 This document is normative for the `ptouch` crate. "MUST/SHOULD/MAY" are used in the RFC 2119 sense. Values that no source confirms are marked **UNKNOWN**. Values that sources give but that have not been checked on hardware are marked **UNVERIFIED**. A conflict between sources is stated where it occurs, followed by the resolution this spec adopts ("**Resolution:**").
 
@@ -23,6 +23,11 @@ This document is normative for the `ptouch` crate. "MUST/SHOULD/MAY" are used in
 | [PTD] | Per-model printer description JSON in P-touch Editor (`ptd.bundle/*.json`). |
 | [INI] | `ptemct.ini`, P-touch Editor's media colour table. |
 | [HW] | Live test against the user's PT-P710BT (name `PT-P710BTxxxx`), macOS 26/27. Status requests, plus printed labels where a result names the label (e.g. "[HW] orientation test label, PT-P710BT", 24 mm TZe, 2026-10-08). |
+| [PST-Mac] | Static reverse engineering of Brother *Printer Setting Tool* 1.3.5 (build 55) for macOS (`pstm135x12all.dmg`, signed by Brother Industries, Ltd., team 5HCL85FLGW). The app is a generic engine (`DSTCommand`, `ComManager`, `CUsb`, panel classes) driven by per-model definition files (`Resources/device_<MODEL>.xmlz`, AES-128-CBC encrypted, decrypted with the app's own routine `-[XMLReader decryptData:]`). Only facts (bytes, sizes, offsets, value lists) are recorded here. §3.6. |
+| [MobileSDK-doc] | Brother Mobile SDK HTML reference on support.brother.com (`/g/s/es/htmldoc/mobilesdk/…`): v3 `getPrinterSettings`/`updatePrinterSettings` and the "Printer Configurations" appendix (`PrinterSettingItem`). API level only, no wire bytes. |
+| [UG-P710BT], [UG-P950NW] | Brother user's guides: PT-P710BT v03 (docp100362, pp.12/14 "Device Settings"), PT-P950NW v04 (docp100201, Basic tab). |
+| [ESCP-P900], [TMPL-P900], [ESCP-RJ4] | Brother *ESC/P Command Reference PT-P900 series* v1.03 (docp100186); *P-touch Template Command Reference PT-P900 series* v1.03 (docp100187); *ESC/P Command Reference RJ-4230B/4250WB/TD-4D* v4.00 (docp100904). Used for the official `ESC i U`, `ESC i X`, `ESC i DC1 S` framings (§3.6.1). |
+| [inventree], [dacha], [toml0006], [brother_ql#50], [cups-rastertoql] | Community sources for printer settings (§3.6, §9.3). |
 | [ptouch-print], [esp32-ptouch], [zakx], [teip], [labelpi], [vowstar], [Ircama], [labellab], [nbuchwitz], [stecman], [robby], [treideme], [rust-ptouch], [labelo], [obwat], [labelartor], [OpenSCQ30] | Community implementations. See §9.3. [esp32-ptouch] (P710BT), [zakx] and [teip] (E560BT), and [labelpi] and [vowstar] (P300BT) report hardware-verified prints. |
 
 ---
@@ -359,12 +364,183 @@ Brother's own transport [MacSDK `BSMBluetoothDevice`], with the deviations this 
 | `1B 69 46 53` / `1B 69 46 69` | Internal model flag | **UNKNOWN** |
 | `1B 69 55 4A <payload>` | Job ID (`ESC i U J`). Driver dumps: 14-byte payload `00 0C <6 bytes> 00 00 <x> 00 00 00`. SDK: `00 14 FF×12 00×8` (P9xx/P910BT with auto-cut, more than one page). | – (internal; MAY be omitted) |
 | `1B 69 55 74 1C 00` | After-job command. [AndroidSDK]: P710BT/P715eBT with special tape. [MacSDK]: internal models 0x45/0x39 with a flag. | Meaning **UNKNOWN**; omit |
-| `1B 69 61 01 55 0D 8A` | Bluetooth SSP setting read [AndroidSDK `Bluetooth_21`] | **UNKNOWN** |
+| `1B 69 61 01 55 0D 8A` | Bluetooth SSP setting read [AndroidSDK `Bluetooth_21`] | **UNKNOWN**. Provenance unverifiable (the analysed AAR is no longer available). The bytes look like `ESC i a 01` followed by a `55 xx` command of the §3.6.1 `55 0B` kind, and may be truncated. Do not send. |
+| `1B 69 55 41 …`, `1B 69 55 70 …`, `1B 69 58 …`, `55 0B …`, `1B 7E 53` | Printer settings | §3.6 |
 
 ### 3.5 Commands to avoid
 
 - `1B 69 52 01` (`ESC i R`, legacy PT-9500PC raster select): [ptouch-print] sends it to P710BT and non-P700-class devices. Use `ESC i a 01`.
-- `1B 69 63 …` (legacy `ESC i c` print info, PT-9xxx), `1B 69 58 …` (density, no PT model), `1B 5E 40` (QL/TD mode 9), `67 00 n` (QL `g` raster), `77 c n …` (QL two-colour raster).
+- `1B 69 63 …` (legacy `ESC i c` print info, PT-9xxx), `1B 5E 40` (QL/TD mode 9), `67 00 n` (QL `g` raster), `77 c n …` (QL two-colour raster).
+- `1B 69 58 …` (`ESC i X`) outside §3.6. An earlier version of this list said "density, no PT model". That is wrong: `ESC i X` is the family of stored settings, and [PST-Mac] uses it on PT models (§3.6). Only the §3.6 forms may be sent.
+- Every command in the §3.6.6 "never send" list (factory reset, report print, cleaning, test prints, reboot).
+
+### 3.6 Printer settings (Auto Power On, Auto Power Off and other stored settings)
+
+Brother's *Printer Setting Tool* changes settings that the printer keeps across power cycles. The main ones are the two Auto Power Off timers and Auto Power On. No Brother command reference documents these commands: they are absent from [D1]–[D4] and the QL raster references. This section rests on the following sources:
+
+- **[PST-Mac]**: Brother's own per-model definition files, decrypted from the tool. This is the primary source. Each definition gives the exact get/set bytes, reply length, value offset and allowed values.
+- Community hardware tests: [inventree] (PT-P700, QL-700, QL-1110NWB), [dacha] (PT-P700) and [brother_ql#50] (QL-800 USB capture).
+- [toml0006]: a table derived from the same Mac tool. It agrees with [PST-Mac] byte for byte and is hardware-tested on a QL-1100 only. It is **not** an independent source for PT bytes.
+
+**Status: UNVERIFIED on any PT hardware.** The read-only probe on the PT-P710BT was skipped on 2026-10-16: the printer was not on USB, and Bluetooth returned page timeout `0xE00002D6` (printer off).
+
+#### 3.6.1 Command families
+
+| Family | Get | Set | Notes |
+|---|---|---|---|
+| `ESC i U <op>` | `1B 69 55 <op> 01 [sel]` | `1B 69 55 <op> 00 [sel] <v>` | `01` = get and `00` = set in every source [PST-Mac, inventree, dacha, brother_ql#50]. `op`: `70` 'p' Auto Power On; `41` 'A' Auto Power Off; `61` 'a' command mode (QL only). On series-`30` (PT) printers, `41` takes a selector byte `sel` (PT-P700: [inventree] "0x30 series needs an extra byte"; P710BT/P9xx: [PST-Mac]). QL-600/800 and TP-M5000N have a single timer and no selector. The family is official for other settings: `ESC i U B/b/P/C` serial-port settings "applied the next time that the machine is turned on" [ESCP-P900 pp.84–86], and `ESC i U x` reboot [ESCP-RJ4 p.69]. |
+| `ESC i X <id>` | `1B 69 58 <id> 31 <len16> [args]` | `1B 69 58 <id> 32 <len16> [args] <v>` | Official framing for "static" (stored) settings [TMPL-P900 p.75, p.94; ESCP-RJ4 pp.125–129]. Reply `01 00 <v>` (LE16 length 1, then the value). The `<len16>` of the get forms is inconsistent between models: P710BT uses `6F 31 01 00`, QL uses `6F 31 00 00` [PST-Mac], so copy the get bytes verbatim per model. |
+| `ESC i DC1 S <id>` | `1B 69 11 53 <id> 00 00 00` | `1B 69 11 53 <id> 01 <len16> <data>` | Official [ESCP-RJ4 pp.130–131]. Note the flag polarity is the reverse of `ESC i U` (here `00` = get). Reply: 6 bytes `00 01 <ack> <len16> <data>`. Used on PT-P910BT only (special tape feed). |
+| `55 0B` (no ESC) | `55 0B 04 0D` | `55 0B 03 0D <v>` | PT-P710BT/P715eBT length adjustment [PST-Mac]; also sent to a PT-P700 [dacha]. 1-byte reply. Framing **UNKNOWN** (INFERRED: `04` get, `03` set, `0D` item). |
+
+#### 3.6.2 Session (normative for `ptouch`)
+
+Brother's sequence [PST-Mac], from the engine `UserDefineTab::receiveSettings` / `sendSettings` and `ComManager::sendCommand` in the tool's binary:
+
+- **Read:**
+  1. `1B 40 1B 69 61 01`.
+  2. Each get command, followed by a read of the model's reply length.
+  3. `1B 69 61 FF`.
+- **Write:**
+  1. `1B 40 1B 69 61 01`.
+  2. The set command of **every** item on the tab, carrying its currently selected value. No reply is read.
+  3. `1B 7E 53 1B 69 61 FF`.
+- **Framing:** each command is its own USB session (open, write, optional read, close) with 10–20 ms gaps and a 500 ms read timeout. A short read is silently accepted.
+- **What the tool does not do:**
+  - It never sends `ESC i S`, an invalidate run, or any check of the reply header.
+  - It never reads back after a write, unless the user presses "Current Settings".
+  - It runs a factory reset as one write and then re-reads after 4 s.
+
+`ptouch` keeps the same commands and order on one open connection, with the following rules:
+
+1. Settings run only from the session's Ready state, so the handshake has identified the model, and never during a print job. The handshake already sent `00×N 1B 40 1B 69 61 01 1B 69 53`.
+2. **Read transaction:**
+   1. Write `1B 40 1B 69 61 01`.
+   2. Discard input for 100 ms.
+   3. For each item:
+      1. Discard input for 50 ms, so that a stale frame cannot shift the replies [toml0006 "stale replies"].
+      2. Write the get command.
+      3. Collect exactly the reply length within 1000 ms. [toml0006] measured about 150 ms on a QL-1100; Brother waits 500 ms.
+      4. Validate the reply (§3.6.3).
+   4. Write `1B 69 61 FF`.
+3. **Write transaction:**
+   1. Write `1B 40 1B 69 61 01`.
+   2. Write each requested set command as its own write, 50 ms apart.
+   3. Write `1B 7E 53 1B 69 61 FF` as one write.
+   4. Discard input for 500 ms.
+   5. Run a read transaction for the same items and report whether every value reads back as written.
+   - Deviation from Brother: only the requested items are written, not the whole tab. Each set command names its own item, so this is INFERRED safe.
+4. **Ending early** (cancel, timeout, error, reconnect): write `1B 69 61 FF`. If a set command has already gone out and `1B 7E 53 1B 69 61 FF` has not, write that instead, because Brother never leaves sets without `ESC ~ S`. What the printer does with sets that are never followed by `ESC ~ S` is **UNKNOWN**. After a failed transaction, the next one discards input until 1000 ms (the reply timeout) after the failure before its first get or set. A reply carries no setting id, so a late reply to the failed get could otherwise be taken as the answer to the next get.
+5. Every write or read is a separate transport write, as in Brother's per-command sessions. Whether one long-lived connection behaves the same as Brother's open/close per command is **UNVERIFIED**.
+6. Values outside the model's list (§3.6.4) are rejected before anything is sent. Replies with an unlisted value are reported raw and are not mapped.
+7. Bluetooth: the bytes are assumed identical over SPP (§1), but the Mac tool is USB-only, so the Bluetooth path is **UNVERIFIED**.
+
+`1B 7E 53` (`ESC ~ S`) is sent only after writes, in every model family of the tool (PT, QL, PJ, TP) [PST-Mac]. Its meaning is **UNKNOWN** (INFERRED: store/commit settings). [inventree] and [dacha] write without it, and [inventree] reads the new values back on PT-P700/QL hardware, so it may be optional. **Resolution:** send it, as Brother does.
+
+The Brother Mobile SDK's documentation says some settings apply only after a restart, and that values should be read back after one [MobileSDK-doc `updatePrinterSettings`]. Owners report that ESC i U values persist across power cycles [brother_ql#50]. Whether a P710BT applies a new timer immediately is **UNKNOWN**.
+
+#### 3.6.3 Reply formats
+
+| Kind | Bytes | Value | Validation | Evidence |
+|---|---|---|---|---|
+| `status_f0` | 32 | `st[30]` | `st[0..3] = 80 20 42` and `st[18] = F0` | [PST-Mac] (`getSize 32`, `index 30`); [inventree] (PT-P700/QL-700 hardware: status type `F0` "settings report", value at `data[30]`); [toml0006] (QL-1100 capture: `80 20 42 34 43 30 00 00 00 00 66 0B 00 00 2E 00 00 99 F0 00 … 00 03 01`, `st[30] = 03`). The other bytes look like an ordinary status (media width/type at 10/11; INFERRED). `st[31]` (`01` in the capture) is **UNKNOWN**. A frame of another type (an unsolicited status) is not a reply: discard it and keep waiting. |
+| `len_value` | 3 | byte 2 | `ESC i X`: `01 00` prefix [TMPL-P900 p.94]. `ESC i U A`: length only; bytes 0–1 are not checked | `ESC i X` official reply `01 00 <v>` [TMPL-P900 p.94]. For `ESC i U A` on the P900W family and P910BT, [PST-Mac] gives only the size and the value offset (`getSize="3" index="2"`), and Brother's engine reads only byte 2. A `01 00` prefix there is INFERRED by analogy with `ESC i X` and is **UNVERIFIED**, as is the 3-byte form itself (unusual for `ESC i U`). A 32-byte status frame (`80 20 42 …`) that arrives instead is a status, not the reply: an error or "turned off" frame ends the transaction, and any other frame is skipped. |
+| `raw1` | 1 | byte 0 | none | `55 0B` get [PST-Mac]. |
+| `dc1s` | 6 | byte 5 | `00 01 00` (ack 00 = OK) | [ESCP-RJ4 p.131]; P910BT [PST-Mac]. |
+
+`st[18] = F0` is otherwise undocumented (§4.2 lists `21`–`FF` as reserved). A session MUST NOT treat it as a status reply, and MUST NOT update its "last status" from it.
+
+#### 3.6.4 Per-model command tables (`settings_profile` in [models.toml](models.toml))
+
+**`p710bt`: PT-P710BT, PT-P715eBT** [PST-Mac; the two definitions are identical]. Every `ESC i U` reply is `status_f0`.
+
+| Item (Brother label) | Get | Set | Values |
+|---|---|---|---|
+| Auto Power On | `1B 69 55 70 01` | `1B 69 55 70 00 <v>` | `00` disable, `01` enable |
+| Auto Power Off (USB/AC: "when connected to a USB AC adapter or a computer" [UG-P710BT p.12]) | `1B 69 55 41 01 01` | `1B 69 55 41 00 01 <v>` | `00` none, `01`–`06` = 10–60 min (10-minute units) |
+| Auto Power Off (Li-ion) | `1B 69 55 41 01 00` | `1B 69 55 41 00 00 <v>` | same as above |
+
+**`p900w`: PT-P900W, PT-P950NW, PT-D800W, PT-E800W** [PST-Mac]. Auto Power On is `status_f0`; Auto Power Off is `len_value`.
+
+| Item | Get | Set | Values |
+|---|---|---|---|
+| Auto Power On | `1B 69 55 70 01` | `1B 69 55 70 00 <v>` | `00`/`01` |
+| Auto Power Off (AC/DC) | `1B 69 55 41 01 00` | `1B 69 55 41 00 00 <v>` | **index**: `00` none, `01`–`05` 10–50 min, `06` 1 h, `07` 2 h, `08` 4 h, `09` 8 h, `0A` 12 h. The option list matches [UG-P950NW]. |
+| Auto Power Off (Li-ion) | `1B 69 55 41 01 01` | `1B 69 55 41 00 01 <v>` | `00` none, `01`–`05` 10–50 min, `06` 1 h |
+
+**`p910bt`: PT-P910BT** [PST-Mac]. Same as `p900w`, except for these rows:
+
+| Item | Get | Set | Values |
+|---|---|---|---|
+| Auto Power Off (USB connection) | `1B 69 55 41 01 00` | `1B 69 55 41 00 00 <v>` | **10-minute units**: `00` none, `01`–`06` 10–60 min, `0C` 2 h, `18` 4 h, `30` 8 h, `48` 12 h |
+| Auto Power Off (Li-ion) | `1B 69 55 41 01 01` | `1B 69 55 41 00 01 <v>` | `00`–`06` (none … 1 h) |
+
+The value byte is model-specific: on P900W-family AC, `07` means 2 h; on P910BT it would mean 70 min, which is not listed. A library therefore maps between bytes and minutes **per profile**, never by formula [toml0006 "auto power off values"]. Whether firmware accepts unlisted bytes is **UNKNOWN**. They are never sent.
+
+**Selector conflict (`sel`, §8 #34).** [PST-Mac] gives the P710BT/P715eBT "Auto Power Off" (USB/AC) selector `01` and "Li-ion" selector `00`. Every other two-timer model in the tool uses the reverse (`00` = AC/USB, `01` = Li-ion), and on the single-power-source PT-P700 `00` is the only timer [inventree, dacha]. It may be real firmware behaviour or a Brother labelling bug. **Resolution:** follow [PST-Mac] for the P710BT. Then "Auto Power Off" in `ptouch` changes the same byte as "Auto Power Off" in Brother's tool, whichever physical timer that is. This is **UNVERIFIED**. Neither of these can settle it:
+- comparing `ptouch` reads with values set in Brother's tool, because `ptouch` copies the tool's own bytes, so the two always agree;
+- a read-back after a write, because the read uses the same selector as the write.
+
+Only timing the physical auto-off can settle it (§9.1 item 12). Until then the CLI and the studio name these two rows by Brother's labels and say that which timer each controls is unverified (`SettingSpec::selector_unverified`).
+
+**Other stored settings, catalogued only (not implemented by `ptouch`; [PST-Mac] unless noted):**
+
+| Model(s) | Item | Get → reply | Set | Values |
+|---|---|---|---|---|
+| P710BT, P715eBT, P900W family, P910BT | Information report contents | `1B 69 58 6F 31 01 00` → `len_value` | `1B 69 58 6F 32 01 00 <v>` | `00` transfer data, `01` printer settings, `02` usage log, `03` all. [dacha] sends `1B 69 58 6F 00 00` / `1B 69 58 6F 01` to a PT-P700, which does not fit the official framing (conflict, unresolved). |
+| P710BT, P715eBT | Length adjustment | `55 0B 04 0D` → `raw1` | `55 0B 03 0D <v>` | 100 + 10 × percent: `46`, `50`, `5A`, `64` (0 %), `6E`, `78`, `82` = −3 … +3 % |
+| P900W family | Save printer print log | `1B 69 58 67 31 02 00 00 00` → `len_value` | `1B 69 58 67 32 03 00 00 00 <v>` | `00`/`01` |
+| P900W family, P910BT | Length / full-cut / half-cut margin | `1B 69 58 2C 31 01 00 <ii>` → `len_value` | `1B 69 58 2C 32 02 00 <ii> <v>` | `ii` = `20` length (`78`–`88` step 2 = −4 … +4, `80` = 0); `22` full cut, `24` half cut (`72`, `79`, `80`, `87`, `8E` = −2 … +2) |
+| P910BT | Special tape feed | `1B 69 11 53 42 00 00 00` → `dc1s` | `1B 69 11 53 42 01 01 00 <v>` | `00`/`01` |
+| P910BT | Bluetooth auto re-pairing | `1B 69 58 42 31 01 00 08` → `raw1` | `1B 69 58 42 32 01 00 08 <v>` | `01` disable, `02` enable. The Mobile SDK's `BT_AUTO_CONNECTION` (0/1) is supported on P910BT [MobileSDK-doc]. |
+| P950NW | Bluetooth on/off | `1B 69 58 32 31 02 00 00 03` → `len_value` | `1B 69 58 32 32 03 00 00 03 <v>` | `01` enable, `00` disable (serial port) |
+| P950NW (also QL-820NWB, QL-1110NWB) | Bluetooth device name / address / discoverable | `1B 69 58 42 31 01 00 <id>`: `01` name (reply `<len><UTF-8>`, up to 100 bytes), `04` address (6 bytes, read-only), `02` discoverable (1 byte) | `1B 69 58 42 32 01 00 <id> …`: name `<len><bytes>` (1–30 chars), discoverable `<v>` | discoverable `00` no, `01` yes. The PIN code panel (`id 00`) was not analysed. |
+
+The tool exposes **no** Bluetooth, battery or print-log settings for the P710BT/P715eBT. The binary contains unused strings for "Auto Power Off (Ni-MH)" and "refresh battery", but no shipped definition references them [PST-Mac].
+
+Other families in the tool, for reference only:
+- QL-600/800 and TP-M5000N: single timer, `1B 69 55 41 01` / `1B 69 55 41 00 <v>`. Hardware-confirmed on QL-700/800 [brother_ql#50, inventree].
+- QL-810W/820NWB: two timers, `00` = AC, `01` = Li-ion, `status_f0`.
+- QL-1100/1110NWB: AC only, `00/06/0C/18/30/48`.
+- PJ series: an `ESC ~` family, with one 36-byte dump `1B 7E 65 55 00`.
+
+The Brother Mobile SDK v3 `PrinterSettingItem` API ([MobileSDK-doc] printer-configurations) has `PRINTER_POWEROFFTIME` (35) and `PRINTER_POWEROFFTIME_BATTERY` (36) in minutes (0 = never). It lists them for PT-E310BT/E510/E560BT, without a value list or wire bytes, and does not list the P710BT. Those models are `settings_profile = unknown` in [models.toml](models.toml).
+
+#### 3.6.5 Mapping to the Brother UI
+
+| `ptouch` id | P710BT label | P900W family label | P910BT label |
+|---|---|---|---|
+| `auto-power-on` | Auto Power On | Auto Power On | Auto Power On |
+| `auto-power-off` | Auto Power Off | Auto Power Off (AC/DC) | Auto Power Off (USB Connection) |
+| `auto-power-off-battery` | Auto Power Off (Li-ion) | Auto Power Off (Li-ion) | Auto Power Off (Li-ion) |
+
+#### 3.6.6 Never send (destructive, or prints)
+
+| Bytes | Effect | Source |
+|---|---|---|
+| `1B 69 55 58` | Factory reset (P710BT/P715eBT "Factory Reset…") | [PST-Mac] |
+| `1B 69 55 69` | Factory reset on P900W family/P910BT/D800W/E800W and QL-600/800. On P710BT it is a hidden "dummy" button, effect **UNKNOWN** | [PST-Mac] |
+| `1B 69 55 5A` | Factory reset (QL-810W/820NWB/1100/1110NWB) | [PST-Mac] |
+| `1B 69 55 4E` | Prints the settings/information report ("Print Unit Settings…") | [PST-Mac] |
+| `1B 7E 63 01 00` | Cleaning mode | [PST-Mac] |
+| `54 0C <v>`; `1B 69 61 FA 54 07/E8/E9 <v> 00`; `1B 69 21 01 1B 69 11 43 42 01 02 00 <ii> <v>` | Length/margin test prints | [PST-Mac] |
+| `1B 69 55 78` | Reboot (RJ/TD; unknown on PT) | [ESCP-RJ4 p.69] |
+| `1B 7E 52` | PJ factory reset | [PST-Mac] |
+
+`ptouch` exposes no API that emits these bytes.
+
+#### 3.6.7 Open points
+
+See §8 #34–#37 and §9.1 items 12–14:
+- the P710BT selector;
+- the P710BT reply layout beyond `st[18]`/`st[30]`;
+- the meaning of `ESC ~ S`;
+- the Bluetooth path;
+- one connection vs. per-command USB sessions;
+- immediate vs. after-restart effect;
+- the PT-P900W-family 3-byte `ESC i U A` reply;
+- the PT-E310BT/E510/E560BT bytes;
+- the `ESC i X 6F` get form.
 
 ---
 
@@ -435,6 +611,7 @@ Observed P710BT reply with 24 mm laminated white/black tape, idle [HW]:
 | `07`–`20` | Not used | – |
 | `18` | Undocumented | **Conflict:** [MacSDK] `checkStatus` routes `0x18` to the `02` branch (`getErrorInfo`) [@0x13d474]; [AndroidSDK] native `checkStatus` logs 3, 4 and 7…`0x18` as "Unexpected status value" with `ERROR_COMMUNICATION_ERROR`. **Resolution:** either way it is an error; handle it as `02`. |
 | `21`–`FF` | Reserved | Unexpected |
+| `F0` | Settings report: reply to an `ESC i U` get, value in `st[30]` (§3.6.3) [inventree, PST-Mac, toml0006] | Only expected inside a settings read. Not a status reply: do not use it as "last status". |
 
 Protocol version 91 only: any non-zero `st[8]`/`st[9]` means error, whatever the status type [SDK]. [MacSDK] `checkStatus` also runs `getErrorInfo` (bytes 8, then 9, then 7) after a type-`00` reply [@0x13d474 → @0x13b18c]. **Resolution:** evaluate all three error bytes, `st[7]`, `st[8]` and `st[9]`, on **every** frame, type `00` included, and treat any non-zero value as an error whatever `st[18]` says. Some errors are reported only in `st[7]` (§4.5.3: `1D`, `1E`, `21`, `27`).
 
@@ -1127,6 +1304,10 @@ Machine-readable details are in [models.toml](models.toml). The key behaviours:
 | 31 | macOS RFCOMM close | Brother: delegate nil + `closeChannel`, baseband only if opened; Ircama/vowstar/zakx: drain run loop, release baseband | Drain run loop ≤ 1 s; `closeConnection` also after failed opens (§2.2 step 9) |
 | 32 | Web Serial on macOS | Chromium docs: direct RFCOMM; obwat (Chrome 150/151, macOS 26, P710BT): `open()` fails | Known-failing on macOS until tested |
 | 33 | Windows BT COM port | labellab: worked once (status + print), later `ERROR_SEM_TIMEOUT` on all outgoing ports | Winsock or WinRT `ConnectAsync` (§2.4); COM port fallback only |
+| 34 | P710BT Auto Power Off selector | [PST-Mac] P710BT/P715eBT: `01` = USB/AC, `00` = Li-ion; every other two-timer model: `00` = AC, `01` = Li-ion; PT-P700 single timer = `00` [inventree, dacha] | Follow [PST-Mac] per model (UNVERIFIED; §9.1 item 12) |
+| 35 | `ESC ~ S` after setting writes | [PST-Mac]: always sent after writes; [inventree]/[dacha]: never sent, values still read back | Send it (match Brother) |
+| 36 | Reply to `ESC i U A` get | [PST-Mac]: 32-byte `F0` status on P710BT/QL, 3 bytes with the value at offset 2 on the P900W family/P910BT (no prefix given); [inventree]: 32-byte `F0` on PT-P700. The `01 00` prefix comes from the `ESC i X` reply [TMPL-P900 p.94] and is INFERRED only for `ESC i U A` | Per model (`settings_profile`); the 3-byte form is UNVERIFIED, so bytes 0–1 are not checked |
+| 37 | `ESC i X 6F` (report contents) get | [PST-Mac] P710BT `1B 69 58 6F 31 01 00`, QL `… 31 00 00`; [dacha] PT-P700 `1B 69 58 6F 01` | Not implemented; unresolved |
 
 ---
 
@@ -1148,6 +1329,15 @@ Machine-readable details are in [models.toml](models.toml). The key behaviours:
 9. macOS transport in Rust: pairing (`IOBluetoothDevicePair`, incl. a PIN request), `openConnection…`/`closeConnection`, the close/run-loop drain of §2.2 step 9, and a multi-KB MTU-chunked job.
 10. TCC: run the CLI from Terminal.app (no `NSBluetoothAlwaysUsageDescription`) and record whether a permission prompt appears and Bluetooth works.
 11. Web Serial: Chrome on the user's Mac with the P710BT (obwat saw `open()` fail on macOS 26); also with `setSignals` on the `/dev/cu.*` node.
+12. **Settings selector on P710BT (§3.6.4, §8 #34).** Only a timing test settles it, and it needs no writes from `ptouch`:
+    1. Run the read-only probe first (step 13).
+    2. In Brother's Printer Setting Tool, set distinct values: "Auto Power Off" = 10 min, "Auto Power Off (Li-ion)" = 60 min.
+    3. Unplug USB and leave the printer idle on battery. Time how long it takes to turn itself off: about 60 min confirms Brother's labels, about 10 min means the selectors are swapped.
+    4. Optionally, with USB connected, check the other timer the same way.
+
+    Running `ptouch settings get all` after step 2 only shows that both selectors can be read separately and that the tool writes what its definition says. It cannot detect a swap, because `ptouch` uses the tool's own bytes.
+13. **Read-only settings probe on P710BT** (skipped 2026-10-16: printer off). Two independent sources treat `1B 69 55 70 01` and `1B 69 55 41 01 00` as pure reads: [PST-Mac] and [inventree] (PT-P700 hardware), also [dacha]. Send them inside the §3.6.2 read transaction and record the full 32-byte replies (mask the serial if one appears). Check `st[18] = F0` and the value in `st[30]`, and compare the other bytes with a type-`00` status. `1B 69 55 41 01 01` rests on [PST-Mac] alone ([toml0006] is derived from it), so send it only after the first two reads have shown the family behaves as documented. Repeat over Bluetooth.
+14. **Settings write on P710BT**, only with the user's explicit go-ahead, and once the implementation passes its virtual-printer tests. Set Auto Power On to its current value (a no-op write), read it back, then power-cycle and read it again. This checks `ESC ~ S` and persistence before any timer is changed.
 
 ### 9.2 Model-specific unknowns
 
@@ -1173,5 +1363,7 @@ Machine-readable details are in [models.toml](models.toml). The key behaviours:
 ### 9.3 Community sources referenced
 
 [ptouch-print] (GPL-3, C, git.familie-radermacher.ch), [esp32-ptouch] jh247247/esp32-brother-ptouch (Apache-2.0), [zakx] zakx/pytouch-bt-darwin (MIT), [teip] petrepa/teip (MIT), [labelpi] topicomha/labelpi (MIT), [vowstar] vowstar/ptouch-rs (GPL-3), [Ircama] Ircama/PT-P300BT (no licence), [labellab] itsh-neumeier/labellab (MIT), [nbuchwitz] nbuchwitz/ptouch (LGPL-2.1), [stecman] stecman gist (P300BT Android btsnoop capture), [robby] robby-cornelissen/pt-p710bt-label-maker (CC-BY-4.0), [treideme] treideme/brother_pt (Apache-2.0), [rust-ptouch] ryankurte/rust-ptouch (MPL-2.0), [labelo] reivilibre/labelo (MIT/Apache-2.0), [the78mole] the78mole/ptouch-webapp (MIT), [ptouchgo] ka2n/ptouchgo (MIT), [brother_ql] pklaus/brother_ql (GPL-3), [obwat] orochi235/obwat (MIT; P710BT on macOS 26: IOBluetooth print, WebUSB, failed Web Serial), [labelartor] sartor/labelartor (MIT; Web Serial), [OpenSCQ30] OpenSCQ30 macOS RFCOMM transport (non-printer; IOBluetooth `getMTU` gotcha).
+
+Printer settings (§3.6): [inventree] matmair/brother_ql-inventree PR #57 (GPL-3; PT-P700, QL-700, QL-1110NWB hardware), [dacha] dennisss/dacha `pkg/peripherals/devices/ptouch` (Apache-2.0; PT-P700), [toml0006] toml0006/brother-label-settings (MIT; table derived from the Printer Setting Tool 1.3.5 for macOS definitions; QL-1100 hardware only), [brother_ql#50] pklaus/brother_ql issue #50 (QL-800 USB capture, QL-700 confirmation), [cups-rastertoql] flap/cups-rastertoql `qlcommon.c` (GPL-2.0+; QL auto power on/off).
 
 Only protocol facts were taken from these sources. No code from GPL/LGPL/unlicensed projects may be copied into this MIT/Apache crate.

@@ -5,8 +5,9 @@ use wasm_bindgen::prelude::*;
 
 use crate::convert::{
     media_dto, media_for_width_mm, model_dto, print_area_dto, resolve_media, resolve_model,
+    settings_info,
 };
-use crate::dto::{MediaInfo, ModelInfo, PrintArea, TapeKind};
+use crate::dto::{MediaInfo, ModelInfo, PrintArea, SettingInfo, TapeKind};
 use crate::error::{from_ts, js_err, ts};
 
 /// Every model in the core table, in table order (PT-P710BT first).
@@ -63,4 +64,15 @@ pub fn media_for_status(
     let p = resolve_model(model).map_err(js_err)?;
     let t = ptouch::tape_for_status(p, width_byte, media_type_byte).map_err(js_err)?;
     ts(&media_dto(t))
+}
+
+/// The printer-stored settings `model` supports (PROTOCOL.md §3.6), in display order, with
+/// their allowed values; `[]` for an unknown model or one without settings support (hide the
+/// feature then). Settings support is untested on hardware for every model so far.
+///
+/// # Errors
+/// Only on an internal serialization failure.
+#[wasm_bindgen(js_name = settingsFor)]
+pub fn settings_for(model: &str) -> Result<Vec<Ts<SettingInfo>>, JsValue> {
+    settings_info(model).iter().map(ts).collect()
 }

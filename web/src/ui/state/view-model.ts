@@ -76,7 +76,7 @@ export interface ChipView {
   busy: boolean
 }
 
-const BUSY_STATES: ReadonlySet<ClientState> = new Set(['opening', 'waking', 'handshaking', 'printing', 'cancelling'])
+const BUSY_STATES: ReadonlySet<ClientState> = new Set(['opening', 'waking', 'handshaking', 'printing', 'cancelling', 'settings'])
 
 /** Tape description from a snapshot: "24 mm white / black". */
 export function tapeText(conn: Pick<ConnectionSnapshot, 'status' | 'media'>): string | null {
@@ -112,6 +112,8 @@ export function chipView(conn: ConnectionSnapshot): ChipView {
       return { tone: 'busy', text: conn.progress ? `Printing ${conn.progress.page}/${conn.progress.of}` : 'Printing…', detail, busy }
     case 'cancelling':
       return { tone: 'busy', text: 'Cancelling…', detail, busy }
+    case 'settings':
+      return { tone: 'busy', text: `${model} · settings…`, detail, busy }
     case 'no-reply':
       // Firefox's dead macOS port: reconnecting won't help; follow the banner's guidance.
       if (conn.problem?.id === 'no-reply-firefox') return { tone: 'warn', text: 'No reply', detail: 'Use Chrome or Edge, or re-pair the printer', busy }
@@ -137,7 +139,7 @@ export function chipLabel(view: Pick<ChipView, 'text' | 'detail'>): string {
 }
 
 export function isConnected(state: ClientState): boolean {
-  return state === 'ready' || state === 'printing' || state === 'cancelling'
+  return state === 'ready' || state === 'printing' || state === 'cancelling' || state === 'settings'
 }
 
 /**
@@ -250,6 +252,8 @@ export function printBlockReason(g: PrintGate): string | null {
     case 'printing':
     case 'cancelling':
       return 'A label is printing.'
+    case 'settings':
+      return 'Busy: printer settings.'
     case 'opening':
     case 'waking':
     case 'handshaking':

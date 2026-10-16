@@ -102,7 +102,24 @@ ptouch --device virtual:24 print --text "Hello"              # full print agains
 
 `--dry-run` writes the byte-exact job, then checks it twice: it decodes the bytes offline, and it prints them through the real print session against a simulated printer. It reports whether the result matches the rendered label and lists any protocol violations.
 
-Exit codes: 0 on success, 1 on a printer, transport or rendering error (with a one-line hint for common problems), 2 on a usage error.
+### Printer settings (Auto Power Off, Auto Power On)
+
+`ptouch settings` reads and changes settings the printer stores, the same ones Brother's Printer Setting Tool changes. Supported models: PT-P710BT, PT-P715eBT, PT-P900W, PT-P950NW, PT-D800W, PT-E800W and PT-P910BT. **None of this has been tested on a real printer yet**, so every `set` prints a warning (see [`docs/HARDWARE-TESTS.md`](docs/HARDWARE-TESTS.md) §9).
+
+```sh
+ptouch --usb settings get                          # all three settings
+ptouch --usb settings get auto-power-off-battery   # one setting
+ptouch --model PT-P710BT settings list             # the values each model offers (offline)
+ptouch --usb settings set auto-power-off 30        # asks for confirmation, then reads it back
+ptouch --usb settings set auto-power-on off --yes  # no prompt (needed when stdin is not a terminal)
+ptouch --model PT-P710BT settings set auto-power-off 10 --dry-run   # print the bytes, connect to nothing
+```
+
+Settings: `auto-power-on` (`on`/`off`), `auto-power-off` (on external power) and `auto-power-off-battery` (Li-ion). Durations are written `never`, `10`, `10min` or `2h`, and only the values the model offers are accepted: on the PT-P710BT these are never and 10–60 min. After a change, `set` reads the value back and prints `(verified)`. A value that is already set is not written again unless you pass `--force`. If a write fails or is interrupted, the printer may still have stored the new value, so run `settings get`.
+
+On the PT-P710BT it is not yet known which of Brother's two Auto Power Off settings is the USB/AC timer and which is the battery timer: Brother's own definition may have them swapped (docs/PROTOCOL.md §8 #34). `ptouch` changes the same byte as Brother's tool for each name. `(verified)` means the printer stored the value; it does not show which timer uses it.
+
+Exit codes: 0 on success, 1 on a printer, transport or rendering error (with a one-line hint for common problems), 2 on a usage error or a refused request (unknown setting, a value the model does not offer, `set` without `--yes` when stdin is not a terminal, or answering no at the prompt), 130 after Ctrl-C.
 
 ## Web studio
 
@@ -149,6 +166,8 @@ The browser also needs write access to the printer's `/dev/bus/usb/…` node. Mo
 **Privacy.** Everything stays in your browser. Labels are saved in the browser's IndexedDB, preferences in `localStorage`. The page only talks to its own site, never to third parties (enforced by its Content Security Policy): library fonts are downloaded from it the first time you use them. Share links carry the label in the URL fragment (`#d=…`), which browsers never send to a server. After the first visit the studio also works offline and can be installed as an app. Wi-Fi passwords are saved only in this browser: share links and exported label files leave them out unless you tick *Include Wi-Fi password*. Uploaded fonts, print history and the tape counter are also stored only in the browser. The diagnostics report never includes your labels.
 
 **Labels** autosave as you edit. *Export* writes a self-contained `.ptlabel.json` file with the images included. *Share link* puts the label into a link and leaves out images over 32 KB. Custom fonts are never included, so the receiver sees the built-in font unless they have the same font.
+
+**Printer settings** (click the connection chip, then *Printer settings…*; also a card in Diagnostics) reads and changes Auto Power On and the two Auto Power Off timers on the models listed under *Printer settings* in the CLI section, over USB or Bluetooth. Choose a value, click *Apply* and confirm; the studio reads the value back to check that the printer stored it. It is untested on real printers, and on the PT-P710BT the two timers are shown by Brother's names because which one is the battery timer is not yet known.
 
 **Diagnostics** (top bar, or `…/ptouch/#diagnostics`) shows what the browser supports, probes the link by every connection path (status request, open/close ×3) with a hex packet log, prints orientation and ruler test labels, and encodes jobs against a virtual printer so you can download the exact bytes. *Copy diagnostics* produces a bug report with device names and addresses masked.
 

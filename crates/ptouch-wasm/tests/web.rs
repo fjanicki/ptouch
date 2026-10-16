@@ -14,7 +14,7 @@ use js_sys::{JSON, Reflect};
 use ptouch_wasm::dto::{CodeSpec, PrinterStatus, SessionEvent, SessionState};
 use ptouch_wasm::{
     Bitmap1, PrintSession, Raster, StatusFramer, VirtualPrinter, encode_code, encode_job,
-    is_ptouch_error, list_models, media_for_width, parse_status, print_area,
+    is_ptouch_error, list_models, media_for_width, parse_status, print_area, settings_for,
 };
 use tsify::Ts;
 use wasm_bindgen::{JsCast, JsValue};
@@ -315,8 +315,10 @@ fn step(
     }
     *now = now.max(next);
     while let Some(f) = vp.poll_output(*now) {
-        s.handle_input(&f[..7], *now);
-        s.handle_input(&f[7..], *now);
+        // 3-byte settings replies arrive whole.
+        let (a, b) = f.split_at(f.len().min(7));
+        s.handle_input(a, *now);
+        s.handle_input(b, *now);
     }
     if s.poll_timeout().is_some_and(|t| t <= *now) {
         s.handle_timeout(*now);
@@ -429,4 +431,175 @@ fn virtual_printer_behaviours_from_js() {
     .unwrap();
     let st: JsValue = parse_status(&none.idle_status()).unwrap().into();
     assert_eq!(get(&st, "mediaType").as_string().as_deref(), Some("none"));
+}
+
+/// Steps until `done(events)` (or panics after 10 000 steps).
+fn run_until(
+    s: &mut PrintSession,
+    vp: &mut VirtualPrinter,
+    now: &mut f64,
+    events: &mut Vec<SessionEvent>,
+    done: impl Fn(&[SessionEvent]) -> bool,
+) {
+    for _ in 0..10_000 {
+        if done(events) {
+            return;
+        }
+        // `step` drains events before it finds nothing left to wait for.
+        if !step(s, vp, now, events) {
+            assert!(done(events), "stalled: {events:?}");
+            return;
+        }
+    }
+    panic!("not done: {events:?}");
+}
+
+#[wasm_bindgen_test]
+fn settings_round_trip_through_print_session() {
+    // settingsFor: shapes as JS sees them.
+    let info: Vec<JsValue> = settings_for("PT-P710BT")
+        .unwrap()
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    assert_eq!(info.len(), 3);
+    assert_eq!(
+        get(&info[1], "id").as_string().as_deref(),
+        Some("auto-power-off")
+    );
+    assert_eq!(
+        get(&info[1], "kind").as_string().as_deref(),
+        Some("duration")
+    );
+    assert_eq!(
+        get(&info[1], "brotherLabel").as_string().as_deref(),
+        Some("Auto Power Off")
+    );
+    assert_eq!(
+        JSON::stringify(&get(&info[0], "choices"))
+            .unwrap()
+            .as_string()
+            .as_deref(),
+        Some(r#"[{"kind":"enabled","enabled":false},{"kind":"enabled","enabled":true}]"#)
+    );
+    assert!(settings_for("PT-E560BT").unwrap().is_empty());
+    assert!(settings_for("nope").unwrap().is_empty());
+
+    let mut vp = VirtualPrinter::new("PT-P710BT", "tze128-24", None, None).unwrap();
+    assert!(vp.set_setting_byte(0x41, Some(0), 0x07));
+    let mut s = PrintSession::new(None, None).unwrap();
+    let mut now = 1000.0;
+    let mut events: Vec<SessionEvent> = Vec::new();
+    s.connect(now);
+    run_until(&mut s, &mut vp, &mut now, &mut events, |e| {
+        e.iter().any(|e| matches!(e, SessionEvent::Ready { .. }))
+    });
+    let err = s.read_settings(js("[]"), now).unwrap_err();
+    assert_eq!(code_of(&err), "EMPTY");
+    let err = s
+        .write_settings(
+            js(r#"[{"id":"auto-power-off","value":{"kind":"minutes","minutes":120}}]"#),
+            now,
+        )
+        .unwrap_err();
+    assert_eq!(code_of(&err), "INVALID_INPUT");
+    let err = s.read_settings(js(r#"["bogus"]"#), now).unwrap_err();
+    assert_eq!(code_of(&err), "INVALID_INPUT");
+
+    s.read_settings(
+        js(r#"["auto-power-on","auto-power-off","auto-power-off-battery"]"#),
+        now,
+    )
+    .unwrap();
+    let state: JsValue = s.state().unwrap().into();
+    assert_eq!(
+        get(&state, "state").as_string().as_deref(),
+        Some("settings")
+    );
+    assert_eq!(code_of(&s.request_status(now).unwrap_err()), "BUSY");
+    run_until(&mut s, &mut vp, &mut now, &mut events, |e| {
+        e.iter()
+            .any(|e| matches!(e, SessionEvent::SettingsRead { .. }))
+    });
+    let read = events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::SettingsRead { .. }))
+        .unwrap();
+    let read_js: JsValue = Ts::<SessionEvent>::from_rust(read).unwrap().into();
+    assert_eq!(
+        get(&read_js, "type").as_string().as_deref(),
+        Some("settings-read")
+    );
+    let report = get(&read_js, "report");
+    let battery = Reflect::get(&report, &JsValue::from(2)).unwrap();
+    assert_eq!(get(&battery, "unlistedByte").as_f64(), Some(7.0));
+    assert_eq!(
+        get(&battery, "text").as_string().as_deref(),
+        Some("unknown (0x07)")
+    );
+    let ac = Reflect::get(&report, &JsValue::from(1)).unwrap();
+    assert_eq!(get(&ac, "value.minutes").as_f64(), Some(30.0));
+    assert_eq!(get(&ac, "text").as_string().as_deref(), Some("30 min"));
+
+    s.write_settings(
+        js(r#"[{"id":"auto-power-off-battery","value":{"kind":"minutes","minutes":60}}]"#),
+        now,
+    )
+    .unwrap();
+    run_until(&mut s, &mut vp, &mut now, &mut events, |e| {
+        e.iter()
+            .any(|e| matches!(e, SessionEvent::SettingsWritten { .. }))
+    });
+    let written = events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::SettingsWritten { .. }))
+        .unwrap();
+    let w: JsValue = Ts::<SessionEvent>::from_rust(written).unwrap().into();
+    assert_eq!(
+        get(&w, "type").as_string().as_deref(),
+        Some("settings-written")
+    );
+    assert_eq!(get(&w, "verified").as_bool(), Some(true));
+    let r0 = Reflect::get(&get(&w, "report"), &JsValue::from(0)).unwrap();
+    assert_eq!(get(&r0, "text").as_string().as_deref(), Some("60 min"));
+    assert_eq!(vp.setting_byte(0x41, Some(0)), Some(6));
+    assert_eq!(vp.commits(), 1);
+    assert!(vp.violations().is_empty());
+}
+
+#[wasm_bindgen_test]
+fn settings_timeout_is_reported() {
+    let mut vp = VirtualPrinter::new(
+        "PT-P710BT",
+        "tze128-24",
+        Some(js(r#"{"kind":"settings-silent"}"#)),
+        None,
+    )
+    .unwrap();
+    let mut s = PrintSession::new(None, Some(js(r#"{"settingsReplyTimeoutMs":200}"#))).unwrap();
+    let mut now = 0.0;
+    let mut events: Vec<SessionEvent> = Vec::new();
+    s.connect(now);
+    run_until(&mut s, &mut vp, &mut now, &mut events, |e| {
+        e.iter().any(|e| matches!(e, SessionEvent::Ready { .. }))
+    });
+    s.read_settings(js(r#"["auto-power-on"]"#), now).unwrap();
+    run_until(&mut s, &mut vp, &mut now, &mut events, |e| {
+        e.iter().any(|e| matches!(e, SessionEvent::Failed { .. }))
+    });
+    let failed = events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::Failed { .. }))
+        .unwrap();
+    let f: JsValue = Ts::<SessionEvent>::from_rust(failed).unwrap().into();
+    assert_eq!(
+        get(&f, "error.code").as_string().as_deref(),
+        Some("TIMEOUT")
+    );
+    assert_eq!(
+        get(&f, "error.timeout").as_string().as_deref(),
+        Some("settings-reply")
+    );
+    let state: JsValue = s.state().unwrap().into();
+    assert_eq!(get(&state, "state").as_string().as_deref(), Some("ready"));
 }

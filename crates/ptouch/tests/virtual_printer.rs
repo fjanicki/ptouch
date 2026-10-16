@@ -49,7 +49,7 @@ fn drain(vp: &mut VirtualPrinter, until_ms: u64) -> Vec<(u64, [u8; STATUS_LEN])>
             break;
         }
         let f = vp.poll_output(at).expect("due frame");
-        out.push((at, f));
+        out.push((at, f.try_into().expect("a 32-byte status frame")));
     }
     out
 }
@@ -92,7 +92,7 @@ fn idle_status_and_reply_equal_the_fixture() {
     assert_eq!(vp.poll_output(1_000), None, "reply is not instantaneous");
     let at = vp.next_output_at().expect("reply scheduled");
     assert_eq!(at, 1_000 + VirtualTiming::default().reply_delay_ms);
-    assert_eq!(vp.poll_output(at), Some(FIXTURE));
+    assert_eq!(vp.poll_output(at), Some(FIXTURE.to_vec()));
     assert_eq!(vp.poll_output(u64::MAX), None);
 
     // Other widths change st[10] only.

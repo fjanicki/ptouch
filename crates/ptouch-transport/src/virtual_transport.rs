@@ -78,11 +78,12 @@ impl VirtualTransport {
         u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// Moves every frame due at `now_ms` into `pending`, fragmented.
+    /// Moves every reply (status frame or 3-byte settings reply) due at `now_ms` into `pending`,
+    /// fragmented.
     fn collect_due(&mut self, now_ms: u64) {
         while let Some(frame) = self.printer.poll_output(now_ms) {
             if self.fragment.is_empty() {
-                self.pending.push_back(frame.to_vec());
+                self.pending.push_back(frame);
                 continue;
             }
             let mut rest: &[u8] = &frame;

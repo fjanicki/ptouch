@@ -7,7 +7,7 @@
 
 use super::{
     BatteryFormat, BtSocketSecurity, CancelCommand, Caps, Compression, Geometry, Model,
-    ModelProfile, PageCommand, Sends, TapeKind, TapeSpec, Transports,
+    ModelProfile, PageCommand, Sends, SettingsProfile, TapeKind, TapeSpec, Transports,
 };
 
 /// `meta.usb_vendor_id`.
@@ -1016,6 +1016,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Reserved),
+        settings_profile: Some(SettingsProfile::P710bt),
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -1040,6 +1041,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
             "Community measured 80-81 printable px on 12 mm tape [labelo] vs Brother's 70; geometry override may be needed.",
             "High-res ESC i z n2=0x09 with n1|=0x02 comes from the SDK only; unverified on this model.",
             "Min length: D1 4.4 mm (31 dots incl. 2 x 2 mm margins); PTD minlen 4.0 mm; SDK 0 (not checked).",
+            "Settings (PROTOCOL.md §3.6): Brother's definition reads Auto Power Off (USB/AC) with selector 01 and Li-ion with 00, the reverse of every other model; unverified on hardware.",
         ],
         unknown: &[],
     },
@@ -1096,6 +1098,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Reserved),
+        settings_profile: Some(SettingsProfile::P710bt),
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -1174,6 +1177,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(250),
         max_length_mm_x10: Some(5000),
         battery_format: None,
+        settings_profile: None,
         media: &[&P300_3_5, &P300_6, &P300_9, &P300_12],
         quirks: &[
             "Own margin table (PT3): 12 mm prints 64 pins (32..95), 3.5 mm prints 18 pins [SDK, PTD, labelpi measured].",
@@ -1242,6 +1246,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: None,
         max_length_mm_x10: None,
         battery_format: None,
+        settings_profile: None,
         media: &[&P300_3_5, &P300_6, &P300_9, &P300_12],
         quirks: &[
             "Variant of PT-P300BT known only from SDK spec databases; assumed identical protocol. No hardware report.",
@@ -1310,6 +1315,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::LevelAc),
+        settings_profile: Some(SettingsProfile::P910bt),
         media: &[
             &TZE560_3_5,
             &TZE560_6,
@@ -1383,6 +1389,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(48),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::LevelAc),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -1414,7 +1421,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
             "ESC i M bit 7 (mirror) is documented in D4, but the SDK VariousMode lacks MIRROR: hardware mirror is documented-but-unverified; the library mirrors in software.",
             "min_length_mm 4.8 [D4, SDK] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
         ],
-        unknown: &[],
+        unknown: &["settings_profile"],
     },
     ModelProfile {
         model: Model::PtE310bt,
@@ -1469,6 +1476,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::LevelAc),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -1491,7 +1499,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
             "ESC i M bit 7 (mirror) is documented in D4 without model exception, but the SDK never sets it: hardware mirror is documented-but-unverified; the library mirrors in software.",
             "min_length_mm 4.8 [D4, SDK] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
         ],
-        unknown: &["rfcomm_channel_observed"],
+        unknown: &["rfcomm_channel_observed", "settings_profile"],
     },
     ModelProfile {
         model: Model::PtD610bt,
@@ -1546,6 +1554,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(48),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::LevelAc),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -1623,6 +1632,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(48),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::LevelAc),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -1696,6 +1706,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: None,
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -1771,6 +1782,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::LevelAc),
+        settings_profile: None,
         media: &[
             &TZE560_3_5,
             &TZE560_6,
@@ -1847,6 +1859,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(260),
         max_length_mm_x10: Some(3000),
         battery_format: Some(BatteryFormat::None),
+        settings_profile: None,
         media: &[&N25_3_5, &N25_6, &N25_9, &N25_12],
         quirks: &[
             "BLE only (Brother 'Parser Service' A76EB9E0-...), framing 06 F0 NN 00 per PROTOCOL.md §2.7; not reachable from MacPrintSDK.",
@@ -1918,6 +1931,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(48),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::LevelAc),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -1941,7 +1955,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
             "ESC i M bit 7 (mirror) is documented in D4, but the SDK VariousMode lacks MIRROR: documented-but-unverified; mirror in software.",
             "min_length_mm 4.8 [D4, SDK] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
         ],
-        unknown: &[],
+        unknown: &["settings_profile"],
     },
     ModelProfile {
         model: Model::PtD410,
@@ -1996,6 +2010,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(48),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::LevelAc),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -2067,6 +2082,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Reserved),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -2146,6 +2162,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Reserved),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -2223,6 +2240,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Reserved),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -2247,7 +2265,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
             "HS 3:1 listed in PTD only (SDK paper list PT).",
             "min_length_mm 4.4 [D3] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
         ],
-        unknown: &[],
+        unknown: &["settings_profile"],
     },
     ModelProfile {
         model: Model::PtH500,
@@ -2302,6 +2320,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Reserved),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -2374,6 +2393,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Reserved),
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -2452,6 +2472,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: None,
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -2525,6 +2546,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: None,
+        settings_profile: None,
         media: &[
             &TZE128_3_5,
             &TZE128_6,
@@ -2599,6 +2621,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Legacy),
+        settings_profile: None,
         media: &[
             &TZE560_3_5,
             &TZE560_6,
@@ -2628,7 +2651,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
             "ESC i !: D2's command reference lists it with no model exception, but D2's own print-sequence table marks the step '(PT-P910BT only)' and the SDK has no ChangeStatusMode for the P900 family. Library does not send it; PI_RECOVER gives pushed status instead. Whether the firmware accepts ESC i ! is UNVERIFIED.",
             "min_length_mm 4.0 [D2] (print data incl. 2 x margin); editor_min_label_mm is the PTD editor limit.",
         ],
-        unknown: &["protocol_version"],
+        unknown: &["protocol_version", "settings_profile"],
     },
     ModelProfile {
         model: Model::PtP900w,
@@ -2683,6 +2706,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Legacy),
+        settings_profile: Some(SettingsProfile::P900w),
         media: &[
             &TZE560_3_5,
             &TZE560_6,
@@ -2767,6 +2791,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: Some(BatteryFormat::Legacy),
+        settings_profile: Some(SettingsProfile::P900w),
         media: &[
             &TZE560_3_5,
             &TZE560_6,
@@ -2850,6 +2875,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: None,
+        settings_profile: Some(SettingsProfile::P900w),
         media: &[
             &TZE560_3_5,
             &TZE560_6,
@@ -2930,6 +2956,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: None,
+        settings_profile: Some(SettingsProfile::P900w),
         media: &[
             &TZE560_3_5,
             &TZE560_6,
@@ -3010,6 +3037,7 @@ pub(super) static PROFILES: &[ModelProfile] = &[
         editor_min_label_mm_x10: Some(40),
         max_length_mm_x10: Some(10000),
         battery_format: None,
+        settings_profile: None,
         media: &[
             &TZE560_3_5,
             &TZE560_6,

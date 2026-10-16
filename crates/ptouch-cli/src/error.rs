@@ -81,9 +81,46 @@ pub enum CliError {
     /// Bad combination of arguments not caught by clap.
     #[error("{0}")]
     Usage(String),
+    /// A request refused before touching the printer (exit code 2): an unknown setting, a
+    /// value the model does not offer, a settings change without `--yes` off a terminal.
+    #[error("{0}")]
+    Refused(String),
+    /// The model has no known settings commands (exit code 2).
+    #[error("printer settings are not supported on {0}")]
+    SettingsUnsupported(String),
+    /// A settings write ended with an error; the printer may have stored the new value.
+    #[error(
+        "changing the setting failed: {0}; the printer may have stored the new value \
+         (check with `ptouch settings get`)"
+    )]
+    SettingsWriteFailed(ptouch::Error),
+    /// A settings write was ended by Ctrl-C or a link failure; the printer may have stored the
+    /// new value. Exit code and hint are the inner error's (130 for Ctrl-C).
+    #[error("{0}; the printer may have stored the new value (check with `ptouch settings get`)")]
+    SettingsWriteInterrupted(Box<CliError>),
+    /// The read-back after a settings write differs from the value written.
+    #[error("printer reports {got} after writing {wanted}")]
+    SettingNotVerified {
+        /// The value written.
+        wanted: String,
+        /// The value read back.
+        got: String,
+    },
 }
 
 impl CliError {
+    /// Process exit code: 2 for usage-like refusals ([`CliError::Refused`],
+    /// [`CliError::SettingsUnsupported`]), 130 for Ctrl-C, 1 otherwise.
+    #[must_use]
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Self::Refused(_) | Self::SettingsUnsupported(_) => 2,
+            Self::Interrupted => crate::interrupt::EXIT_CODE,
+            Self::SettingsWriteInterrupted(inner) => inner.exit_code(),
+            _ => 1,
+        }
+    }
+
     /// Wraps an I/O error with the path it concerns.
     pub fn file(path: impl Into<std::path::PathBuf>, source: std::io::Error) -> Self {
         Self::File {
@@ -97,7 +134,18 @@ impl CliError {
     #[must_use]
     pub fn hint(&self) -> Option<&'static str> {
         match self {
-            Self::Protocol(e) | Self::JobFailed { error: e, .. } => protocol_hint(e),
+            Self::Protocol(e) | Self::JobFailed { error: e, .. } | Self::SettingsWriteFailed(e) => {
+                protocol_hint(e)
+            }
+            Self::SettingsWriteInterrupted(inner) => inner.hint(),
+            Self::SettingsUnsupported(_) => Some(
+                "settings are known for PT-P710BT, PT-P715eBT, PT-P900W, PT-P950NW, PT-D800W, \
+                 PT-E800W and PT-P910BT; use Brother's Printer Setting Tool for other models",
+            ),
+            Self::SettingNotVerified { .. } => Some(
+                "the printer may not support this change over this link, or may need a restart; \
+                 run `ptouch settings get` again",
+            ),
             Self::Transport(e) | Self::LinkLost { source: e, .. } => transport_hint(e),
             Self::Printer(errors) => errors.headline().map(printer_error_hint),
             Self::TapeMismatch { .. } => Some(
@@ -118,7 +166,7 @@ impl CliError {
                 Some("run `ptouch fonts` to list usable fonts, or pass a .ttf/.otf file")
             }
             Self::Image { .. } => Some("convert the image to PNG (or PBM/PGM)"),
-            Self::File { .. } | Self::Usage(_) | Self::Interrupted => None,
+            Self::File { .. } | Self::Usage(_) | Self::Refused(_) | Self::Interrupted => None,
         }
     }
 }
@@ -134,6 +182,10 @@ fn protocol_hint(e: &ptouch::Error) -> Option<&'static str> {
         Error::Timeout(TimeoutKind::Page { .. }) => {
             Some("check the printer for a tape jam or an open cover; resume with --from-page")
         }
+        Error::Timeout(TimeoutKind::SettingsReply) => Some(
+            "the printer did not answer the settings request; it may not support it over this \
+             link",
+        ),
         Error::MediaMismatch { .. } => {
             Some("load the matching cassette, or omit --tape to render for the loaded tape")
         }
@@ -268,6 +320,14 @@ mod tests {
         assert!(e.hint().is_some());
         let e = CliError::Usage("x".into());
         assert!(e.hint().is_none());
+        let e = CliError::from(ptouch::Error::Timeout(ptouch::TimeoutKind::SettingsReply));
+        assert!(e.hint().is_some_and(|h| h.contains("over this link")));
+        assert_eq!(CliError::Refused("x".into()).exit_code(), 2);
+        assert_eq!(
+            CliError::SettingsUnsupported("PT-E560BT".into()).exit_code(),
+            2
+        );
+        assert_eq!(CliError::NoDevice.exit_code(), 1);
     }
 
     #[test]

@@ -331,7 +331,8 @@ pub struct OpenOptions {
     pub connect_timeout: Duration,
     /// Settle time after connect (default 500 ms, PROTOCOL.md §2.1 "Timing").
     pub settle: Duration,
-    /// Model hint (from discovery / `--model`) for the RFCOMM channel fallback order.
+    /// Model hint (from discovery / `--model`) for the RFCOMM channel fallback order; also the
+    /// simulated model of a `virtual:` endpoint (default PT-P710BT).
     pub model_hint: Option<&'static ptouch::ModelProfile>,
     /// Write timeout (default 60 s; USB and RFCOMM back-pressure for the print duration).
     /// Used by USB, TCP, Linux RFCOMM (`SO_SNDTIMEO`) and macOS RFCOMM (per write
@@ -384,7 +385,7 @@ pub fn open(endpoint: &Endpoint, opts: &OpenOptions) -> Result<Box<dyn Transport
             t.set_write_timeout(opts.write_timeout)?;
             Ok(Box::new(t))
         }
-        Endpoint::Virtual { width_mm } => open_virtual(*width_mm),
+        Endpoint::Virtual { width_mm } => open_virtual(*width_mm, opts.model_hint),
     }
 }
 
@@ -447,9 +448,16 @@ fn open_usb(
 }
 
 #[cfg(feature = "virtual")]
-fn open_virtual(width_mm: u8) -> Result<Box<dyn Transport>, TransportError> {
-    let profile = ptouch::profile(ptouch::Model::PtP710bt)
-        .ok_or(TransportError::NotFound(String::from("PT-P710BT profile")))?;
+fn open_virtual(
+    width_mm: u8,
+    model_hint: Option<&'static ptouch::ModelProfile>,
+) -> Result<Box<dyn Transport>, TransportError> {
+    // The model hint (`--model`) picks the simulated model; PT-P710BT otherwise.
+    let profile = match model_hint {
+        Some(p) => p,
+        None => ptouch::profile(ptouch::Model::PtP710bt)
+            .ok_or(TransportError::NotFound(String::from("PT-P710BT profile")))?,
+    };
     Ok(Box::new(crate::virtual_transport::VirtualTransport::new(
         profile,
         width_mm,
@@ -458,7 +466,10 @@ fn open_virtual(width_mm: u8) -> Result<Box<dyn Transport>, TransportError> {
 }
 
 #[cfg(not(feature = "virtual"))]
-fn open_virtual(_width_mm: u8) -> Result<Box<dyn Transport>, TransportError> {
+fn open_virtual(
+    _width_mm: u8,
+    _model_hint: Option<&'static ptouch::ModelProfile>,
+) -> Result<Box<dyn Transport>, TransportError> {
     Err(TransportError::Unsupported(
         "the virtual printer (feature `virtual`)",
     ))

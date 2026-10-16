@@ -7,9 +7,14 @@
 use tsify::Ts;
 use wasm_bindgen::prelude::*;
 
-use crate::convert::{event_dto, resolve_model, session_config, state_dto, status_dto};
-use crate::dto::{PrinterStatus, SessionConfig, SessionEvent, SessionState};
-use crate::error::{from_ts_or_default, js_err, ts};
+use crate::convert::{
+    event_dto_for, resolve_model, session_config, setting_id_core, setting_value_core, state_dto,
+    status_dto,
+};
+use crate::dto::{
+    PrinterStatus, SessionConfig, SessionEvent, SessionState, SettingIdList, SettingWriteList,
+};
+use crate::error::{from_ts, from_ts_or_default, js_err, ts};
 use crate::job::Job;
 
 /// Converts a JS `performance.now()` value to the core's `u64` ms (negative/NaN → 0).
@@ -66,7 +71,8 @@ impl PrintSession {
     /// `failed` event with code `TIMEOUT` (`timeout: "status"`) follows.
     ///
     /// # Errors
-    /// `BUSY` while handshaking, printing or recovering, and in the `failed` state.
+    /// `BUSY` while handshaking, printing, recovering or running a settings transaction, and
+    /// in the `failed` state.
     #[wasm_bindgen(js_name = requestStatus)]
     pub fn request_status(&mut self, now_ms: f64) -> Result<(), JsValue> {
         self.inner.request_status(ms(now_ms)).map_err(js_err)
@@ -83,8 +89,46 @@ impl PrintSession {
             .map_err(js_err)
     }
 
+    /// Reads printer-stored settings (PROTOCOL.md §3.6) in the given order. Only from the
+    /// `ready` state; the session is in state `settings` until a `settings-read` event (or a
+    /// `failed` event, e.g. code `TIMEOUT` with `timeout: "settings-reply"`).
+    ///
+    /// # Errors
+    /// `BUSY` unless ready (and no status request outstanding), `UNSUPPORTED` for a model
+    /// without settings support or an id it lacks, `EMPTY`, `INVALID_INPUT` (duplicate id,
+    /// bad shape). Nothing is sent on error.
+    #[wasm_bindgen(js_name = readSettings)]
+    pub fn read_settings(&mut self, ids: Ts<SettingIdList>, now_ms: f64) -> Result<(), JsValue> {
+        let ids: Vec<ptouch::SettingId> =
+            from_ts(&ids)?.0.into_iter().map(setting_id_core).collect();
+        self.inner.read_settings(&ids, ms(now_ms)).map_err(js_err)
+    }
+
+    /// Writes settings, then reads the same ids back; ends with a `settings-written` event
+    /// carrying `verified` (or `failed`: the printer may then have stored the new value).
+    ///
+    /// # Errors
+    /// As `readSettings`, plus `INVALID_INPUT` for a value not in the model's `choices`
+    /// (checked for every item before anything is sent).
+    #[wasm_bindgen(js_name = writeSettings)]
+    pub fn write_settings(
+        &mut self,
+        values: Ts<SettingWriteList>,
+        now_ms: f64,
+    ) -> Result<(), JsValue> {
+        let values: Vec<(ptouch::SettingId, ptouch::SettingValue)> = from_ts(&values)?
+            .0
+            .into_iter()
+            .map(|w| (setting_id_core(w.id), setting_value_core(w.value)))
+            .collect();
+        self.inner
+            .write_settings(&values, ms(now_ms))
+            .map_err(js_err)
+    }
+
     /// Cancels the job / handshake (queues invalidate + reset; a `failed` event with code
-    /// `CANCELLED` follows).
+    /// `CANCELLED` follows). During a settings transaction it drops the unsent commands,
+    /// restores the command mode and returns to `ready`.
     pub fn cancel(&mut self, now_ms: f64) {
         self.inner.cancel(ms(now_ms));
     }
@@ -115,7 +159,7 @@ impl PrintSession {
     #[wasm_bindgen(js_name = pollEvent)]
     pub fn poll_event(&mut self) -> Result<Option<Ts<SessionEvent>>, JsValue> {
         while let Some(e) = self.inner.poll_event() {
-            if let Some(dto) = event_dto(&e) {
+            if let Some(dto) = event_dto_for(&e, self.inner.profile()) {
                 return ts(&dto).map(Some);
             }
         }

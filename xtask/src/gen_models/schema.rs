@@ -77,6 +77,15 @@ pub enum BatteryFormat {
     None,
 }
 
+/// `settings_profile`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SettingsProfile {
+    P710bt,
+    P900w,
+    P910bt,
+}
+
 /// `bt_socket_security`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -154,6 +163,7 @@ pub struct ModelRow {
     pub min_feed_dots: u16,
     pub min_length_mm: Option<f64>,
     pub battery_format: Option<BatteryFormat>,
+    pub settings_profile: Option<SettingsProfile>,
     pub editor_min_label_mm: Option<f64>,
     pub max_length_mm: Option<f64>,
     pub media: Vec<String>,
@@ -179,6 +189,7 @@ impl ModelRow {
             "rfcomm_channel_observed" => self.rfcomm_channel_observed.is_some(),
             "min_length_mm" => self.min_length_mm.is_some(),
             "battery_format" => self.battery_format.is_some(),
+            "settings_profile" => self.settings_profile.is_some(),
             "editor_min_label_mm" => self.editor_min_label_mm.is_some(),
             "max_length_mm" => self.max_length_mm.is_some(),
             _ => return None,

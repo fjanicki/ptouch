@@ -17,7 +17,7 @@ macro_rules! out {
 
 use super::schema::{
     BatteryFormat, BtSocketSecurity, CancelCommand, Compression, Geometry, MediaRow, Meta,
-    ModelRow, PageCommand, Table, TapeKind,
+    ModelRow, PageCommand, SettingsProfile, Table, TapeKind,
 };
 use super::validate::{mm_x10, static_name, variant_name};
 
@@ -53,7 +53,7 @@ const HEADER: &str = "\
 
 use super::{
     BatteryFormat, BtSocketSecurity, CancelCommand, Caps, Compression, Geometry, Model,
-    ModelProfile, PageCommand, Sends, TapeKind, TapeSpec, Transports,
+    ModelProfile, PageCommand, Sends, SettingsProfile, TapeKind, TapeSpec, Transports,
 };
 
 ";
@@ -354,6 +354,15 @@ fn model(s: &mut String, m: &ModelRow) -> Result<(), String> {
         .to_owned()
     });
     out!(s, "        battery_format: {battery},");
+    let settings = opt(m.settings_profile, |v| {
+        match v {
+            SettingsProfile::P710bt => "SettingsProfile::P710bt",
+            SettingsProfile::P900w => "SettingsProfile::P900w",
+            SettingsProfile::P910bt => "SettingsProfile::P910bt",
+        }
+        .to_owned()
+    });
+    out!(s, "        settings_profile: {settings},");
     let media: Vec<String> = m
         .media
         .iter()

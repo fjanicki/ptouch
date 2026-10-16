@@ -12,8 +12,8 @@
 use std::collections::BTreeSet;
 
 use ptouch::model::{
-    self, BatteryFormat, CancelCommand, Geometry, PageCommand, all_media, media_by_id,
-    media_for_geometry, profile_by_name, profiles_by_usb_pid,
+    self, BatteryFormat, CancelCommand, Geometry, PageCommand, SettingsProfile, all_media,
+    media_by_id, media_for_geometry, profile_by_name, profiles_by_usb_pid,
 };
 use ptouch::{
     Compression, Error, Model, ModelProfile, TapeKind, TapeSpec, profile, profile_by_bt_name,
@@ -245,6 +245,16 @@ fn every_toml_model_is_generated_with_identical_values() {
             battery,
             "{ctx}"
         );
+        let settings = p.settings_profile.map(|s| match s {
+            SettingsProfile::P710bt => "p710bt",
+            SettingsProfile::P900w => "p900w",
+            SettingsProfile::P910bt => "p910bt",
+        });
+        assert_eq!(
+            r.get("settings_profile").and_then(|v| v.as_str()),
+            settings,
+            "{ctx}"
+        );
         let media_ids: Vec<&str> = p.media.iter().map(|t| t.id).collect();
         assert_eq!(string_list(r, "media"), media_ids, "{ctx} media");
         assert_eq!(string_list(r, "quirks"), p.quirks, "{ctx} quirks");
@@ -444,6 +454,7 @@ fn p710bt_profile() {
     assert_eq!(p.cancel_command, CancelCommand::EscAt);
     assert_eq!(p.protocol(), 89);
     assert_eq!(p.battery_format, Some(BatteryFormat::Reserved));
+    assert_eq!(p.settings_profile, Some(SettingsProfile::P710bt));
     assert_eq!(p.rfcomm_channel_observed, Some(1));
     assert!(p.transports.bluetooth && !p.transports.ble);
     assert!(p.has_usb());

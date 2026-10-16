@@ -18,7 +18,11 @@
 //! - Closing waits [`ERROR_CLOSE_WAIT`] after a failure (PROTOCOL.md §2.1 "Timing": 3 s after an
 //!   error; the transport itself waits the first 500 ms).
 //! - `connect()` runs until `Event::Ready` or `Event::Failed`; `print()` until
-//!   `Event::JobCompleted` or `Event::Failed`, calling `on_progress` for page events.
+//!   `Event::JobCompleted` or `Event::Failed`, calling `on_progress` for page events;
+//!   `read_settings()` / `write_settings()` until `Event::SettingsRead` /
+//!   `Event::SettingsWritten` or `Event::Failed` (PROTOCOL.md §3.6.2). Ctrl-C during a
+//!   settings transaction cancels it through the session (which restores the command mode)
+//!   and returns [`CliError::Interrupted`].
 //! - Verbose logging prints `>> ` / `<< ` hex lines to stderr (never the user's BT address).
 //! - No protocol decisions here: anything that needs one belongs in the session. The only
 //!   local policy is a generous wall-clock safety net ([`CliError::Stalled`]) in case the
@@ -26,8 +30,11 @@
 
 use std::time::{Duration, Instant};
 
-use ptouch::{EncodedJob, Event, Notification, Session, SessionConfig, SessionState, Status};
-use ptouch_transport::Transport;
+use ptouch::{
+    EncodedJob, Event, Notification, Session, SessionConfig, SessionState, SettingId,
+    SettingReport, SettingValue, Status,
+};
+use ptouch_transport::{Transport, TransportKind};
 
 use crate::error::CliError;
 
@@ -210,6 +217,69 @@ impl<T: Transport> Driver<T> {
         }
     }
 
+    /// Reads printer-stored settings, in the order given.
+    ///
+    /// # Errors
+    /// [`ptouch::Error::Unsupported`] / [`ptouch::Error::Busy`] from the session, the
+    /// transaction's failure (e.g. [`ptouch::TimeoutKind::SettingsReply`]), transport errors,
+    /// [`CliError::Interrupted`].
+    pub fn read_settings(&mut self, ids: &[SettingId]) -> Result<Vec<SettingReport>, CliError> {
+        let now = self.now_ms();
+        self.session.read_settings(ids, now)?;
+        match self.settings_wait(now, "the settings read")? {
+            Event::SettingsRead(report) => Ok(report),
+            _ => Err(CliError::Stalled("the settings read")),
+        }
+    }
+
+    /// Writes settings, then reads them back. Returns the read-back and whether every value
+    /// equals what was written.
+    ///
+    /// # Errors
+    /// As [`Driver::read_settings`], plus [`ptouch::Error::InvalidInput`] for a value the model
+    /// does not offer (nothing is sent then).
+    pub fn write_settings(
+        &mut self,
+        values: &[(SettingId, SettingValue)],
+    ) -> Result<(Vec<SettingReport>, bool), CliError> {
+        let now = self.now_ms();
+        self.session.write_settings(values, now)?;
+        match self.settings_wait(now, "the settings write")? {
+            Event::SettingsWritten { report, verified } => Ok((report, verified)),
+            _ => Err(CliError::Stalled("the settings write")),
+        }
+    }
+
+    /// Pumps until a settings transaction ends; returns its final event.
+    fn settings_wait(&mut self, since: u64, what: &'static str) -> Result<Event, CliError> {
+        let limit = self.safety_limit_ms(false);
+        loop {
+            for ev in self.pump()? {
+                match ev {
+                    Event::SettingsRead(_) | Event::SettingsWritten { .. } => {
+                        self.flush_transmit()?;
+                        return Ok(ev);
+                    }
+                    Event::Failed { error, .. } => {
+                        // Send the epilogue that restores the command mode before giving up.
+                        let _ = self.flush_transmit();
+                        if error == ptouch::Error::Cancelled && self.interrupt_handled {
+                            return Err(CliError::Interrupted);
+                        }
+                        return Err(error.into());
+                    }
+                    _ => {}
+                }
+            }
+            self.check_stalled(since, limit, what)?;
+        }
+    }
+
+    /// The kind of link (for "untested path" warnings).
+    pub fn transport_kind(&self) -> TransportKind {
+        self.transport.info().kind
+    }
+
     /// The session (for `last_status`, `profile`).
     pub fn session(&self) -> &Session {
         &self.session
@@ -254,9 +324,13 @@ impl<T: Transport> Driver<T> {
         if !self.interrupt_handled && (self.interrupt)() {
             self.interrupt_handled = true;
             self.failed = true;
-            if matches!(self.session.state(), SessionState::Printing { .. }) {
-                // The session queues its cancel sequence and reports Failed(Cancelled) with
-                // the resume page; the caller then drains the recovery as for any failure.
+            if matches!(
+                self.session.state(),
+                SessionState::Printing { .. } | SessionState::Settings
+            ) {
+                // The session queues its cancel sequence (or, for settings, the command-mode
+                // epilogue) and reports Failed(Cancelled); the caller then drains as for any
+                // failure.
                 let now = self.now_ms();
                 self.session.cancel(now);
             } else {
@@ -640,6 +714,101 @@ mod tests {
         let mut d = driver(Box::new(|_, _, _| Ok(())));
         d.interrupt = || true;
         assert!(matches!(d.connect(), Err(CliError::Interrupted)));
+    }
+
+    /// Answers settings gets like a PT-P710BT with every value `03` (30 min / unlisted on).
+    fn settings_mock() -> Driver<Mock> {
+        driver(Box::new(|_, bytes, inbox| {
+            if bytes.starts_with(&[0x1B, 0x69, 0x55]) && bytes.get(4) == Some(&0x01) {
+                let mut f = FIXTURE;
+                f[18] = 0xF0;
+                f[30] = 0x03;
+                inbox.extend(f);
+            }
+            Ok(())
+        }))
+    }
+
+    #[test]
+    fn read_settings_returns_the_report() {
+        let mut d = settings_mock();
+        d.connect().unwrap();
+        let r = d
+            .read_settings(&[SettingId::AutoPowerOff, SettingId::AutoPowerOffBattery])
+            .unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!(
+            r[0].reading,
+            ptouch::SettingReading::Value(SettingValue::Minutes(30))
+        );
+        let writes = &d.transport.writes;
+        assert_eq!(
+            writes.last().map(Vec::as_slice),
+            Some(&[0x1B, 0x69, 0x61, 0xFF][..])
+        );
+        assert!(!d.failed);
+    }
+
+    #[test]
+    fn write_settings_reports_unverified() {
+        // The mock never changes its value: the read-back stays 30 min.
+        let mut d = settings_mock();
+        d.connect().unwrap();
+        let (r, verified) = d
+            .write_settings(&[(SettingId::AutoPowerOff, SettingValue::Minutes(10))])
+            .unwrap();
+        assert!(!verified);
+        assert_eq!(r.len(), 1);
+        assert!(
+            d.transport
+                .writes
+                .contains(&vec![0x1B, 0x69, 0x55, 0x41, 0x00, 0x01, 0x01])
+        );
+    }
+
+    #[test]
+    fn silent_settings_time_out() {
+        let mut d = driver(Box::new(|_, _, _| Ok(())));
+        d.session = Session::new(
+            Some(p710()),
+            SessionConfig {
+                settings_reply_timeout_ms: 50,
+                ..SessionConfig::default()
+            },
+        );
+        d.connect().unwrap();
+        let err = d.read_settings(&[SettingId::AutoPowerOn]).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CliError::Protocol(ptouch::Error::Timeout(ptouch::TimeoutKind::SettingsReply))
+            ),
+            "{err:?}"
+        );
+        assert_eq!(
+            d.transport.writes.last().map(Vec::as_slice),
+            Some(&[0x1B, 0x69, 0x61, 0xFF][..])
+        );
+    }
+
+    static SETTINGS_INTERRUPT: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn ctrl_c_cancels_a_settings_transaction() {
+        let mut d = driver(Box::new(|_, bytes, _| {
+            if bytes.starts_with(&[0x1B, 0x69, 0x55]) {
+                SETTINGS_INTERRUPT.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        }));
+        d.interrupt = || SETTINGS_INTERRUPT.load(Ordering::SeqCst);
+        d.connect().unwrap();
+        let err = d.read_settings(&[SettingId::AutoPowerOn]).unwrap_err();
+        assert!(matches!(err, CliError::Interrupted), "{err:?}");
+        assert_eq!(
+            d.transport.writes.last().map(Vec::as_slice),
+            Some(&[0x1B, 0x69, 0x61, 0xFF][..])
+        );
     }
 
     #[test]

@@ -90,6 +90,7 @@ fn help_and_version() {
         "info",
         "decode",
         "fonts",
+        "settings",
     ] {
         assert!(stdout(&o).contains(cmd), "{cmd} missing from --help");
     }
@@ -352,4 +353,195 @@ fn conflicting_connection_flags() {
     let o = ptouch(&["--port", "/dev/null", "--tcp", "localhost", "status"]);
     assert_eq!(o.status.code(), Some(2));
     assert!(stderr(&o).contains("only one of"), "{}", stderr(&o));
+}
+
+// ---------------------------------------------------------------------------------------
+// Printer settings (PROTOCOL.md §3.6; virtual printer only — never a real printer).
+
+#[test]
+fn settings_list_offline() {
+    let o = ok(&["settings", "list"]);
+    let s = stdout(&o);
+    assert!(
+        s.contains("PT-P710BT settings (untested on hardware)"),
+        "{s}"
+    );
+    assert!(
+        s.contains("auto-power-off           never, 10, 20, 30, 40, 50, 60 min"),
+        "{s}"
+    );
+    let o = ok(&["settings", "list", "--model", "PT-P910BT"]);
+    assert!(stdout(&o).contains("12 h"), "{}", stdout(&o));
+    let o = ptouch(&["settings", "list", "--model", "PT-E560BT"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("printer settings are not supported on PT-E560BT"),
+        "{}",
+        stderr(&o)
+    );
+}
+
+#[test]
+fn settings_get_on_virtual_printer() {
+    let o = ok(&["--device", "virtual:24", "settings", "get"]);
+    let s = stdout(&o);
+    assert_eq!(
+        s,
+        "auto-power-on            off      (Auto Power On)\n\
+         auto-power-off           30 min   (Brother: \"Auto Power Off\", for USB/AC power per Brother; which timer it controls is unverified)\n\
+         auto-power-off-battery   30 min   (Brother: \"Auto Power Off (Li-ion)\"; which timer it controls is unverified)\n"
+    );
+    let o = ok(&[
+        "--device",
+        "virtual:24",
+        "-v",
+        "settings",
+        "get",
+        "auto-power-off-li-ion",
+    ]);
+    let s = stdout(&o);
+    assert!(s.starts_with("auto-power-off-battery"), "{s}");
+    assert!(s.contains("    << 80 20 42 30 76"), "{s}");
+}
+
+#[test]
+fn settings_set_with_yes_verifies() {
+    let o = ok(&[
+        "--device",
+        "virtual:24",
+        "settings",
+        "set",
+        "auto-power-off",
+        "10",
+        "--yes",
+    ]);
+    let s = stdout(&o);
+    assert!(s.contains("current: 30 min"), "{s}");
+    assert!(s.contains("auto-power-off = 10 min (verified)"), "{s}");
+    assert!(
+        stderr(&o).contains("untested on hardware"),
+        "{}",
+        stderr(&o)
+    );
+    // The P710BT selector doubt is spelled out (PROTOCOL.md §8 #34).
+    assert!(
+        stderr(&o).contains("unverified which timer this setting changes"),
+        "{}",
+        stderr(&o)
+    );
+    // Unchanged value: no write.
+    let o = ok(&[
+        "--device",
+        "virtual:24",
+        "settings",
+        "set",
+        "auto-power-off-battery",
+        "30min",
+        "-y",
+    ]);
+    assert!(stdout(&o).contains("already 30 min"), "{}", stdout(&o));
+    // --force writes anyway (no-op write of hardware test HW-S3).
+    let o = ok(&[
+        "--device",
+        "virtual:24",
+        "settings",
+        "set",
+        "auto-power-on",
+        "off",
+        "--yes",
+        "--force",
+    ]);
+    assert!(
+        stdout(&o).contains("auto-power-on = off (verified)"),
+        "{}",
+        stdout(&o)
+    );
+}
+
+#[test]
+fn settings_set_dry_run_bytes() {
+    let o = ok(&["settings", "set", "auto-power-off", "10", "--dry-run"]);
+    assert_eq!(
+        stdout(&o),
+        "1B 40 1B 69 61 01\n1B 69 55 41 00 01 01\n1B 7E 53 1B 69 61 FF\n\
+         1B 40 1B 69 61 01\n1B 69 55 41 01 01\n1B 69 61 FF\n"
+    );
+    let o = ok(&[
+        "settings",
+        "set",
+        "auto-power-off",
+        "2h",
+        "--dry-run",
+        "--model",
+        "PT-P900W",
+    ]);
+    assert!(
+        stdout(&o).contains("1B 69 55 41 00 00 07"),
+        "{}",
+        stdout(&o)
+    );
+    let o = ok(&["settings", "set", "auto-power-on", "on", "--dry-run"]);
+    assert!(stdout(&o).contains("1B 69 55 70 00 01"), "{}", stdout(&o));
+}
+
+#[test]
+fn settings_set_refusals() {
+    // stdin is not a terminal and there is no --yes.
+    let o = ptouch(&[
+        "--device",
+        "virtual:24",
+        "settings",
+        "set",
+        "auto-power-off",
+        "10",
+    ]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr(&o).contains("without --yes"), "{}", stderr(&o));
+    assert!(o.stdout.is_empty());
+    // Not in the model's list.
+    let o = ptouch(&["settings", "set", "auto-power-off", "70", "--dry-run"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("allowed for PT-P710BT: never, 10, 20, 30, 40, 50, 60 min"),
+        "{}",
+        stderr(&o)
+    );
+    let o = ptouch(&[
+        "--device",
+        "virtual:24",
+        "settings",
+        "set",
+        "auto-power-off",
+        "2h",
+        "--yes",
+    ]);
+    assert_eq!(o.status.code(), Some(2));
+    // Bad syntax and unknown settings.
+    let o = ptouch(&["settings", "set", "auto-power-on", "maybe", "--dry-run"]);
+    assert_eq!(o.status.code(), Some(2));
+    let o = ptouch(&["settings", "set", "sleep", "10", "--dry-run"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("auto-power-off-battery"),
+        "{}",
+        stderr(&o)
+    );
+}
+
+#[test]
+fn settings_unsupported_model_on_virtual_printer() {
+    let o = ptouch(&[
+        "--device",
+        "virtual:24",
+        "--model",
+        "PT-E560BT",
+        "settings",
+        "get",
+    ]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        stderr(&o).contains("printer settings are not supported on PT-E560BT"),
+        "{}",
+        stderr(&o)
+    );
 }

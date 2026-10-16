@@ -12,8 +12,8 @@
 // The requestPort()/requestDevice() call MUST happen synchronously inside the click handler:
 // UI calls `manager.connect(path)` directly from onclick without awaiting anything first.
 // connect() issues the chooser call before its first `await`.
-import { mediaForStatus, type Job, type MediaInfo, type NotificationKind, type PrinterStatus } from '../wasm'
-import { PrinterClient, type ClientState, type PrintProgress, type PrinterClientOptions, type PrinterEvent } from './client'
+import { mediaForStatus, type Job, type MediaInfo, type NotificationKind, type PrinterStatus, type SettingId, type SettingReport, type SettingWrite } from '../wasm'
+import { PrinterClient, type ClientState, type PrintProgress, type PrinterClientOptions, type PrinterEvent, type SettingsWriteResult } from './client'
 import { LinkLostError, NotConnectedError, SessionFailedError, type ErrorStage } from './errors'
 import { MockTransport, type MockScenario } from './mock'
 import { PacketLog } from './packetlog'
@@ -38,6 +38,8 @@ export interface ConnectionSnapshot {
   problem: Problem | null
   /** Last notification pushed by the printer (cover open, cooling…), cleared when resolved. */
   notification?: NotificationKind | null
+  /** Last printer-settings read (or write read-back) of this connection, for diagnostics. */
+  settings?: SettingReport[] | null
 }
 
 export interface RememberedConnection {
@@ -76,6 +78,7 @@ export const INITIAL_SNAPSHOT: ConnectionSnapshot = {
   progress: null,
   problem: null,
   notification: null,
+  settings: null,
 }
 
 function designWidth(get: (() => number | undefined) | undefined): { designWidthMm?: number } {
@@ -247,6 +250,42 @@ export class ConnectionManager {
     }
   }
 
+  /**
+   * Printer settings (docs/SETTINGS-PLAN.md §4): read (default: all the model supports) or
+   * write + read back. Rejects with the underlying error; `settingsProblem(e)` phrases it. A
+   * failure that loses the link also sets `snapshot.problem` (Reconnect).
+   */
+  readSettings(ids?: SettingId[], signal?: AbortSignal): Promise<SettingReport[]> {
+    return this.#settingsTx((c) => c.readSettings(ids, signal), (r) => r)
+  }
+
+  writeSettings(values: SettingWrite[], signal?: AbortSignal): Promise<SettingsWriteResult> {
+    return this.#settingsTx((c) => c.writeSettings(values, signal), (r) => r.report)
+  }
+
+  /** A settings failure as a Problem (stage 'settings'). */
+  settingsProblem(e: unknown): Problem {
+    return this.#problem(e, 'settings')
+  }
+
+  async #settingsTx<T>(run: (c: PrinterClient) => Promise<T>, report: (r: T) => SettingReport[]): Promise<T> {
+    const client = this.#client
+    if (!client) throw new NotConnectedError()
+    try {
+      const r = await run(client)
+      if (this.#client === client) {
+        // A write reads back only what it wrote: keep the other values of the last read.
+        const next = report(r)
+        const prev = this.#snapshot.settings ?? []
+        this.#update({ settings: [...prev.map((o) => next.find((n) => n.id === o.id) ?? o), ...next.filter((n) => !prev.some((o) => o.id === n.id))] })
+      }
+      return r
+    } catch (e) {
+      if (this.#client === client && (client.state === 'lost' || client.state === 'disconnected')) this.#update({ problem: this.#problem(e, 'settings') })
+      throw e
+    }
+  }
+
   /** Cancel the running job (or a connect attempt, see cancelConnect). */
   async cancel(): Promise<void> {
     if (this.#isConnecting()) return this.cancelConnect()
@@ -353,7 +392,7 @@ export class ConnectionManager {
     this.#offClient = client.on((e) => {
       if (this.#client === client) this.#onClientEvent(e, client)
     })
-    this.#update({ path, transport: transport.info, state: 'opening', openProgress: null, progress: null, problem: null, status: null, media: null, model: null, notification: null })
+    this.#update({ path, transport: transport.info, state: 'opening', openProgress: null, progress: null, problem: null, status: null, media: null, model: null, notification: null, settings: null })
     try {
       const status = await client.connect(signal)
       if (attempt !== this.#attempt || this.#client !== client) return

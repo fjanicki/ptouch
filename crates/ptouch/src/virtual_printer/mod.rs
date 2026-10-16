@@ -29,6 +29,14 @@
 //!   out-of-order commands and a command while printing → recorded in
 //!   [`VirtualPrinter::violations`]. After an error the printer discards everything except
 //!   `ESC i S` until it is reset with `ESC @` or `ESC i 18` (PROTOCOL.md §6.10).
+//! - Printer settings (PROTOCOL.md §3.6, models with a `settings_profile` only): `ESC i U p`
+//!   and `ESC i U A` gets are answered in the model's reply format (a 32-byte idle status with
+//!   `st[18] = F0`, `st[30] = value`, or `01 00 value`) after [`VirtualTiming::reply_delay_ms`];
+//!   sets apply at once (a byte outside the model's list is a
+//!   [`parser::Violation::InvalidSettingValue`] and is not stored); `ESC ~ S` is counted
+//!   ([`VirtualPrinter::commits`]). The default values (auto power on `00`, timers `03`) are
+//!   virtual, not hardware facts. Other models record [`parser::Violation::UnsupportedCommand`]
+//!   and stay silent, so the host times out.
 //! - Time: frames become available from `poll_output(now_ms)` after simulated print time
 //!   ([`VirtualTiming`], [`Behaviour`]), so session timeouts can be tested deterministically.
 //!   The printer never reads a clock: `now_ms` comes from the caller and must not go
@@ -39,7 +47,7 @@
 
 pub mod parser;
 
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -47,6 +55,7 @@ use crate::bitmap::Bitmap;
 use crate::error::Error;
 use crate::model::{FeedOrder, Model, ModelProfile, PageCommand, TapeKind, TapeSpec};
 use crate::packbits::packbits_decode;
+use crate::settings::{ReplyFormat, SettingSpec, settings_for};
 use crate::status::{STATUS_HEADER, STATUS_LEN};
 use parser::{Command, DecodedJob, JobParser, Violation};
 
@@ -76,6 +85,13 @@ pub enum Behaviour {
     CoolingOnPage(u16),
     /// No cassette loaded: `st[10] = 0`, `st[11] = 00`, `st[8] = 0x01` (no media).
     NoMedia,
+    /// Never answers a settings get (status requests are answered normally).
+    SettingsSilent,
+    /// Accepts settings sets but keeps the old values (a write reads back unverified).
+    SettingsWritesIgnored,
+    /// Pushes one type-`00` status shortly after every `ESC i a 01`, i.e. between a settings
+    /// prologue and the first get, to exercise the host's drain (stale-reply hazard).
+    StaleFrameBeforeSettingsReply,
 }
 
 /// Simulated timing of a [`VirtualPrinter`] (all in ms).
@@ -143,7 +159,8 @@ pub struct VirtualPrinter {
     tape: &'static TapeSpec,
     behaviour: Behaviour,
     parser: parser::JobParser,
-    output: VecDeque<(u64, [u8; STATUS_LEN])>,
+    /// Scheduled replies (status frames, 3-byte settings replies), ordered by time.
+    output: VecDeque<(u64, Vec<u8>)>,
     printed: Vec<Bitmap>,
     violations: Vec<parser::Violation>,
     timing: VirtualTiming,
@@ -164,6 +181,10 @@ pub struct VirtualPrinter {
     pages_received: u16,
     /// Latest `now_ms` seen.
     now: u64,
+    /// Stored settings: (`ESC i U` op, selector) → value byte.
+    settings: BTreeMap<(u8, Option<u8>), u8>,
+    /// `ESC ~ S` commands received.
+    commits: usize,
 }
 
 impl VirtualPrinter {
@@ -192,7 +213,45 @@ impl VirtualPrinter {
             error: None,
             pages_received: 0,
             now: 0,
+            settings: settings_for(profile)
+                .iter()
+                .map(|spec| (setting_key(spec), default_setting(spec)))
+                .collect(),
+            commits: 0,
         }
+    }
+
+    /// Replaces a stored setting byte (for tests; any byte, listed or not). Ignored when the
+    /// model has no such setting.
+    #[must_use]
+    pub fn with_setting(mut self, op: u8, selector: Option<u8>, byte: u8) -> Self {
+        self.set_setting(op, selector, byte);
+        self
+    }
+
+    /// In-place form of [`VirtualPrinter::with_setting`]; returns `false` (and changes
+    /// nothing) when the model has no such setting.
+    pub fn set_setting(&mut self, op: u8, selector: Option<u8>, byte: u8) -> bool {
+        match self.settings.get_mut(&(op, selector)) {
+            Some(v) => {
+                *v = byte;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The stored byte of a setting (`op` = `70` Auto Power On, `41` Auto Power Off with its
+    /// selector), or `None` when the model has no such setting.
+    #[must_use]
+    pub fn setting_byte(&self, op: u8, selector: Option<u8>) -> Option<u8> {
+        self.settings.get(&(op, selector)).copied()
+    }
+
+    /// Number of `ESC ~ S` (settings commit) commands received.
+    #[must_use]
+    pub fn commits(&self) -> usize {
+        self.commits
     }
 
     /// Replaces the simulated timing.
@@ -227,8 +286,9 @@ impl VirtualPrinter {
         }
     }
 
-    /// Next status frame due at or before `now_ms`.
-    pub fn poll_output(&mut self, now_ms: u64) -> Option<[u8; STATUS_LEN]> {
+    /// Next reply due at or before `now_ms`: a 32-byte status frame, or a 3-byte settings
+    /// reply (PROTOCOL.md §3.6.3).
+    pub fn poll_output(&mut self, now_ms: u64) -> Option<Vec<u8>> {
         self.advance(now_ms);
         match self.output.front() {
             Some(&(at, _)) if at <= self.now => self.output.pop_front().map(|(_, f)| f),
@@ -330,6 +390,28 @@ impl VirtualPrinter {
         match cmd {
             Command::StatusNotification(n) => self.notify = *n == 0,
             Command::VariousMode(m) => self.mode = *m,
+            Command::CommandMode(0x01)
+                if self.behaviour == Behaviour::StaleFrameBeforeSettingsReply =>
+            {
+                let f = self.frame(TYPE_REPLY, PHASE_RECEIVING, 0, ErrorBytes::default());
+                self.schedule(now.saturating_add(self.timing.reply_delay_ms), f);
+            }
+            Command::SettingGet { op, selector } => {
+                self.setting_get(*op, *selector, offset);
+                return;
+            }
+            Command::SettingSet {
+                op,
+                selector,
+                value,
+            } => {
+                self.setting_set(*op, *selector, *value, offset);
+                return;
+            }
+            Command::SettingsCommit => {
+                self.commits = self.commits.saturating_add(1);
+                return;
+            }
             _ => {}
         }
         let step = self.assembler.apply(cmd, offset);
@@ -339,6 +421,67 @@ impl VirtualPrinter {
             Ok(Step::Page(page)) => self.page_done(page),
             // Lenient mode never fails; keep the arm for totality.
             Ok(Step::None) | Err(_) => {}
+        }
+    }
+
+    /// The spec of a settings command, if the model has it.
+    fn setting(&self, op: u8, selector: Option<u8>) -> Option<&'static SettingSpec> {
+        settings_for(self.profile)
+            .iter()
+            .find(|s| setting_key(s) == (op, selector))
+    }
+
+    /// `ESC i U <op> 01 [sel]`: schedules the reply in the model's format.
+    fn setting_get(&mut self, op: u8, selector: Option<u8>, offset: usize) {
+        let (Some(spec), Some(&byte)) = (
+            self.setting(op, selector),
+            self.settings.get(&(op, selector)),
+        ) else {
+            self.violations.push(Violation::UnsupportedCommand {
+                offset,
+                what: "printer setting",
+            });
+            return;
+        };
+        if matches!(
+            self.behaviour,
+            Behaviour::Silent | Behaviour::SettingsSilent
+        ) {
+            return;
+        }
+        let reply = match spec.reply {
+            ReplyFormat::StatusF0 => {
+                let mut f = self.base_frame(self.error.unwrap_or_default());
+                f[18] = crate::settings::SETTINGS_STATUS_TYPE;
+                f[30] = byte;
+                f
+            }
+            .to_vec(),
+            // Bytes 0-1 are INFERRED (`ESC i X` framing); Brother's definition only gives the
+            // length and the value offset, and the session does not check them.
+            ReplyFormat::LenValue => vec![0x01, 0x00, byte],
+        };
+        self.schedule(self.now.saturating_add(self.timing.reply_delay_ms), reply);
+    }
+
+    /// `ESC i U <op> 00 [sel] v`: stores `v` if the model lists it.
+    fn setting_set(&mut self, op: u8, selector: Option<u8>, byte: u8, offset: usize) {
+        let Some(spec) = self.setting(op, selector) else {
+            self.violations.push(Violation::UnsupportedCommand {
+                offset,
+                what: "printer setting",
+            });
+            return;
+        };
+        if spec.value_for(byte).is_none() {
+            self.violations
+                .push(Violation::InvalidSettingValue { offset, byte });
+            return;
+        }
+        // Stored at once, without waiting for `ESC ~ S` (whose meaning is UNKNOWN); tests that
+        // care whether the commit was sent check `commits()`.
+        if self.behaviour != Behaviour::SettingsWritesIgnored {
+            self.settings.insert((op, selector), byte);
         }
     }
 
@@ -477,10 +620,10 @@ impl VirtualPrinter {
         self.busy_until = Some(end);
     }
 
-    /// Inserts a frame keeping the queue ordered by time (FIFO among equal times).
-    fn schedule(&mut self, at: u64, frame: [u8; STATUS_LEN]) {
+    /// Inserts a reply keeping the queue ordered by time (FIFO among equal times).
+    fn schedule(&mut self, at: u64, reply: impl Into<Vec<u8>>) {
         let idx = self.output.partition_point(|(t, _)| *t <= at);
-        self.output.insert(idx, (at, frame));
+        self.output.insert(idx, (at, reply.into()));
     }
 
     /// Reply to `ESC i S` at `now`.
@@ -523,6 +666,25 @@ impl VirtualPrinter {
         }
         f[15] = self.mode;
         f
+    }
+}
+
+/// Key of a setting in [`VirtualPrinter`]'s store: the `ESC i U` op byte (`get[3]`) and the
+/// selector (`get[5]`, if any).
+fn setting_key(spec: &SettingSpec) -> (u8, Option<u8>) {
+    (
+        spec.get.get(3).copied().unwrap_or(0),
+        spec.get.get(5).copied(),
+    )
+}
+
+/// Virtual default (not a hardware fact): Auto Power On off (`00`), timers `03` (30 min on
+/// every table profile).
+fn default_setting(spec: &SettingSpec) -> u8 {
+    if spec.id == crate::settings::SettingId::AutoPowerOn {
+        0x00
+    } else {
+        0x03
     }
 }
 
@@ -743,6 +905,9 @@ impl Assembler {
             | Command::StatusRequest
             | Command::CommandMode(_)
             | Command::StatusNotification(_)
+            | Command::SettingGet { .. }
+            | Command::SettingSet { .. }
+            | Command::SettingsCommit
             | Command::NonPrint(_) => {}
         }
         Ok(Step::None)

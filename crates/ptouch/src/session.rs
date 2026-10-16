@@ -38,6 +38,33 @@
 //!   page) and start recovery, as during printing.
 //! - An error-type frame (`st[18]` = `02` / `18`) whose error bytes are all zero is reported as
 //!   [`Error::Protocol`] (never as an empty [`Error::Printer`]).
+//! - A settings reply frame (`st[18]` = `F0`, PROTOCOL.md §3.6.3) is never a status: it is not
+//!   reported as [`Event::Status`] and never updates [`Session::last_status`].
+//!
+//! # Printer settings (PROTOCOL.md §3.6.2, docs/SETTINGS-PLAN.md §1.2)
+//! [`Session::read_settings`] / [`Session::write_settings`] run a settings transaction from
+//! [`SessionState::Ready`] only; while it runs the state is [`SessionState::Settings`] and
+//! [`Session::request_status`] / [`Session::submit`] return [`Error::Busy`]. Every command is
+//! its own [`Session::poll_transmit`] buffer:
+//! ```text
+//! read:  PROLOGUE, drain; per item: gap (discard input), get, collect ≤ reply timeout;
+//!        READ_EPILOGUE → Event::SettingsRead
+//! write: PROLOGUE, gap; per item: set, gap; WRITE_EPILOGUE, settle (discard input);
+//!        then the read above for the same ids → Event::SettingsWritten { verified }
+//! fail:  READ_EPILOGUE (WRITE_EPILOGUE if a set was taken by poll_transmit and the write
+//!        epilogue was not), Event::Failed { resume_from_page: None }, back to Ready
+//!        (Failed for "turned off")
+//! ```
+//! While collecting a reply, status frames (32 bytes, `80 20 42 …`) of another status type are
+//! skipped unless they report an error or "turned off"; this holds for the 3-byte replies too,
+//! whose prefix is not checked (only `v = reply[2]` is used, as Brother's definition says).
+//! A failure after a set was sent leaves the printer's stored value unknown: read the settings
+//! again. Brother always follows sets with `ESC ~ S` (PROTOCOL.md §3.6.2), so a cancel or a
+//! failure after a set went out still sends it.
+//!
+//! A settings reply carries no setting id. After a failed transaction a late reply may still be
+//! in flight, so the next transaction keeps discarding input until
+//! `settings_reply_timeout_ms` after the failure before its first get (or set).
 //!
 //! # Push vs poll (PROTOCOL.md §6.8 step 4)
 //! The model table has no "pushes status" column, so the session classifies models from the
@@ -87,7 +114,15 @@ use crate::encode::{
 };
 use crate::error::{Error, TimeoutKind};
 use crate::model::{Model, ModelProfile, PageCommand, profile_by_codes};
-use crate::status::{Notification, Phase, PrinterErrors, Status, StatusFramer, StatusType};
+use crate::settings::{
+    ReplyFormat, SETTINGS_PROLOGUE, SETTINGS_READ_EPILOGUE, SETTINGS_STATUS_TYPE,
+    SETTINGS_WRITE_EPILOGUE, SettingId, SettingReading, SettingReport, SettingSpec, SettingValue,
+    setting_spec, settings_for,
+};
+use crate::status::{
+    Notification, Phase, PrinterErrors, STATUS_HEADER, STATUS_LEN, Status, StatusFramer,
+    StatusType, parse_status,
+};
 
 /// Timing parameters. Defaults follow PROTOCOL.md §2.1 / §6.8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -114,6 +149,14 @@ pub struct SessionConfig {
     pub phase_frame_wait_ms: u64,
     /// Swallow extra frames after the job (500).
     pub post_job_drain_ms: u64,
+    /// Input discarded after the settings prologue (100).
+    pub settings_drain_ms: u64,
+    /// Input discarded before each settings get, and the gap between set writes (50).
+    pub settings_gap_ms: u64,
+    /// Wait for a complete settings get reply (1000).
+    pub settings_reply_timeout_ms: u64,
+    /// Input discarded after the settings write epilogue, before the read-back (500).
+    pub settings_settle_ms: u64,
 }
 
 impl Default for SessionConfig {
@@ -129,6 +172,10 @@ impl Default for SessionConfig {
             max_ticks: 180,
             phase_frame_wait_ms: 2_000,
             post_job_drain_ms: 500,
+            settings_drain_ms: 100,
+            settings_gap_ms: 50,
+            settings_reply_timeout_ms: 1_000,
+            settings_settle_ms: 500,
         }
     }
 }
@@ -167,6 +214,8 @@ pub enum SessionState {
     Draining,
     /// Cancel / error recovery in progress (cancel sent, waiting for the ready predicate).
     Recovering,
+    /// A settings read or write transaction is running.
+    Settings,
     /// Unrecoverable without a new [`Session::connect`].
     Failed,
 }
@@ -203,6 +252,16 @@ pub enum Event {
         /// For job errors: 1-based page to resume from (PROTOCOL.md §6.10); `None` outside a
         /// job.
         resume_from_page: Option<u16>,
+    },
+    /// A [`Session::read_settings`] finished; items in request order.
+    SettingsRead(Vec<SettingReport>),
+    /// A [`Session::write_settings`] finished: the read-back values (in request order), and
+    /// whether each one equals what was written.
+    SettingsWritten {
+        /// The read-back.
+        report: Vec<SettingReport>,
+        /// Every read-back value equals the value written.
+        verified: bool,
     },
 }
 
@@ -438,6 +497,40 @@ struct Recovery {
     polls: u16,
 }
 
+/// Where a settings transaction is (PROTOCOL.md §3.6.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsStep {
+    /// Write: prologue or set `next - 1` sent; waiting `settings_gap_ms` before set `next`
+    /// (or the write epilogue once every set is out).
+    Write { next: usize },
+    /// Write epilogue sent; discarding input for `settings_settle_ms`.
+    Settle,
+    /// Read prologue sent; discarding input for `settings_drain_ms`.
+    ReadDrain,
+    /// Discarding input for `settings_gap_ms` before the get of `item`.
+    Gap { item: usize },
+    /// Get of `item` sent; collecting its reply.
+    Collect { item: usize },
+}
+
+/// A settings transaction (state `Settings`).
+#[derive(Debug, Clone)]
+struct SettingsRun {
+    /// Items in request order.
+    specs: Vec<&'static SettingSpec>,
+    /// For a write: the values, parallel to `specs`.
+    written: Option<Vec<SettingValue>>,
+    step: SettingsStep,
+    /// Readings collected so far.
+    reports: Vec<SettingReport>,
+    /// Raw bytes of a 3-byte reply being collected.
+    raw: Vec<u8>,
+    /// A set command was taken by [`Session::poll_transmit`].
+    set_sent: bool,
+    /// The write epilogue (`ESC ~ S` …) was taken by [`Session::poll_transmit`].
+    committed: bool,
+}
+
 /// Internal state.
 #[derive(Debug, Clone)]
 enum Stage {
@@ -459,6 +552,7 @@ enum Stage {
         resume: u16,
     },
     Recovering(Recovery),
+    Settings(SettingsRun),
     Failed,
 }
 
@@ -477,6 +571,9 @@ pub struct Session {
     events: VecDeque<Event>,
     deadline: Option<u64>,
     job: Option<EncodedJob>,
+    /// After a failed settings transaction: input is discarded until this time before the
+    /// next transaction's first command (a late reply may still arrive).
+    settings_quiet_until: u64,
 }
 
 impl Session {
@@ -495,6 +592,7 @@ impl Session {
             events: VecDeque::new(),
             deadline: None,
             job: None,
+            settings_quiet_until: 0,
         }
     }
 
@@ -505,16 +603,30 @@ impl Session {
     /// handshake's reset clears the printer's buffer. Bytes queued but not yet taken with
     /// [`Session::poll_transmit`] are dropped.
     pub fn connect(&mut self, now_ms: u64) {
-        if let Stage::Printing(run) = &self.stage {
-            let resume = run.resume_page();
-            self.events.push_back(Event::Failed {
+        let in_settings = matches!(self.stage, Stage::Settings(_));
+        let close = self.settings_close_bytes();
+        match &self.stage {
+            Stage::Printing(run) => {
+                let resume = run.resume_page();
+                self.events.push_back(Event::Failed {
+                    error: Error::Cancelled,
+                    resume_from_page: Some(resume),
+                });
+            }
+            Stage::Settings(_) => self.events.push_back(Event::Failed {
                 error: Error::Cancelled,
-                resume_from_page: Some(resume),
-            });
+                resume_from_page: None,
+            }),
+            _ => {}
         }
         self.job = None;
         self.transmit.clear();
         self.framer.clear();
+        if in_settings {
+            // Restore the default command mode before the handshake (PROTOCOL.md §3.6.2).
+            self.transmit.push_back(close);
+            self.settings_quiet_until = now_ms.saturating_add(self.cfg.settings_reply_timeout_ms);
+        }
         self.profile = self.expected;
         self.start_attempt(1, now_ms);
     }
@@ -527,15 +639,19 @@ impl Session {
     /// ends the drain.
     ///
     /// # Errors
-    /// [`Error::Busy`] while handshaking, printing or recovering, and in
-    /// [`SessionState::Failed`].
+    /// [`Error::Busy`] while handshaking, printing, recovering or running a settings
+    /// transaction, and in [`SessionState::Failed`].
     pub fn request_status(&mut self, now_ms: u64) -> Result<(), Error> {
         match self.stage {
             Stage::Idle { .. } => self.stage = Stage::Idle { request: true },
             Stage::Ready { .. } | Stage::Draining { .. } => {
                 self.stage = Stage::Ready { request: true }
             }
-            Stage::Handshake { .. } | Stage::Printing(_) | Stage::Recovering(_) | Stage::Failed => {
+            Stage::Handshake { .. }
+            | Stage::Printing(_)
+            | Stage::Recovering(_)
+            | Stage::Settings(_)
+            | Stage::Failed => {
                 return Err(Error::Busy);
             }
         }
@@ -606,9 +722,18 @@ impl Session {
     ///
     /// A cancelled job ends with [`Event::Failed`] ([`Error::Cancelled`], with the §6.10 resume
     /// page). Cancelling a handshake returns to [`SessionState::Idle`]; cancelling while idle
-    /// only queues the reset; it is a no-op while recovering or failed.
+    /// only queues the reset; it is a no-op while recovering or failed. Cancelling a settings
+    /// transaction drops its unsent commands, queues `1B 69 61 FF` (preceded by `ESC ~ S`,
+    /// i.e. `1B 7E 53 1B 69 61 FF`, when a set was already taken by
+    /// [`Session::poll_transmit`] and the write epilogue was not, as Brother always follows
+    /// sets with it), reports [`Error::Cancelled`] and returns to [`SessionState::Ready`] (a set
+    /// already sent may have been stored).
     pub fn cancel(&mut self, now_ms: u64) {
         match &self.stage {
+            Stage::Settings(_) => {
+                self.transmit.clear();
+                self.settings_fail(Error::Cancelled, now_ms);
+            }
             Stage::Printing(run) => {
                 let resume = run.resume_page();
                 self.events.push_back(Event::Failed {
@@ -636,8 +761,77 @@ impl Session {
         }
     }
 
+    /// Reads `ids` (in the given order) from the printer (PROTOCOL.md §3.6.2). The result
+    /// arrives as [`Event::SettingsRead`], or [`Event::Failed`] (e.g.
+    /// [`TimeoutKind::SettingsReply`]).
+    ///
+    /// # Errors
+    /// Nothing is queued on error. [`Error::Busy`] unless [`SessionState::Ready`] with no
+    /// status request outstanding; [`Error::Unsupported`] when the model is unknown or lacks
+    /// an id; [`Error::Empty`] for an empty list; [`Error::InvalidInput`] for a duplicate id.
+    pub fn read_settings(&mut self, ids: &[SettingId], now_ms: u64) -> Result<(), Error> {
+        let specs = self.settings_specs(ids.iter().copied())?;
+        self.transmit.push_back(SETTINGS_PROLOGUE.to_vec());
+        self.framer.clear();
+        self.stage = Stage::Settings(SettingsRun {
+            specs,
+            written: None,
+            step: SettingsStep::ReadDrain,
+            reports: Vec::new(),
+            raw: Vec::new(),
+            set_sent: false,
+            committed: false,
+        });
+        self.deadline = Some(
+            now_ms
+                .saturating_add(self.cfg.settings_drain_ms)
+                .max(self.settings_quiet_until),
+        );
+        Ok(())
+    }
+
+    /// Writes `values`, then reads the same ids back (PROTOCOL.md §3.6.2). The result arrives
+    /// as [`Event::SettingsWritten`] (with `verified`), or [`Event::Failed`]; after a failure
+    /// the printer may or may not have stored the new values.
+    ///
+    /// # Errors
+    /// As [`Session::read_settings`], plus [`Error::InvalidInput`] (`"value not offered by this
+    /// model"`) — every item is checked before anything is queued.
+    pub fn write_settings(
+        &mut self,
+        values: &[(SettingId, SettingValue)],
+        now_ms: u64,
+    ) -> Result<(), Error> {
+        let specs = self.settings_specs(values.iter().map(|(id, _)| *id))?;
+        for (spec, (_, value)) in specs.iter().zip(values) {
+            spec.encode_write(*value)?;
+        }
+        self.transmit.push_back(SETTINGS_PROLOGUE.to_vec());
+        self.framer.clear();
+        self.stage = Stage::Settings(SettingsRun {
+            specs,
+            written: Some(values.iter().map(|(_, v)| *v).collect()),
+            step: SettingsStep::Write { next: 0 },
+            reports: Vec::new(),
+            raw: Vec::new(),
+            set_sent: false,
+            committed: false,
+        });
+        self.deadline = Some(
+            now_ms
+                .saturating_add(self.cfg.settings_gap_ms)
+                .max(self.settings_quiet_until),
+        );
+        Ok(())
+    }
+
     /// Feeds received bytes.
     pub fn handle_input(&mut self, bytes: &[u8], now_ms: u64) {
+        if let Stage::Settings(run) = &self.stage {
+            let run = run.clone();
+            self.settings_input(run, bytes, now_ms);
+            return;
+        }
         if let Stage::Handshake {
             awaiting: false, ..
         } = self.stage
@@ -649,7 +843,10 @@ impl Session {
         while let Some(frame) = self.framer.next_frame() {
             // A frame with a header that does not parse has already been skipped by the
             // framer; nothing else to do.
-            if let Ok(status) = frame {
+            // A late settings reply (type F0) is not a status (PROTOCOL.md §3.6.3).
+            if let Ok(status) = frame
+                && status.status_type.to_byte() != SETTINGS_STATUS_TYPE
+            {
                 self.on_frame(status, now_ms);
             }
         }
@@ -696,12 +893,27 @@ impl Session {
             Stage::Printing(run) => self.printing_timeout(run, now_ms),
             Stage::Draining { .. } => self.stage = Stage::Ready { request: false },
             Stage::Recovering(rec) => self.recovery_timeout(rec, now_ms),
+            Stage::Settings(run) => self.settings_timeout(run, now_ms),
         }
     }
 
     /// Next buffer to write, in order.
     pub fn poll_transmit(&mut self) -> Option<Vec<u8>> {
-        self.transmit.pop_front()
+        let buf = self.transmit.pop_front()?;
+        if let Stage::Settings(run) = &mut self.stage
+            && run.written.is_some()
+        {
+            if buf == SETTINGS_WRITE_EPILOGUE {
+                run.committed = true;
+            } else if run
+                .specs
+                .iter()
+                .any(|s| buf.len() == s.set_prefix.len() + 1 && buf.starts_with(s.set_prefix))
+            {
+                run.set_sent = true;
+            }
+        }
+        Some(buf)
     }
 
     /// Next event.
@@ -728,6 +940,7 @@ impl Session {
             },
             Stage::Draining { .. } => SessionState::Draining,
             Stage::Recovering(_) => SessionState::Recovering,
+            Stage::Settings(_) => SessionState::Settings,
             Stage::Failed => SessionState::Failed,
         }
     }
@@ -820,7 +1033,10 @@ impl Session {
                 Stage::Idle { .. } | Stage::Failed => return,
                 Stage::Printing(run) => Some(run.resume_page()),
                 Stage::Draining { resume } => Some(*resume),
-                Stage::Handshake { .. } | Stage::Ready { .. } | Stage::Recovering(_) => None,
+                Stage::Handshake { .. }
+                | Stage::Ready { .. }
+                | Stage::Recovering(_)
+                | Stage::Settings(_) => None,
             };
             self.fail(Error::PrinterOff, resume);
             return;
@@ -857,7 +1073,8 @@ impl Session {
                     self.enter_recovery(now);
                 }
             }
-            Stage::Failed => {}
+            // Frames during a settings transaction go to `settings_input`, never here.
+            Stage::Failed | Stage::Settings(_) => {}
             Stage::Recovering(mut rec) => {
                 if rec.awaiting && status.status_type == StatusType::Reply {
                     if status.is_ready() {
@@ -1093,6 +1310,237 @@ impl Session {
         }
         self.arm_printing(&run);
         self.stage = Stage::Printing(run);
+    }
+
+    // ----- settings (PROTOCOL.md §3.6.2) -----
+
+    /// Validates a settings request and resolves its specs (nothing is queued).
+    fn settings_specs(
+        &self,
+        ids: impl Iterator<Item = SettingId>,
+    ) -> Result<Vec<&'static SettingSpec>, Error> {
+        const UNSUPPORTED: Error =
+            Error::Unsupported("printer settings are not supported on this model");
+        if !matches!(self.stage, Stage::Ready { request: false }) {
+            return Err(Error::Busy);
+        }
+        let profile = self
+            .profile
+            .filter(|p| !settings_for(p).is_empty())
+            .ok_or(UNSUPPORTED)?;
+        let mut specs: Vec<&'static SettingSpec> = Vec::new();
+        for id in ids {
+            if specs.iter().any(|s| s.id == id) {
+                return Err(Error::InvalidInput("duplicate setting"));
+            }
+            specs.push(setting_spec(profile, id).ok_or(UNSUPPORTED)?);
+        }
+        if specs.is_empty() {
+            return Err(Error::Empty);
+        }
+        Ok(specs)
+    }
+
+    /// The bytes that close a settings transaction that did not finish: `ESC ~ S` + `ESC i a
+    /// FF` once a set went out without the write epilogue (Brother always follows sets with
+    /// `ESC ~ S`, PROTOCOL.md §3.6.2), else `ESC i a FF`.
+    fn settings_close_bytes(&self) -> Vec<u8> {
+        match &self.stage {
+            Stage::Settings(run) if run.set_sent && !run.committed => {
+                SETTINGS_WRITE_EPILOGUE.to_vec()
+            }
+            _ => SETTINGS_READ_EPILOGUE.to_vec(),
+        }
+    }
+
+    /// Ends a settings transaction with `error`: restores the default command mode, reports
+    /// the failure and returns to Ready (Failed for "turned off"). The next transaction waits
+    /// for a late reply to pass (see module docs).
+    fn settings_fail(&mut self, error: Error, now: u64) {
+        let close = self.settings_close_bytes();
+        self.transmit.push_back(close);
+        self.framer.clear();
+        self.deadline = None;
+        self.settings_quiet_until = now.saturating_add(self.cfg.settings_reply_timeout_ms);
+        self.stage = if error == Error::PrinterOff {
+            Stage::Failed
+        } else {
+            Stage::Ready { request: false }
+        };
+        self.events.push_back(Event::Failed {
+            error,
+            resume_from_page: None,
+        });
+    }
+
+    /// Starts the input-discarding gap before the get of `item`.
+    fn settings_gap(&mut self, mut run: SettingsRun, item: usize, now: u64) {
+        self.framer.clear();
+        run.raw.clear();
+        run.step = SettingsStep::Gap { item };
+        self.stage = Stage::Settings(run);
+        self.deadline = Some(now.saturating_add(self.cfg.settings_gap_ms));
+    }
+
+    fn settings_timeout(&mut self, mut run: SettingsRun, now: u64) {
+        let cfg = self.cfg;
+        match run.step {
+            SettingsStep::Write { next } => {
+                let item = run
+                    .specs
+                    .get(next)
+                    .zip(run.written.as_ref().and_then(|w| w.get(next)));
+                if let Some((spec, value)) = item {
+                    match spec.encode_write(*value) {
+                        Ok(bytes) => self.transmit.push_back(bytes),
+                        // Validated in `write_settings`; unreachable, but never send garbage.
+                        Err(e) => {
+                            self.settings_fail(e, now);
+                            return;
+                        }
+                    }
+                    run.step = SettingsStep::Write { next: next + 1 };
+                    self.deadline = Some(now.saturating_add(cfg.settings_gap_ms));
+                } else {
+                    self.transmit.push_back(SETTINGS_WRITE_EPILOGUE.to_vec());
+                    run.step = SettingsStep::Settle;
+                    self.deadline = Some(now.saturating_add(cfg.settings_settle_ms));
+                }
+                self.stage = Stage::Settings(run);
+            }
+            SettingsStep::Settle => {
+                self.transmit.push_back(SETTINGS_PROLOGUE.to_vec());
+                run.step = SettingsStep::ReadDrain;
+                self.stage = Stage::Settings(run);
+                self.deadline = Some(now.saturating_add(cfg.settings_drain_ms));
+            }
+            SettingsStep::ReadDrain => self.settings_gap(run, 0, now),
+            SettingsStep::Gap { item } => {
+                let Some(spec) = run.specs.get(item) else {
+                    self.settings_fail(Error::Protocol("settings item out of range"), now);
+                    return;
+                };
+                self.transmit.push_back(spec.encode_read().to_vec());
+                self.framer.clear();
+                run.raw.clear();
+                run.step = SettingsStep::Collect { item };
+                self.stage = Stage::Settings(run);
+                self.deadline = Some(now.saturating_add(cfg.settings_reply_timeout_ms));
+            }
+            SettingsStep::Collect { .. } => {
+                self.settings_fail(Error::Timeout(TimeoutKind::SettingsReply), now);
+            }
+        }
+    }
+
+    /// Input during a settings transaction: discarded except while collecting a reply.
+    fn settings_input(&mut self, mut run: SettingsRun, bytes: &[u8], now: u64) {
+        let SettingsStep::Collect { item } = run.step else {
+            return;
+        };
+        let Some(spec) = run.specs.get(item).copied() else {
+            return;
+        };
+        match spec.reply {
+            ReplyFormat::LenValue => {
+                run.raw.extend_from_slice(bytes);
+                loop {
+                    // A status frame (`80 20 42 …`) is not the 3-byte reply: wait for all 32
+                    // bytes, then fail on "turned off" / an error, else skip it.
+                    if run.raw.get(..STATUS_HEADER.len()) == Some(&STATUS_HEADER[..]) {
+                        if run.raw.len() < STATUS_LEN {
+                            break;
+                        }
+                        let frame: Vec<u8> = run.raw.drain(..STATUS_LEN).collect();
+                        if let Ok(status) = parse_status(&frame) {
+                            if status.status_type == StatusType::TurnedOff {
+                                self.settings_fail(Error::PrinterOff, now);
+                                return;
+                            }
+                            if status.is_error() {
+                                self.settings_fail(frame_error(&status), now);
+                                return;
+                            }
+                        }
+                        continue;
+                    }
+                    let Some(reply) = run.raw.get(..spec.reply.len()).map(<[u8]>::to_vec) else {
+                        break;
+                    };
+                    match spec.decode_reply(&reply) {
+                        Ok(reading) => self.settings_reply(run, spec, reading, reply, now),
+                        Err(e) => self.settings_fail(e, now),
+                    }
+                    return;
+                }
+                self.stage = Stage::Settings(run);
+            }
+            ReplyFormat::StatusF0 => {
+                self.framer.push(bytes);
+                while let Some(frame) = self.framer.next_frame() {
+                    let Ok(status) = frame else { continue };
+                    if status.status_type.to_byte() == SETTINGS_STATUS_TYPE {
+                        match spec.decode_reply(&status.raw) {
+                            Ok(reading) => {
+                                self.settings_reply(run, spec, reading, status.raw.to_vec(), now);
+                            }
+                            Err(e) => self.settings_fail(e, now),
+                        }
+                        return;
+                    }
+                    if status.status_type == StatusType::TurnedOff {
+                        self.settings_fail(Error::PrinterOff, now);
+                        return;
+                    }
+                    if status.is_error() {
+                        self.settings_fail(frame_error(&status), now);
+                        return;
+                    }
+                    // Another frame (unsolicited status): not the reply, keep waiting.
+                }
+            }
+        }
+    }
+
+    /// A reply for the current item arrived: next item, or finish the transaction.
+    fn settings_reply(
+        &mut self,
+        mut run: SettingsRun,
+        spec: &'static SettingSpec,
+        reading: SettingReading,
+        raw: Vec<u8>,
+        now: u64,
+    ) {
+        run.reports.push(SettingReport {
+            id: spec.id,
+            reading,
+            raw,
+        });
+        let next = run.reports.len();
+        if next < run.specs.len() {
+            self.settings_gap(run, next, now);
+            return;
+        }
+        self.transmit.push_back(SETTINGS_READ_EPILOGUE.to_vec());
+        self.framer.clear();
+        self.deadline = None;
+        self.stage = Stage::Ready { request: false };
+        let event = match run.written {
+            None => Event::SettingsRead(run.reports),
+            Some(written) => {
+                let verified = run.reports.len() == written.len()
+                    && run
+                        .reports
+                        .iter()
+                        .zip(&written)
+                        .all(|(r, w)| r.reading == SettingReading::Value(*w));
+                Event::SettingsWritten {
+                    report: run.reports,
+                    verified,
+                }
+            }
+        };
+        self.events.push_back(event);
     }
 
     fn recovery_timeout(&mut self, mut rec: Recovery, now: u64) {

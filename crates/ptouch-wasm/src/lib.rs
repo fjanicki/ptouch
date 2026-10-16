@@ -42,6 +42,12 @@
 //!   `fromRgba` / `cropLines`, `Job.modelName` / `highResolution` / `byteLength`,
 //!   `DecodedJob.pageCount`, `VirtualPrinter.isPrinting`, `StatusFramer` (wraps the core framer
 //!   for the diagnostics link probe, so no status framing is re-implemented in JS).
+//! - Printer settings (docs/SETTINGS-PLAN.md §3): `settingsFor`, `PrintSession.readSettings` /
+//!   `writeSettings`, events `settings-read` / `settings-written`, state `settings`. Additive
+//!   beyond the plan: `SettingInfo.choiceLabels`, `SettingReport.text` (the core's per-model
+//!   display text, so the UI never re-implements it), `SettingInfo.selectorUnverified` (from
+//!   `SettingSpec::selector_unverified`: PT-P710BT timer selector in doubt, PROTOCOL.md §8 #34)
+//!   and `VirtualPrinter.settingByte` / `setSettingByte` / `commits` for tests.
 //!
 //! No core (`crates/ptouch`) API was added or changed for these bindings.
 
@@ -61,7 +67,7 @@ use wasm_bindgen::prelude::*;
 pub use codes::encode_code;
 pub use error::is_ptouch_error;
 pub use job::{DecodedJob, Job, decode_job, encode_job};
-pub use models::{list_models, media_for_status, media_for_width, print_area};
+pub use models::{list_models, media_for_status, media_for_width, print_area, settings_for};
 pub use raster::{Bitmap1, Raster};
 pub use session::PrintSession;
 pub use status::{StatusFramer, cancel_sequence, generic_handshake, parse_status, status_request};

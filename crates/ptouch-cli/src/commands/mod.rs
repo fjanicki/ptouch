@@ -9,6 +9,7 @@ mod discover;
 mod fonts;
 mod info;
 mod print;
+mod settings;
 mod simulate;
 mod status;
 mod test_label;
@@ -44,6 +45,7 @@ pub fn run(cli: Cli) -> Result<(), CliError> {
         Command::Info(args) => info::run(&cli, args),
         Command::Decode(args) => decode::run(&cli, args),
         Command::Fonts(args) => fonts::run(&cli, args),
+        Command::Settings(args) => settings::run(&cli, args),
     }
 }
 

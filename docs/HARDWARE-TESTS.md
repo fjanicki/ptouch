@@ -196,6 +196,64 @@ With the deployed web studio: H1 (macOS direct RFCOMM in Chrome), H2 (`/dev/cu.*
 close/reopen ×3), H5 (WebUSB on macOS), H6 (Windows 11 + Chrome), H7 (Android Chrome), H9
 (Firefox on macOS). Log the OS, browser version, transport kind and packet log for each.
 
+## 9. Printer settings (PROTOCOL.md §3.6, §9.1 items 12–14)
+
+`ptouch settings` reads and changes the printer-stored Auto Power On and Auto Power Off
+settings. Nothing about it is verified on hardware yet, so run these in order and stop at the
+first surprise. Check every command offline first: `ptouch settings list` shows the model's
+values, and `ptouch settings set <setting> <value> --dry-run` prints the exact bytes.
+
+**HW-S1: read-only probe (item 13).** Reads only; no confirmation needed. On the PT-P710BT
+`auto-power-on` sends `1B 69 55 70 01` and `auto-power-off-battery` sends
+`1B 69 55 41 01 00`, the two reads that two independent sources agree on:
+
+```sh
+ptouch $C -v settings get auto-power-on auto-power-off-battery
+```
+
+Record the full 32-byte replies (the `<<` lines; mask a serial number if one appears).
+Expected: `st[18] = F0`, the value in `st[30]`, the other bytes like a normal status. Only
+if both behave as documented, read the third timer (`1B 69 55 41 01 01`, Brother's
+definition only), then repeat everything over Bluetooth:
+
+```sh
+ptouch $C -v settings get auto-power-off
+```
+
+**HW-S2: which selector is which (item 12).** No writes from `ptouch`. The question
+(PROTOCOL.md §8 #34) is which *physical* timer each selector controls. Only the timing step
+below answers it:
+
+1. In Brother's Printer Setting Tool, set "Auto Power Off" = 10 min and "Auto Power Off
+   (Li-ion)" = 60 min, apply, and close the tool.
+2. Run `ptouch $C settings get`. Expected: `auto-power-off 10 min`, `auto-power-off-battery
+   60 min`. This only shows that both selectors read separately and that the tool writes what
+   its definition says. `ptouch` uses the same bytes as the tool, so it agrees with it whatever
+   the firmware does, and this step cannot detect a swap.
+3. **Timing (the actual test).** Unplug USB, leave the printer idle on battery, and time the
+   auto-off. About 60 min confirms Brother's labels. About 10 min means the selectors are
+   swapped: swap the two `p710bt` rows (SETTINGS-PLAN.md §6), clear
+   `SettingSpec::selector_unverified` for them, and update PROTOCOL.md §3.6.4 and §8 #34.
+4. Optionally, check the USB timer the same way with USB connected and the computer awake.
+
+A `ptouch settings set` read-back cannot replace step 3, because the write and the read-back
+use the same selector.
+
+**HW-S3: one no-op write (item 14), only with the owner's explicit go-ahead.** Writes the
+value the printer already has, so nothing changes if it works:
+
+```sh
+ptouch $C -v settings get auto-power-on          # note the value, e.g. off
+ptouch $C -v settings set auto-power-on off --force
+# power-cycle the printer
+ptouch $C -v settings get auto-power-on          # must still read the same value
+```
+
+Expected: `auto-power-on = off (verified)` and the same value after the power cycle. This
+exercises `ESC ~ S` (`1B 7E 53`) and persistence before any timer is changed. Only then
+change a timer (`settings set auto-power-off 30`, confirm at the prompt) and check it after
+a power cycle.
+
 ## Log
 
 | Date | OS | Model / firmware | Transport | Test | Result | Notes |

@@ -212,6 +212,24 @@ pub enum BatteryFormat {
     None,
 }
 
+/// Printer-stored settings command set (models.toml `settings_profile`, PROTOCOL.md §3.6).
+///
+/// Each variant names one Brother Printer Setting Tool definition family [PST-Mac]; the
+/// command bytes, reply formats and value lists per family are in PROTOCOL.md §3.6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SettingsProfile {
+    /// PT-P710BT, PT-P715eBT: `ESC i U` replies are 32-byte status frames (type `F0`, value
+    /// at `st[30]`); Auto Power Off selector `01` = USB/AC, `00` = Li-ion.
+    P710bt,
+    /// PT-P900W, PT-P950NW, PT-D800W, PT-E800W: Auto Power Off replies are 3 bytes
+    /// (`01 00 v`); selector `00` = AC/DC, `01` = Li-ion; AC values are indices up to 12 h.
+    P900w,
+    /// PT-P910BT: as [`SettingsProfile::P900w`] but the USB timer counts 10-minute units up
+    /// to 12 h (`48`).
+    P910bt,
+}
+
 /// Android SDK RFCOMM socket security (informational, PROTOCOL.md §2.1 "Link security").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -346,6 +364,8 @@ pub struct ModelProfile {
     pub max_length_mm_x10: Option<u32>,
     /// Battery byte decoding (`None` = unknown: report unknown).
     pub battery_format: Option<BatteryFormat>,
+    /// Printer-stored settings command set (`None` = none known; see `unknown`).
+    pub settings_profile: Option<SettingsProfile>,
     /// Supported media, in table order.
     pub media: &'static [&'static TapeSpec],
     /// Human-readable notes from the TOML (normative behaviour lives in PROTOCOL.md).

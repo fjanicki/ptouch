@@ -4,6 +4,7 @@
 // "XX:XX:XX:XX:XX:XX", serial numbers "***" — a report never identifies the user's printer.
 // Printer models (docs/MODELS-PLAN.md; P-core-ui): the model the studio designs for, where it
 // comes from, whether it was tested on hardware, its tape widths and the label's width.
+// Printer settings (docs/SETTINGS-PLAN.md §4): the last values read (text, not raw bytes).
 import { toHex, type ConnectionSnapshot, type PacketLog, type PacketLogEntry, type SupportInfo } from '../../printer'
 import type { ProbeResult } from './probe'
 
@@ -107,6 +108,11 @@ export function buildReport(support: SupportInfo, snap: ConnectionSnapshot, log:
   if (snap.problem) {
     kv('problem', `${snap.problem.id} (${snap.problem.severity}): ${snap.problem.title}`)
     if (snap.problem.technical) kv('technical', snap.problem.technical)
+  }
+  // After the Connection section's own lines, so a connection problem is never listed under it.
+  if (snap.settings?.length) {
+    lines.push('', '## Printer settings (last read)')
+    for (const r of snap.settings) kv(r.id, r.text)
   }
 
   for (const p of extras.probes ?? []) {

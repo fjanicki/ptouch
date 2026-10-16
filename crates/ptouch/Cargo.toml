@@ -37,6 +37,10 @@ required-features = ["virtual"]
 name = "virtual_printer"
 required-features = ["virtual"]
 
+[[test]]
+name = "settings"
+required-features = ["virtual"]
+
 [lints]
 workspace = true
 

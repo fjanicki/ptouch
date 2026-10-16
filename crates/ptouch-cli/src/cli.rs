@@ -16,6 +16,9 @@
 //!   info   [<model>]                          model table / one model's media table (offline)
 //!   decode <job.bin> [--out pages.pbm] [--preview]   offline decode via the virtual printer
 //!   fonts  [<query>]                          list system fonts usable with --font
+//!   settings get [all|<setting>…]             read printer-stored settings (PROTOCOL.md §3.6)
+//!   settings set <setting> <value> [--yes] [--force] [--dry-run]   change one (confirm, read back)
+//!   settings list                             settings + allowed values of --model (offline)
 //! ```
 //! `--device` takes the `ptouch_transport::Endpoint` syntax (`serial:/dev/cu.PT-P710BTxxxx`,
 //! `bt:XX:XX:XX:XX:XX:XX`, `usb:`, `tcp:host`, `virtual:24`). `-v` logs every frame
@@ -93,6 +96,11 @@ impl Cli {
             Command::Status(_) | Command::List(_) => true,
             Command::Print(a) => !a.job.is_offline(),
             Command::TestLabel(a) => !a.job.is_offline(),
+            Command::Settings(a) => match &a.action {
+                SettingsAction::Get(_) => true,
+                SettingsAction::Set(s) => !s.dry_run,
+                SettingsAction::List => false,
+            },
             Command::Info(_) | Command::Decode(_) | Command::Fonts(_) => false,
         }
     }
@@ -116,6 +124,8 @@ pub enum Command {
     Decode(DecodeArgs),
     /// List system fonts usable with `print --font`.
     Fonts(FontsArgs),
+    /// Read or change printer-stored settings (Auto Power Off, Auto Power On).
+    Settings(SettingsArgs),
 }
 
 /// Options shared by commands that produce a job.
@@ -329,6 +339,58 @@ pub struct FontsArgs {
     pub query: Option<String>,
 }
 
+/// `settings` arguments.
+#[derive(Debug, Args)]
+pub struct SettingsArgs {
+    /// What to do.
+    #[command(subcommand)]
+    pub action: SettingsAction,
+}
+
+/// `settings` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum SettingsAction {
+    /// Read settings from the printer (default: all).
+    Get(SettingsGetArgs),
+    /// Change one setting: shows the current value, asks for confirmation (or --yes), writes,
+    /// and reads it back to verify.
+    Set(SettingsSetArgs),
+    /// List the settings and allowed values of a model (offline; --model, default
+    /// PT-P710BT).
+    List,
+}
+
+/// `settings get` arguments.
+#[derive(Debug, Args)]
+pub struct SettingsGetArgs {
+    /// `all`, or settings: auto-power-on, auto-power-off, auto-power-off-battery.
+    #[arg(value_name = "SETTING")]
+    pub settings: Vec<String>,
+}
+
+/// `settings set` arguments.
+#[derive(Debug, Args)]
+pub struct SettingsSetArgs {
+    /// auto-power-on, auto-power-off or auto-power-off-battery.
+    #[arg(value_name = "SETTING")]
+    pub setting: String,
+    /// on/off for auto-power-on; never, <minutes>, <n>min or <n>h for the timers (the value
+    /// must be in the model's list, see `ptouch settings list`).
+    #[arg(value_name = "VALUE")]
+    pub value: String,
+    /// Change the setting without asking.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+    /// Write even when the printer already reports this value (a no-op write, for hardware
+    /// test HW-S3); normally an unchanged value sends nothing.
+    #[arg(long)]
+    pub force: bool,
+    /// Do not connect: print the exact buffers the change would send (one per line, hex),
+    /// for --model (default PT-P710BT).
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +408,21 @@ mod tests {
         let cli = Cli::parse_from(["ptouch", "print", "--text", "Hi"]);
         assert!(cli.needs_connection());
         let cli = Cli::parse_from(["ptouch", "info"]);
+        assert!(!cli.needs_connection());
+        let cli = Cli::parse_from(["ptouch", "settings", "get"]);
+        assert!(cli.needs_connection());
+        let cli = Cli::parse_from(["ptouch", "settings", "set", "auto-power-off", "10"]);
+        assert!(cli.needs_connection());
+        let cli = Cli::parse_from([
+            "ptouch",
+            "settings",
+            "set",
+            "auto-power-off",
+            "10",
+            "--dry-run",
+        ]);
+        assert!(!cli.needs_connection());
+        let cli = Cli::parse_from(["ptouch", "settings", "list"]);
         assert!(!cli.needs_connection());
     }
 

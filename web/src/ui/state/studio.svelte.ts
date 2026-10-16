@@ -1062,6 +1062,11 @@ export class Studio {
       this.#prepareAbort = null
     }
     const labels = job.pageCount
+    // A printer-settings transaction that was already running when Print was pressed (the panel
+    // starts none while `printing`) ends within a few seconds: wait for it (bounded) rather than
+    // have the job refused as busy.
+    const settingsEnd = performance.now() + 15_000
+    while (this.conn.state === 'settings' && performance.now() < settingsEnd) await new Promise((r) => setTimeout(r, 50))
     try {
       await this.connection.print(job)
       const text = labels === 1 ? 'Label printed' : `${labels} labels printed`

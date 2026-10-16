@@ -4,7 +4,7 @@
 import type { PrinterErrorInfo } from '../wasm'
 
 /** Where in the lifecycle an error happened (shared with problems.ts / PrinterEvent). */
-export type ErrorStage = 'open' | 'handshake' | 'status' | 'print' | 'idle'
+export type ErrorStage = 'open' | 'handshake' | 'status' | 'print' | 'settings' | 'idle'
 
 /** The link dropped: read/write failure, `readable === null`, disconnect event, USB unplug. */
 export class LinkLostError extends Error {

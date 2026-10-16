@@ -6,7 +6,7 @@
 // Progress is derived from status frames pushed by the printer (06/printing → page-started,
 // 01 → page-completed, 06/receiving → next page / job-completed; ~9 s for a 5 cm label on a
 // PT-P710BT), never from write completion.
-import { PrintSession, type Job, type NotificationKind, type PrinterStatus, type SessionConfig, type SessionEvent } from '../wasm'
+import { PrintSession, settingsFor, type Job, type NotificationKind, type PrinterStatus, type SessionConfig, type SessionEvent, type SettingId, type SettingReport, type SettingWrite } from '../wasm'
 import { LinkLostError, NotConnectedError, SessionFailedError, abortError, isDomError, type ErrorStage } from './errors'
 import type { PacketLog } from './packetlog'
 import { realClock, type Clock, type OpenProgress, type Transport, type TransportEvent } from './transport'
@@ -19,6 +19,7 @@ export type ClientState =
   | 'ready'
   | 'printing'
   | 'cancelling'
+  | 'settings' // a printer-settings read/write transaction (docs/SETTINGS-PLAN.md §4)
   | 'no-reply' // opened but the printer never answered (asleep / dead OS port)
   | 'lost' // link dropped; Reconnect re-opens the granted port
   | 'error'
@@ -65,6 +66,13 @@ interface PrintRun extends Pending<void> {
   of: number
 }
 
+/** Result of {@link PrinterClient.writeSettings}: the read-back values, and whether each one
+ * equals what was written. */
+export interface SettingsWriteResult {
+  report: SettingReport[]
+  verified: boolean
+}
+
 function isVisible(): boolean {
   const d = (globalThis as { document?: { visibilityState?: string } }).document
   return !d || d.visibilityState !== 'hidden'
@@ -90,6 +98,8 @@ export class PrinterClient {
   #recovered: Pending<void>[] = []
   /** print() calls waiting for the session's post-job drain to end. */
   #drained: Pending<void>[] = []
+  /** The settings transaction in flight (readSettings / writeSettings). */
+  #settings: Pending<SettingReport[] | SettingsWriteResult> | null = null
   /** Aborts the connect() in flight (disconnect(), or the caller's signal). */
   #connectCtrl: AbortController | null = null
   /** A close started without awaiting (link lost, dead session); connect() waits for it. */
@@ -125,7 +135,7 @@ export class PrinterClient {
    */
   async connect(signal?: AbortSignal): Promise<PrinterStatus> {
     if (this.#state === 'ready' && this.#status && this.transport.isOpen) return this.#status
-    if (this.#connectCtrl || this.#connecting || this.#state === 'printing' || this.#state === 'cancelling') throw new SessionFailedError({ code: 'BUSY', message: 'The printer is busy' }, 'handshake')
+    if (this.#connectCtrl || this.#connecting || this.#state === 'printing' || this.#state === 'cancelling' || this.#state === 'settings') throw new SessionFailedError({ code: 'BUSY', message: 'The printer is busy' }, 'handshake')
     const ctrl = new AbortController()
     this.#connectCtrl = ctrl
     const forward = () => ctrl.abort()
@@ -239,7 +249,7 @@ export class PrinterClient {
   async refreshStatus(): Promise<PrinterStatus> {
     const session = this.#session
     if (!session || !this.transport.isOpen) throw new NotConnectedError()
-    if (this.#state === 'printing' || this.#state === 'cancelling' || this.#state === 'handshaking') throw new SessionFailedError({ code: 'BUSY', message: 'The printer is busy' }, 'status')
+    if (this.#state === 'printing' || this.#state === 'cancelling' || this.#state === 'handshaking' || this.#state === 'settings') throw new SessionFailedError({ code: 'BUSY', message: 'The printer is busy' }, 'status')
     const p = new Promise<PrinterStatus>((resolve, reject) => this.#statusWaiters.push({ resolve, reject }))
     if (this.#statusWaiters.length === 1) {
       try {
@@ -294,6 +304,62 @@ export class PrinterClient {
   }
 
   /**
+   * Reads printer-stored settings (PROTOCOL.md §3.6), default: every one the model supports.
+   * Only from 'ready' (BUSY otherwise); state 'settings' meanwhile (no keepalive, no print).
+   * Rejects with a PtouchError thrown by wasm before anything is sent (UNSUPPORTED, EMPTY,
+   * INVALID_INPUT…), or a SessionFailedError (stage 'settings': TIMEOUT, CANCELLED on abort…).
+   */
+  readSettings(ids?: SettingId[], signal?: AbortSignal): Promise<SettingReport[]> {
+    return this.#settingsTx((s, now) => s.readSettings(ids ?? settingsFor(this.modelName ?? '').map((i) => i.id), now), signal) as Promise<SettingReport[]>
+  }
+
+  /** Writes `values`, then reads them back (`verified`). As {@link readSettings}; after a
+   * failure the printer may already have stored a new value. */
+  writeSettings(values: SettingWrite[], signal?: AbortSignal): Promise<SettingsWriteResult> {
+    return this.#settingsTx((s, now) => s.writeSettings(values, now), signal) as Promise<SettingsWriteResult>
+  }
+
+  async #settingsTx(start: (s: PrintSession, now: number) => void, signal?: AbortSignal): Promise<SettingReport[] | SettingsWriteResult> {
+    const session = this.#session
+    if (!session || !this.transport.isOpen) throw new NotConnectedError()
+    const busy = () => new SessionFailedError({ code: 'BUSY', message: 'The printer is busy' }, 'settings')
+    if (this.#state !== 'ready' || this.#statusWaiters.length) throw busy()
+    if (signal?.aborted) throw abortError()
+    if (this.#sessionStage(session) === 'draining') {
+      await new Promise<void>((resolve, reject) => this.#drained.push({ resolve, reject }))
+      if (this.#session !== session || this.#state !== 'ready' || this.#statusWaiters.length) throw busy()
+    }
+    this.#stopKeepalive()
+    try {
+      start(session, this.clock.now()) // throws PtouchError before anything is sent
+    } catch (e) {
+      this.#startKeepalive()
+      throw e
+    }
+    const done = new Promise<SettingReport[] | SettingsWriteResult>((resolve, reject) => (this.#settings = { resolve, reject }))
+    this.#setState('settings')
+    const onAbort = () => void this.cancel()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    this.#pump()
+    try {
+      return await done
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
+  /** A settings transaction ended (the session is back to ready). */
+  #settingsDone(): Pending<SettingReport[] | SettingsWriteResult> | null {
+    const tx = this.#settings
+    this.#settings = null
+    if (tx) {
+      this.#setState('ready')
+      this.#startKeepalive()
+    }
+    return tx
+  }
+
+  /**
    * Cancel a job (or the handshake): abortWrites → session.cancel (invalidate + ESC @) →
    * resolves once the printer is back to ready (or the link is gone). The pending print()
    * rejects with SessionFailedError code CANCELLED.
@@ -304,6 +370,11 @@ export class PrinterClient {
     if (this.#state === 'opening' || this.#state === 'waking' || this.#state === 'handshaking') {
       this.#connectCtrl?.abort()
       return
+    }
+    if (this.#state === 'settings') {
+      // The session drops the unsent commands, restores the command mode and fails CANCELLED.
+      session.cancel(this.clock.now())
+      return this.#pump()
     }
     if (this.#state !== 'printing') return
     this.#setState('cancelling')
@@ -325,6 +396,10 @@ export class PrinterClient {
     this.#clearSlowOpen()
     if (this.#state === 'printing') {
       await Promise.race([this.cancel(), new Promise<void>((r) => this.clock.setTimeout(r, 1500))])
+    } else if (this.#state === 'settings') {
+      // Let the epilogue that restores the default command mode go out first (best effort).
+      void this.cancel()
+      await Promise.race([this.#tx, new Promise<void>((r) => this.clock.setTimeout(r, 500))])
     }
     this.#stopTimers()
     this.#txGen++
@@ -457,6 +532,12 @@ export class PrinterClient {
       case 'notification':
         this.#emit({ type: 'notification', notification: ev.notification })
         break
+      case 'settings-read':
+        this.#settingsDone()?.resolve(ev.report)
+        break
+      case 'settings-written':
+        this.#settingsDone()?.resolve({ report: ev.report, verified: ev.verified })
+        break
       case 'failed':
         this.#onFailed(ev.error, ev.resumeFromPage)
         break
@@ -481,6 +562,20 @@ export class PrinterClient {
       else if (info.code !== 'CANCELLED') this.#setState('error')
       run.reject(err)
       if (this.#sessionFailed()) this.#onSessionDead()
+      return
+    }
+    if (this.#settings) {
+      const tx = this.#settings
+      this.#settings = null
+      // The session is back to ready, except after PRINTER_OFF (needs a new connect).
+      if (info.code === 'PRINTER_OFF') {
+        this.#setState('lost')
+        this.#onSessionDead()
+      } else {
+        this.#setState('ready')
+        this.#startKeepalive()
+      }
+      tx.reject(new SessionFailedError(info, 'settings'))
       return
     }
     if (this.#statusWaiters.length > 0) {
@@ -515,7 +610,7 @@ export class PrinterClient {
 
   #onLost(error: unknown): void {
     if (this.#state === 'disconnected' || this.#state === 'lost') return
-    const stage: ErrorStage = this.#connecting ? 'handshake' : this.#printing ? 'print' : this.#statusWaiters.length ? 'status' : 'idle'
+    const stage: ErrorStage = this.#connecting ? 'handshake' : this.#printing ? 'print' : this.#settings ? 'settings' : this.#statusWaiters.length ? 'status' : 'idle'
     const lost = error instanceof LinkLostError ? error : new LinkLostError(undefined, { cause: error })
     this.#note(`link lost: ${lost.message}`)
     this.#stopTimers()
@@ -537,6 +632,11 @@ export class PrinterClient {
     if (this.#printing) {
       this.#printing.reject(err)
       this.#printing = null
+      any = true
+    }
+    if (this.#settings) {
+      this.#settings.reject(err)
+      this.#settings = null
       any = true
     }
     if (this.#statusWaiters.length) {

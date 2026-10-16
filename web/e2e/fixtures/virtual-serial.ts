@@ -22,6 +22,11 @@ export interface VirtualSerialOptions {
   fragment?: number[]
   /** VirtualTiming (ms); defaults keep a short label at ~1–3 s. */
   timing?: Record<string, number>
+  /** VirtualBehaviour, default `{ kind: 'normal' }` (e.g. `{ kind: 'settings-writes-ignored' }`). */
+  behaviour?: Record<string, unknown>
+  /** After a settings set (`1B 69 55 … 00 …`), deliver nothing for this long (a write whose
+   * read-back gets no answer); the printer still stores the value. */
+  muteAfterSetMs?: number
 }
 
 /** What the fixture exposes on `window` (typed loosely: the bindings are loaded at runtime). */
@@ -46,6 +51,7 @@ function installVirtualSerial(opts: VirtualSerialOptions): void {
   const mediaId = opts.mediaId ?? 'tze128-24'
   const fragment = opts.fragment ?? [7, 25]
   let openFailures = opts.openFailures ?? 1
+  let mutedUntil = 0
   const w = globalThis as unknown as VirtualSerialWindow & Record<string, unknown>
   w.__vsWrites = []
   w.__vsOpenAttempts = 0
@@ -64,7 +70,7 @@ function installVirtualSerial(opts: VirtualSerialOptions): void {
       VirtualPrinter: new (m: string, id: string, b: unknown, t: unknown) => Printer
     }
     await mod.default({ module_or_path: new URL('__e2e__/ptouch_bg.wasm', base) })
-    printer = new mod.VirtualPrinter(model, mediaId, { kind: 'normal' }, opts.timing ?? null)
+    printer = new mod.VirtualPrinter(model, mediaId, opts.behaviour ?? { kind: 'normal' }, opts.timing ?? null)
     w.__vsWasm = mod
     w.__vsPrinter = printer
     return printer
@@ -87,6 +93,8 @@ function installVirtualSerial(opts: VirtualSerialOptions): void {
         {
           write: (chunk) => {
             w.__vsWrites.push(Array.from(chunk))
+            const isSet = chunk.length >= 6 && chunk[0] === 0x1b && chunk[1] === 0x69 && chunk[2] === 0x55 && chunk[4] === 0x00
+            if (isSet && opts.muteAfterSetMs) mutedUntil = performance.now() + opts.muteAfterSetMs
             printer?.handleInput(chunk, performance.now())
             this._deliver()
           },
@@ -120,7 +128,9 @@ function installVirtualSerial(opts: VirtualSerialOptions): void {
     _deliver(): void {
       if (!printer || !this._ctrl) return
       const now = performance.now()
+      const muted = now < mutedUntil
       for (let f = printer.pollOutput(now); f; f = printer.pollOutput(now)) {
+        if (muted) continue
         let at = 0
         for (let i = 0; at < f.length; i++) {
           const n = fragment[i % fragment.length] ?? f.length
