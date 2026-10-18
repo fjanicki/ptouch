@@ -92,6 +92,10 @@ describe('templates render on their tape', () => {
     'bin-36': 105,
     'folder-spine-36': 150,
     'name-tag-36': 115,
+    // Music (tables): about 20 mm per white key, 25 mm per key with sharps (equal columns).
+    'piano-white-24': 145,
+    'piano-12-24': 305,
+    'piano-12-flats-24': 160,
   }
 
   it.skipIf(!wifiReady())('every template stays within its length budget', async () => {

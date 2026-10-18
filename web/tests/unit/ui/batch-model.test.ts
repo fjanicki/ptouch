@@ -177,6 +177,10 @@ describe('paging, print bar', () => {
     expect(part.exact).toBe(false)
     expect(part.totalMm).toBe(30 + 40 + 50 + 3 * 4) // the unmeasured one counts as the average
     expect(batchTape([], 2, 1, 2, false, 25)).toEqual({ totalMm: 2 * (25 + 4), exact: false })
+    // A label cut into pieces (a table cut between its columns): every piece has its feed margins.
+    expect(batchTape([[10, 10], [10, 10]], 2, 2, 2, false, 99)).toEqual({ totalMm: 8 * 14, exact: true })
+    expect(batchTape([[10, 10], undefined], 2, 1, 2, false, 99)).toEqual({ totalMm: 4 * 14, exact: false })
+    expect(batchTape([], 1, 1, 2, false, [10, 12])).toEqual({ totalMm: 14 + 16, exact: false })
   })
 
   it('the plain-label note uses the print formula and the next job\'s leader (not the Chain switch)', () => {
@@ -187,6 +191,7 @@ describe('paging, print bar', () => {
     // Right after a chained print no leader is fed: the note and the usage counter both drop it.
     expect(singleTapeNote(50, 2, 2, false)).toBe('Uses about 108 mm of tape.')
     expect(singleTapeNote(50, 2, 0, false)).toBe('Uses about 54 mm of tape.')
+    expect(singleTapeNote([21, 21, 21], 2, 2, true)).toBe(`Uses about ${formatTape(6 * 25 + LEADER_MM)} of tape incl. the ~24 mm leader before the first piece.`)
   })
 
   it('formats tape and the Print button', () => {

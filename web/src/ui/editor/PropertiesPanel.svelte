@@ -18,6 +18,7 @@
     image: () => import('./props/ImageProps.svelte'),
     shape: () => import('./props/ShapeProps.svelte'),
     spacer: () => import('./props/SpacerProps.svelte'),
+    table: () => import('./props/TableProps.svelte'),
   }
 
   const studio = getStudio()

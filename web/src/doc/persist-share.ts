@@ -56,7 +56,7 @@ export function shareableDoc(doc: LabelDoc, opts: { includeWifiPasswords?: boole
     if (s.columns.length) notices.push(noticeWifiPasswordColumns(s.columns))
     else if (s.removed) notices.push(s.removed === 1 ? NOTICE_WIFI_PASSWORD_OMITTED : NOTICE_WIFI_PASSWORDS_OMITTED)
   }
-  if (out.items.some((i) => i.kind === 'text' && i.customFont)) notices.push(NOTICE_CUSTOM_FONTS)
+  if (out.items.some((i) => 'customFont' in i && i.customFont)) notices.push(NOTICE_CUSTOM_FONTS)
   return { doc: out, notices }
 }
 

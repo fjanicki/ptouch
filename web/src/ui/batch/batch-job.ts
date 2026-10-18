@@ -4,7 +4,7 @@
 // chain per doc.print). Called by Studio.print() when batchSize(doc) > 0.
 import type { LabelDoc } from '../../doc/schema'
 import { batchSize, missingVariables, resolveDoc } from '../../doc/variables'
-import { copiesOf, ensureFonts, estimateTape, jobOptions, renderLabel, type RenderResult, type RenderTarget } from '../../render'
+import { MAX_JOB_PAGES, copiesOf, ensureFonts, estimateTape, jobOptions, pageLengthsMm, pageSpans, renderLabel, tooManyPages, type RenderResult, type RenderTarget } from '../../render'
 import { encodeJob, release, type Bitmap1, type Job } from '../../wasm'
 
 export interface BatchProgress {
@@ -21,19 +21,23 @@ export interface BatchJobOptions {
   loadFontBlob?: (ref: string) => Promise<Blob | undefined>
   onProgress?: (p: BatchProgress) => void
   signal?: AbortSignal
+  /** The printer has a cutter (tables cut between columns; render `RenderOptions.cutter`). */
+  cutter?: boolean
 }
 
 export interface BatchJob {
   /** Owned by the caller (free() after sending). */
   job: Job
-  /** Pages in the job (labels × copies). */
+  /** Pages in the job (labels × copies, × pieces of a table cut between its columns). */
   labels: number
+  /** Some label is cut into pieces (so `labels` counts pieces, not labels). */
+  pieced: boolean
   /** Tape used incl. feed margins and the leader (render/job.ts estimateTape). */
   tapeMm: number
 }
 
 /** Pages one job may hold (the wasm binding's limit; also keeps wasm memory bounded). */
-export const MAX_BATCH_PAGES = 999
+export const MAX_BATCH_PAGES = MAX_JOB_PAGES
 
 /** `{{a}}, {{b}}` for messages. */
 export function placeholderList(names: readonly string[]): string {
@@ -63,6 +67,7 @@ export async function renderBatchLabel(doc: LabelDoc, index: number, target: Ren
     ...(opts.loadBlob ? { loadBlob: opts.loadBlob } : {}),
     ...(opts.loadFontBlob ? { loadFontBlob: opts.loadFontBlob } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
+    ...(opts.cutter !== undefined ? { cutter: opts.cutter } : {}),
   })
 }
 
@@ -77,7 +82,9 @@ export async function buildBatchJob(doc: LabelDoc, target: RenderTarget, opts: B
   const total = batchSize(doc)
   const copies = copiesOf(doc)
   const bitmaps: Bitmap1[] = []
-  const lengths: number[] = []
+  /** Page spans (dots) and lengths (mm) per label: one, or its pieces (a table cut between its columns). */
+  const spans: [number, number][][] = []
+  const lengths: number[][] = []
   let feedMarginMm = 0
   try {
     opts.onProgress?.({ done: 0, total })
@@ -90,25 +97,31 @@ export async function buildBatchJob(doc: LabelDoc, target: RenderTarget, opts: B
         throw new Error(`Label ${i + 1}: ${w?.message ?? 'it cannot be printed as designed.'}`)
       }
       bitmaps.push(r.bitmap)
-      lengths.push(r.lengthMm)
+      spans.push(pageSpans(r))
+      lengths.push(pageLengthsMm(r))
       feedMarginMm = r.feedMarginMm
       opts.onProgress?.({ done: i + 1, total })
       // Let the progress paint and input through between labels.
       await new Promise((resolve) => setTimeout(resolve, 0))
     }
     if (opts.signal?.aborted) throw abortError()
-    // Copies per label (A A B B …): every page is its own clone, since encodeJob consumes them.
+    tooManyPages(spans.flat().length * copies)
+    // Copies per label (A A B B …; a label cut into pieces: A1 A2 A1 A2 B1 B2 …): every page is
+    // its own clone or crop, since encodeJob consumes them.
     const pages: Bitmap1[] = []
     const pageLengths: number[] = []
     try {
       bitmaps.forEach((b, i) => {
+        const s = spans[i] ?? []
         for (let c = 0; c < copies; c++) {
-          pages.push(b.clone())
-          pageLengths.push(lengths[i] ?? 0)
+          s.forEach(([x0, x1], k) => {
+            pages.push(s.length === 1 ? b.clone() : b.cropLines(x0, x1))
+            pageLengths.push(lengths[i]?.[k] ?? 0)
+          })
         }
       })
       const job = encodeJob(target.model, target.media.id, pages, { ...jobOptions(doc), copies: 1 })
-      return { job, labels: job.pageCount, tapeMm: estimateTape(pageLengths, feedMarginMm, { leader: opts.leader }).totalMm }
+      return { job, labels: job.pageCount, pieced: spans.some((s) => s.length > 1), tapeMm: estimateTape(pageLengths, feedMarginMm, { leader: opts.leader }).totalMm }
     } finally {
       for (const p of pages) release(p) // consumed by a successful encodeJob; freed otherwise
     }

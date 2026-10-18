@@ -353,6 +353,7 @@ export const KIND_META: Record<ItemKind, { label: string; icon: string }> = {
   image: { label: 'Image', icon: 'image' },
   shape: { label: 'Shape', icon: 'square' },
   spacer: { label: 'Spacer', icon: 'space' },
+  table: { label: 'Table', icon: 'table' },
 }
 
 const SYMBOLOGY_LABEL = { qr: 'QR', code128: 'Code 128', ean13: 'EAN-13', datamatrix: 'DataMatrix' } as const
@@ -376,7 +377,23 @@ export function itemSummary(item: Item, iconLabel?: (id: string) => string | und
       return { title: 'Shape', summary: `${capitalize(item.shape === 'rect' ? 'rectangle' : item.shape)} · ${formatMm(item.widthMm)}` }
     case 'spacer':
       return { title: 'Spacer', summary: formatMm(item.widthMm) }
+    case 'table':
+      return { title: 'Table', summary: truncate(`${item.cells.length} × ${item.cells[0]?.length} · ${item.cells[0]?.join(' ')}`, 40) }
   }
+}
+
+/**
+ * "Cut into 7 pieces · about 25.1 mm each (21.1 mm printed + 2 × 2 mm feed)" for a label the
+ * printer cuts into pieces (`pagesMm` = render/job.ts pageLengthsMm), or the range when they
+ * differ; null for one piece. "About" until the piece lengths are checked on a printer (HW-T1).
+ */
+export function piecesText(pagesMm: readonly number[], feedMm: number): string | null {
+  const n = pagesMm.length
+  const lo = Math.min(...pagesMm)
+  const hi = Math.max(...pagesMm)
+  const mm = (v: number): string => formatMm(v + 2 * feedMm)
+  const same = hi - lo < 0.05
+  return n < 2 ? null : `Cut into ${n} pieces · about ${same ? mm(lo) : `${mm(lo)} to ${mm(hi)}`} each (${same ? `${formatMm(lo)} printed + ` : 'incl. '}2 × ${formatMm(feedMm)} feed)`
 }
 
 function truncate(s: string, n: number): string {
@@ -396,6 +413,8 @@ export function docIsEmpty(doc: Pick<LabelDoc, 'items' | 'frame'>): boolean {
         return !!(i.blobRef || i.dataUrl)
       case 'spacer':
         return false
+      case 'table':
+        return i.cells.some((r) => r.some((c) => c.trim() !== ''))
       default:
         return true
     }

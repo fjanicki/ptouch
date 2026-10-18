@@ -20,7 +20,10 @@ async function openPanel(page: Page): Promise<void> {
 async function pasteData(page: Page, csv: string): Promise<void> {
   await openPanel(page)
   const box = page.getByLabel('Paste from a spreadsheet or CSV (first row = column names)')
-  if (!(await box.isVisible())) await page.getByText(/Replace with pasted data/).click()
+  const replace = page.getByText(/Replace with pasted data/)
+  // The panel body loads lazily: wait for it (the paste box, or "Replace" when there is data).
+  await expect(box.or(replace).first()).toBeVisible()
+  if (!(await box.isVisible())) await replace.click()
   await box.fill(csv)
   await page.getByRole('button', { name: 'Use pasted data' }).click()
 }

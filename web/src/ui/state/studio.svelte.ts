@@ -51,7 +51,7 @@ import {
   type ProblemAction,
   type SupportInfo,
 } from '../../printer'
-import { buildPrintJob, ensureFonts, estimateTape, itemSizingBand, renderLabel, thumbnailPng, type RenderResult, type RenderTarget } from '../../render'
+import { buildPrintJob, ensureFonts, estimateTape, itemSizingBand, pageLengthsMm, renderLabel, thumbnailPng, type RenderResult, type RenderTarget } from '../../render'
 import { isPtouchError, listModels, loadWasm, mediaForWidth, printArea, type Job, type ModelInfo } from '../../wasm'
 import { DEFAULT_MODEL, FALLBACK_TAPE_WIDTHS, findModel, isVerifiedModel, standInModel, tapeWidthsOf, widthSupport, type WidthSupport } from './models'
 import { virtualScenarioFor } from './virtual-printer'
@@ -845,7 +845,7 @@ export class Studio {
       const shown = resolveDoc(doc, row, { now }).doc
       await ensureFonts(shown, { loadFontBlob: this.#loadFontBlob })
       if (ac.signal.aborted) return
-      const result = await renderLabel(shown, target, { loadBlob: (ref) => this.store.getBlob(ref), loadFontBlob: this.#loadFontBlob, signal: ac.signal })
+      const result = await renderLabel(shown, target, { loadBlob: (ref) => this.store.getBlob(ref), loadFontBlob: this.#loadFontBlob, signal: ac.signal, cutter: this.cutterFor(target.model) })
       if (ac.signal.aborted) {
         result.bitmap.free()
         return
@@ -867,6 +867,11 @@ export class Studio {
         this.rendering = false
       }
     }
+  }
+
+  /** `model` has a cutter (tables are cut between columns only then; batch measuring too). */
+  cutterFor(model: string): boolean {
+    return findModel(this.models, model)?.caps.autoCut !== false
   }
 
   /** What a render depends on besides the doc: target, preview row, fonts, and the local day
@@ -1005,6 +1010,8 @@ export class Studio {
     let doc: LabelDoc
     let tapeMm: number
     let batchRows: number | undefined
+    /** Pieces of one label (a table cut between its columns); 0 = a batch with some label in pieces. */
+    let pieces = 1
     let widthMm: number
     let mediaId: string
     let model: string
@@ -1044,13 +1051,17 @@ export class Studio {
           loadFontBlob: this.#loadFontBlob,
           onProgress: (p) => (this.batchProgress = p),
           signal: this.#prepareAbort.signal,
+          cutter: this.cutterFor(target.target.model),
         })
         job = built.job
         tapeMm = built.tapeMm
         batchRows = rows
+        if (built.pieced) pieces = 0
       } else {
         job = buildPrintJob(doc, result, target.target)
-        tapeMm = estimateTape(new Array<number>(job.pageCount).fill(result.lengthMm), result.feedMarginMm, { leader: this.tapeLeader }).totalMm
+        const pages = pageLengthsMm(result)
+        pieces = pages.length
+        tapeMm = estimateTape(Array.from({ length: job.pageCount }, (_, i) => pages[i % pages.length] ?? 0), result.feedMarginMm, { leader: this.tapeLeader }).totalMm
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') this.toast('info', 'Printing cancelled')
@@ -1069,7 +1080,8 @@ export class Studio {
     while (this.conn.state === 'settings' && performance.now() < settingsEnd) await new Promise((r) => setTimeout(r, 50))
     try {
       await this.connection.print(job)
-      const text = labels === 1 ? 'Label printed' : `${labels} labels printed`
+      // `labels` counts pages: pieces when a table is cut between its columns.
+      const text = labels === pieces && pieces > 1 ? `Label printed in ${pieces} pieces` : labels === 1 ? 'Label printed' : `${labels} ${pieces !== 1 ? 'pieces' : 'labels'} printed`
       // The toast region announces it (one announcer, not two).
       this.toast('ok', text, doc.print.autoCut ? undefined : 'Cut the label off at the printer.')
       this.tapeLeader = !doc.print.chain

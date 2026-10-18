@@ -18,6 +18,7 @@ export type RenderWarningCode =
   | 'content-overflow' // fixed length too short / item taller than the band (clipped)
   | 'image-missing' // blobRef not found
   | 'icons-missing' // the icon catalogue chunk could not be loaded (offline, stale deploy)
+  | 'table-missing' // the table renderer chunk could not be loaded (offline, stale deploy)
   | 'length-clamped' // below printer minimum (padded) or above maximum
   | 'canvas-noise' // anti-fingerprinting detected: printing must be blocked
   | 'empty' // nothing would be printed
@@ -75,6 +76,11 @@ export interface RenderResult {
   overflow?: boolean
   /** One entry per non-empty text block (P-size fills it; absent until then). */
   texts?: TextRenderInfo[]
+  /**
+   * Where the printer cuts the label into pieces (table "cut between columns", docs/TABLE-PLAN.md
+   * §3): x in dots, sorted, inside (0, lengthDots). Absent = one piece. render/job.ts `pageSpans`.
+   */
+  cuts?: number[]
 }
 
 export interface RenderOptions {
@@ -85,6 +91,9 @@ export interface RenderOptions {
   /** Resolve an uploaded font (`FontSource` kind 'user', persist-fonts.ts FontStore.get). */
   loadFontBlob?: (ref: string) => Promise<Blob | undefined>
   signal?: AbortSignal
+  /** The target printer has a cutter (`caps.autoCut`; default true): tables are cut between
+   * columns only then (and with `print.autoCut`). */
+  cutter?: boolean
 }
 
 export interface PreviewColors {

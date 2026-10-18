@@ -9,15 +9,37 @@ describe('migrate()', () => {
     for (let n = 0; n < CURRENT_SCHEMA; n++) expect(MIGRATIONS[n], `step ${n} → ${n + 1}`).toBeTypeOf('function')
   })
 
-  it('accepts a current (schema 4) document unchanged: 36 mm tape and the model it was designed for', () => {
-    const raw = fixture('schema-4.json')
+  it('accepts a current (schema 5) document unchanged: tables along and across, cut marks, cut between, ♯', () => {
+    const raw = fixture('schema-5.json') as { items: Record<string, unknown>[] }
     const r = migrate(raw)
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.readOnly).toBe(false)
     expect(r.migratedFrom).toBeUndefined()
     expect(r.doc).toEqual(raw)
+    expect(r.doc.items.map((i) => i.kind)).toEqual(['table', 'table', 'text'])
+    expect(r.doc.items[1]).toMatchObject({ direction: 'across-down', cutBetween: true, columns: { mode: 'mm', mm: 18 } })
+  })
+
+  it('schema 4 → 5 changes nothing but the version: 36 mm tape and the model it was designed for', () => {
+    const raw = fixture('schema-4.json') as Record<string, unknown>
+    const r = migrate(raw)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.readOnly).toBe(false)
+    expect(r.migratedFrom).toBe(4)
+    expect(r.doc).toEqual({ ...raw, schema: 5 })
     expect(r.doc.tape).toEqual({ widthMm: 36, mediaId: 'tze560-36', model: 'PT-P910BT', colors: { tape: '#ffd400', ink: '#000000' } })
+  })
+
+  it('a schema-5 label opened by an older app is read-only and loses only its tables (newer-version path)', () => {
+    // What a schema-4 app does with a schema-5 file: validate it as its own schema, read-only.
+    // Simulated with the current validator and a kind it does not know standing in for the table.
+    const raw = fixture('schema-5.json') as { items: Record<string, unknown>[] }
+    const r = migrate({ ...raw, schema: CURRENT_SCHEMA + 1, items: [...raw.items, { id: 'future-1', kind: 'chart' }] })
+    expect(r.ok && r.readOnly).toBe(true)
+    if (!r.ok) return
+    expect(r.doc.items.map((i) => i.kind)).toEqual(['table', 'table', 'text'])
   })
 
   it('schema 3 → 4 changes nothing but the version (renders pixel-identically)', () => {
@@ -27,7 +49,7 @@ describe('migrate()', () => {
     if (!r.ok) return
     expect(r.readOnly).toBe(false)
     expect(r.migratedFrom).toBe(3)
-    expect(r.doc).toEqual({ ...raw, schema: 4 })
+    expect(r.doc).toEqual({ ...raw, schema: CURRENT_SCHEMA })
     // No `model` appears on a label that did not have one.
     expect(r.doc.tape).not.toHaveProperty('model')
     // The schema-3 fields survive: point size, a library font, shrink to fit length.

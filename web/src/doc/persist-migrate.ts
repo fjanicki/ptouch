@@ -81,6 +81,12 @@ export const MIGRATIONS: Readonly<Record<number, Migration>> = {
    * older apps: they open a schema-4 label read-only instead of clamping 36 mm to 24 mm.
    */
   3: (raw) => ({ ...raw, schema: 4 }),
+  /**
+   * Schema 4 → 5 (tables, docs/TABLE-PLAN.md). The `table` item is new; nothing else changes. The
+   * bump exists for older apps: they open a schema-5 label read-only (dropping its tables with a
+   * notice) instead of saving it back without them.
+   */
+  4: (raw) => ({ ...raw, schema: 5 }),
 }
 
 /** Schema version of a raw object (0 = unversioned), or a problem string. */

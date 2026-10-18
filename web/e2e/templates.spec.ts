@@ -23,9 +23,10 @@ test.beforeEach(async ({ page }) => {
 test('pick “Wi-Fi sticker (12 mm)”: a new 12 mm label with a QR block and a text block', async ({ page }) => {
   await page.getByLabel('Text', { exact: true }).fill('My old label')
   await openGallery(page)
-  for (const section of ['Wi-Fi', 'Cables', 'Shelves, bins & drawers', 'Office']) await expect(gallery(page).getByRole('heading', { name: section })).toBeVisible()
-  // 10 cards for the PT-P710BT's widths + "Show templates for other tape widths" (36 mm) + Close.
-  await expect(gallery(page).getByRole('button')).toHaveCount(12)
+  for (const section of ['Wi-Fi', 'Cables', 'Shelves, bins & drawers', 'Office', 'Music']) await expect(gallery(page).getByRole('heading', { name: section })).toBeVisible()
+  // 13 cards for the PT-P710BT's widths (17 templates minus the four 36 mm ones) + "Show
+  // templates for other tape widths" (36 mm) + Close.
+  await expect(gallery(page).getByRole('button')).toHaveCount(15)
   // Thumbnails render lazily; the cards in view are drawn.
   await expect(gallery(page).locator('.thumb[data-state="ready"]').first()).toBeVisible()
   await expect(card(page, 'Wi-Fi sticker (12 mm)')).toHaveAccessibleDescription(/12 mm tape.*iPhone Camera/)
@@ -87,10 +88,12 @@ test('keyboard: arrows move between cards, Enter opens one', async ({ page }) =>
   await page.keyboard.press('ArrowUp')
   await expect(card(page, 'Wi-Fi sticker (12 mm)')).toBeFocused()
   await page.keyboard.press('End')
-  await expect(card(page, 'Name tag')).toBeFocused()
+  await expect(card(page, 'Piano notes, all 12 keys with flats')).toBeFocused()
   await page.keyboard.press('Home')
   await expect(card(page, 'Wi-Fi sticker (12 mm)')).toBeFocused()
   await page.keyboard.press('End')
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowLeft') // the Music section comes last
+  await expect(card(page, 'Name tag')).toBeFocused()
   await page.keyboard.press('Enter')
   await expect(gallery(page)).toBeHidden()
   await expect(preview(page).getByText(/24 mm tape · printable/)).toBeVisible()
@@ -105,7 +108,7 @@ test('with the virtual printer (24 mm loaded), 24 mm templates are marked as fit
   await openGallery(page)
   await expect(gallery(page).getByText(/24 mm tape is loaded/)).toBeVisible()
   const fits = gallery(page).getByText('Fits the loaded tape', { exact: true })
-  await expect(fits).toHaveCount(4)
+  await expect(fits).toHaveCount(7)
   await expect(card(page, 'Wi-Fi sticker (24 mm)')).toHaveAccessibleDescription(/Fits the loaded tape/)
   await expect(card(page, 'Wi-Fi sticker (12 mm)')).not.toHaveAccessibleDescription(/Fits the loaded tape/)
   // The first fitting card gets focus.

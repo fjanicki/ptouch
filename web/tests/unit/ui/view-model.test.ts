@@ -12,7 +12,9 @@ import {
   docIsEmpty,
   fitScale,
   formatMm,
+  KIND_META,
   itemSummary,
+  piecesText,
   mediaMismatch,
   openProgressText,
   previewColors,
@@ -278,6 +280,7 @@ describe('blocks', () => {
   it('summarises items', () => {
     const text = { ...createItem('text'), text: '\n  M3 × 12 \nDIN 912' }
     expect(itemSummary(text)).toEqual({ title: 'Text', summary: 'M3 × 12' })
+    expect(itemSummary({ ...createItem('table'), cells: [['DO', 'RE', 'MI', 'FA', 'SOL', 'LA', 'SI'], ['C', 'D', 'E', 'F', 'G', 'A', 'B']] })).toEqual({ title: 'Table', summary: '2 × 7 · DO RE MI FA SOL LA SI' })
     expect(itemSummary({ ...createItem('text'), text: '  ' }).summary).toBe('(empty)')
     expect(itemSummary({ ...createItem('code'), symbology: 'ean13', data: '400638133393' })).toEqual({ title: 'EAN-13', summary: '400638133393' })
     expect(itemSummary(createItem('icon'), () => 'Bolt').summary).toBe('Bolt')
@@ -302,5 +305,19 @@ describe('themeColorMedia', () => {
   it('enables only the chosen theme colour', () => {
     expect([themeColorMedia(light, 'dark'), themeColorMedia(dark, 'dark')]).toEqual(['not all', 'all'])
     expect([themeColorMedia(light, 'light'), themeColorMedia(dark, 'light')]).toEqual(['all', 'not all'])
+  })
+})
+
+describe('tables', () => {
+  it('KIND_META, docIsEmpty', () => {
+    expect(KIND_META.table).toEqual({ label: 'Table', icon: 'table' })
+    expect(docIsEmpty(createDoc({ items: [{ ...createItem('table'), cells: [['', ' ']] }] }))).toBe(true)
+    expect(docIsEmpty(createDoc({ items: [{ ...createItem('table'), cells: [['', 'x']] }] }))).toBe(false)
+  })
+
+  it('piecesText: the pieces the printer cuts, with the feed margins', () => {
+    expect(piecesText([20], 2)).toBeNull()
+    expect(piecesText([21.1, 21.1, 21.1], 2)).toBe('Cut into 3 pieces · about 25.1 mm each (21.1 mm printed + 2 × 2 mm feed)')
+    expect(piecesText([20, 22], 2)).toBe('Cut into 2 pieces · about 24 mm to 26 mm each (incl. 2 × 2 mm feed)')
   })
 })

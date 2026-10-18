@@ -17,8 +17,6 @@
   import Preview from './ui/preview/Preview.svelte'
   import PrintBar from './ui/print/PrintBar.svelte'
   import UnsupportedBrowser from './ui/UnsupportedBrowser.svelte'
-  import ShortcutsDialog from './ui/ShortcutsDialog.svelte'
-  import LibraryDialog from './ui/labels/LibraryDialog.svelte'
   import ProblemBanner from './ui/common/ProblemBanner.svelte'
   import Toasts from './ui/common/Toasts.svelte'
   import BatchPanel from './ui/batch/BatchPanel.svelte'
@@ -40,6 +38,22 @@
   }
 
   const studio = provideStudio(new Studio())
+  // "Open label" and the shortcut reference are lazy too (docs/TABLE-PLAN.md T15): mounted on
+  // their first open (their own effect then calls showModal) and kept mounted afterwards.
+  let Library = $state<Component | null>(null)
+  let Shortcuts = $state<Component | null>(null)
+  const lazyDialog = (open: boolean, have: Component | null, load: () => Promise<{ default: Component }>, done: (c: Component) => void, close: () => void): void => {
+    if (!open || have) return
+    load().then(
+      (m) => done(m.default),
+      () => {
+        close()
+        studio.toast('error', 'This dialog could not be loaded.', 'Check your connection and reload the page.')
+      },
+    )
+  }
+  $effect(() => lazyDialog(studio.libraryOpen, Library, () => import('./ui/labels/LibraryDialog.svelte'), (c) => (Library = c), () => (studio.libraryOpen = false)))
+  $effect(() => lazyDialog(studio.shortcutsOpen, Shortcuts, () => import('./ui/ShortcutsDialog.svelte'), (c) => (Shortcuts = c), () => (studio.shortcutsOpen = false)))
   let dialogs = $state<Partial<Record<StudioDialog, Component>>>({})
   const loading = new Set<StudioDialog>()
   $effect(() => {
@@ -112,8 +126,8 @@
     <PrintBar />
   </div>
   <ConnectDialog />
-  <LibraryDialog />
-  <ShortcutsDialog />
+  {#if Library}<Library />{/if}
+  {#if Shortcuts}<Shortcuts />{/if}
   {#each Object.values(dialogs) as Dialog (Dialog)}
     <Dialog />
   {/each}

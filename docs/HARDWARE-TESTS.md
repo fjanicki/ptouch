@@ -256,6 +256,25 @@ change a timer (`settings set auto-power-off never`, confirm at the prompt; it s
 `1B 69 55 41 00 00 00`), check it after a power cycle, and compare it with a fresh
 information report (`AutoPowerOff(adp)` should then be empty).
 
+## 10. Studio tables: cut between columns (docs/TABLE-PLAN.md §3)
+
+**HW-T1: pieces cut by the printer. PENDING.** In the studio (Chrome or Edge, WebUSB is the
+recommended path on macOS), on 24 mm tape: Labels → New from template → Music → "Piano notes".
+In the table block, turn on **Cut between columns** (it also turns on Cut each and sets the
+label margins to 0). Note the preview's readout ("Cut into 7 pieces · about … mm each") and the
+print bar's tape estimate, then print one copy. Record:
+
+- the number of cuts and of pieces (expected 7, one per column, plus the leader cut-off);
+- the length of each piece with a ruler (expected: the readout's "about … mm each", i.e. the
+  printed length plus the printer's ≈ 2 mm feed margin at both ends);
+- where the ≈ 24 mm leader goes (a separate blank piece before the first column, or added to
+  the first piece);
+- whether pieces shorter than the ≈ 24.5 mm head-to-cutter distance come out at their own
+  length (PROTOCOL.md §5.6) or are lengthened by the printer. Repeat with "Piano notes, all 12
+  keys" switched to **Across ↓** (about 13.5 mm pieces) to check a short piece.
+
+Until this has run, the studio says "about" for the piece lengths.
+
 ## Log
 
 | Date | OS | Model / firmware | Transport | Test | Result | Notes |

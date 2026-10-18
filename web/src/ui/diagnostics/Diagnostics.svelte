@@ -237,7 +237,7 @@
       const doc = buildSourceDoc()
       const w = source === 'current' ? doc.tape.widthMm : widthMm
       const target = resolveTarget(model, w, loaded)
-      const next = await runVirtual(doc, target, (ref) => store.getBlob(ref))
+      const next = await runVirtual(doc, target, (ref) => store.getBlob(ref), undefined, studio.cutterFor(model))
       // Unmounted while running: nobody will free `next` later.
       if (destroyed) {
         freeRun(next)

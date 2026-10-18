@@ -2,11 +2,11 @@
      printable band, tape edges, feed margins and cut lines; ruler in mm; length readout; zoom
      (fit / real size / steps); Design vs Exact-dots modes; click a block to select it. -->
 <script lang="ts">
-  import { paintPreview } from '../../render'
+  import { estimateTape, pageLengthsMm, paintPreview } from '../../render'
   import Icon from '../common/Icon.svelte'
   import Segmented from '../common/Segmented.svelte'
   import { getStudio } from '../state/studio.svelte'
-  import { formatMm, previewColors, realScale, rulerSteps, zoomPercent, zoomStep } from '../state/view-model'
+  import { formatMm, piecesText, previewColors, realScale, rulerSteps, zoomPercent, zoomStep } from '../state/view-model'
   import { savePrefs } from '../../doc/persist-prefs'
 
   const studio = getStudio()
@@ -51,6 +51,14 @@
   const marginEndPx = $derived(px((studio.doc.marginsMm.end * dpi) / 25.4))
   const smooth = $derived(mode === 'design' && scale < 1)
   const showGrid = $derived(mode === 'dots' && scale >= 4)
+  /** The printer cuts the label into pieces (a table cut between its columns). */
+  const pieceLengths = $derived(result?.cuts ? pageLengthsMm(result) : null)
+  const pieces = $derived(result && pieceLengths ? piecesText(pieceLengths, result.feedMarginMm) : null)
+  /** Tape the pieces use: each piece has the feed margin at both ends (render/job.ts estimateTape,
+   * as the print bar counts it), so more than the one strip drawn here. */
+  const piecesMm = $derived(result && pieceLengths ? estimateTape(pieceLengths, result.feedMarginMm, { leader: false }).labelsMm : null)
+  /** The length figure: one label, or the pieces it is cut into. */
+  const lengthText = $derived(pieceLengths && piecesMm !== null ? `${pieceLengths.length} pieces, ${formatMm(piecesMm)} of tape` : formatMm(totalMm))
   const labelWarnings = $derived((result?.warnings ?? []).filter((w) => !w.itemId))
   const selectedBox = $derived(result?.boxes.find((b) => b.itemId === studio.selectedId) ?? null)
   const hoverBox = $derived(hoverId && hoverId !== studio.selectedId ? (result?.boxes.find((b) => b.itemId === hoverId) ?? null) : null)
@@ -146,7 +154,7 @@
         <div class="placeholder"><span class="spin"><Icon name="loader" size={22} /></span>Rendering…</div>
       {/if}
     {:else}
-      <figure class="label" style:width="{px(totalDots)}px" aria-label="Label preview, {formatMm(totalMm)} long on {formatMm(studio.doc.tape.widthMm)} tape">
+      <figure class="label" style:width="{px(totalDots)}px" aria-label="Label preview, {pieceLengths ? `cut into ${lengthText}` : `${lengthText} long`} on {formatMm(studio.doc.tape.widthMm)} tape">
         <div
           class="tape"
           class:design={mode === 'design'}
@@ -171,6 +179,7 @@
           </div>
           <span class="cut start" aria-hidden="true"></span>
           <span class="cut end" aria-hidden="true"></span>
+          {#each result.cuts ?? [] as x (x)}<span class="cut piece" style:left="{px(feedDots + x)}px" aria-hidden="true"></span>{/each}
         </div>
         <svg class="ruler" width={px(totalDots)} height="26" aria-hidden="true">
           {#each ticks as t, i (i)}
@@ -180,7 +189,7 @@
         </svg>
         <figcaption class="dimension">
           <span class="arrow left" aria-hidden="true"></span>
-          <strong>{formatMm(totalMm)}</strong>
+          <strong>{pieceLengths ? `${formatMm(totalMm)} strip, before cutting` : formatMm(totalMm)}</strong>
           <span class="arrow right" aria-hidden="true"></span>
         </figcaption>
       </figure>
@@ -189,8 +198,8 @@
 
   {#if result}
     <div class="readout">
-      <span><strong>{formatMm(totalMm)}</strong> label</span>
-      <span>{formatMm(result.lengthMm)} printed + 2 × {formatMm(result.feedMarginMm)} feed</span>
+      {#if pieceLengths && piecesMm !== null}<span><strong>{formatMm(piecesMm)}</strong> of tape in {pieceLengths.length} pieces</span>{:else}<span><strong>{formatMm(totalMm)}</strong> label</span>{/if}
+      {#if pieces}<span class="pieces">{pieces}</span>{:else}<span>{formatMm(result.lengthMm)} printed + 2 × {formatMm(result.feedMarginMm)} feed</span>{/if}
       <span>{formatMm(studio.doc.tape.widthMm)} tape · printable {formatMm((bandDots * 25.4) / dpi)} ({bandDots} dots)</span>
       {#if studio.doc.print.mirror}<span class="badge"><Icon name="flip" size={14} />Mirrored when printed</span>{/if}
       {#if colors.fromPrinter}<span class="badge">Colours from printer</span>{/if}
@@ -359,6 +368,9 @@
   }
   .cut.end {
     right: 0;
+  }
+  .cut.piece {
+    border-left-color: var(--danger);
   }
   .ruler {
     display: block;

@@ -19,8 +19,10 @@
  * and `tape.model`, the model a label was designed for. Nothing renders differently (3 → 4 only
  * changes the version). An older app (widths up to 24 mm) still shows a 36 mm schema-4 label
  * clamped to 24 mm, but opens it read-only: the first edit saves a copy, so the 36 mm original is
- * never saved over. */
-export const SCHEMA_VERSION = 4 as const
+ * never saved over.
+ * 5 (tables, docs/TABLE-PLAN.md): the `table` item. Nothing else changes (4 → 5 only changes the
+ * version); an older app opens a schema-5 label read-only and drops its tables with a notice. */
+export const SCHEMA_VERSION = 5 as const
 
 /**
  * Nominal TZe tape widths any supported model takes (3.5 mm reports width byte 4 in the status).
@@ -318,7 +320,43 @@ export interface SpacerItem extends ItemBase {
   widthMm: number
 }
 
-export type Item = TextItem | IconItem | CodeItem | ImageItem | ShapeItem | SpacerItem
+/**
+ * Table text direction (schema 5): 'along' = rows across the tape, columns along it; 'across-…' =
+ * every column is one piece along the tape whose cells are stacked along it, each cell's text
+ * turned a quarter so it reads across the tape: from the top edge down (90°) or from the bottom
+ * edge up (270°).
+ */
+export type TableDirection = 'along' | 'across-down' | 'across-up'
+/** Column width along the tape (along) / piece length (across): widest cell + padding ('auto'),
+ * every column as wide as the widest ('equal'), or a fixed length. */
+export type TableColumns = { mode: 'auto' } | { mode: 'equal' } | { mode: 'mm'; mm: number }
+
+/** A small table of plain text (schema 5, docs/TABLE-PLAN.md): one font and size for every cell. */
+export interface TableItem extends ItemBase {
+  kind: 'table'
+  /** Rows × columns, rectangular (every row has the same length), single-line plain text. */
+  cells: string[][]
+  fontFamily: FontFamilyId
+  customFont?: FontSource
+  fontWeight: FontWeight
+  italic: boolean
+  /** 'fit' = fit the row (along) / the band (across); 'pt' / 'mm' fixed (reduced to fit). */
+  size: TextSize
+  /** Text in every cell: left/centre/right along, start/centre/end of the band across. */
+  align: Align
+  direction: TableDirection
+  columns: TableColumns
+  /** Space between the text and the column edges, along the text direction. */
+  paddingMm: number
+  /** Outer and inner lines. */
+  grid: boolean
+  /** Short ticks at the column edges, at both tape edges (scissors guide). */
+  cutMarks: boolean
+  /** The printer cuts after every column (one page per column; needs Cut each and a cutter). */
+  cutBetween: boolean
+}
+
+export type Item = TextItem | IconItem | CodeItem | ImageItem | ShapeItem | SpacerItem | TableItem
 export type ItemKind = Item['kind']
 export type ItemOf<K extends ItemKind> = Extract<Item, { kind: K }>
 
@@ -395,6 +433,25 @@ export function createItem<K extends ItemKind>(kind: K): ItemOf<K> {
     },
     shape: { id, kind: 'shape', shape: 'rect', widthMm: 10, size: { mode: 'fit' }, strokeMm: 0.5, fill: false },
     spacer: { id, kind: 'spacer', widthMm: 5 },
+    table: {
+      id,
+      kind: 'table',
+      cells: [
+        ['A', 'B', 'C'],
+        ['1', '2', '3'],
+      ],
+      fontFamily: 'fira-sans',
+      fontWeight: 600,
+      italic: false,
+      size: { mode: 'fit' },
+      align: 'center',
+      direction: 'along',
+      columns: { mode: 'auto' },
+      paddingMm: 1,
+      grid: false,
+      cutMarks: false,
+      cutBetween: false,
+    },
   }
   return items[kind] as ItemOf<K>
 }
@@ -456,6 +513,13 @@ export const LIMITS = {
   batchTotalChars: 200_000,
   /** Custom font names. */
   fontNameChars: 100,
+  /** Tables: rows (6 fit the band of 36 mm tape), columns (an 88-key keyboard), characters per
+   * cell, padding and fixed column width / piece length. */
+  tableRows: 6,
+  tableCols: 100,
+  tableCellChars: 40,
+  tablePaddingMm: { min: 0, max: 10 },
+  tableColumnMm: { min: 2, max: 200 },
 } as const
 
 /** Variable / column names: `{{name}}`. */
@@ -494,6 +558,7 @@ const DATE_FORMATS: readonly DateFormat[] = ['iso', 'dmy', 'mdy', 'long']
 const ECCS: readonly QrEcc[] = ['L', 'M', 'Q', 'H']
 const DITHERS: readonly DitherKind[] = ['threshold', 'floyd-steinberg', 'atkinson', 'bayer4', 'bayer8']
 const SHAPES: readonly ShapeItem['shape'][] = ['rect', 'ellipse', 'line']
+const DIRECTIONS: readonly TableDirection[] = ['along', 'across-down', 'across-up']
 
 type Obj = Record<string, unknown>
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -616,6 +681,35 @@ function readFontSource(r: Reader, o: Obj): FontSource | undefined {
   return undefined
 }
 
+/** Bundled family, custom font, weight and italic of a text or table item. */
+function readFont(r: Reader, o: Obj): Pick<TextItem, 'fontFamily' | 'customFont' | 'fontWeight' | 'italic'> {
+  const weight = nearestWeight(o['fontWeight'])
+  if (weight === undefined && o['fontWeight'] !== undefined) r.note('fontWeight was malformed; using 600')
+  const customFont = readFontSource(r, o)
+  return { fontFamily: r.oneOf(o, 'fontFamily', FONT_FAMILIES, 'fira-sans'), ...(customFont ? { customFont } : {}), fontWeight: weight ?? 600, italic: r.bool(o, 'italic', false) }
+}
+
+/** Table cells: rectangular, single-line text within LIMITS (one note when anything changed). */
+function readCells(r: Reader, v: unknown): string[][] {
+  const rows = Array.isArray(v) ? v.slice(0, LIMITS.tableRows) : []
+  const cols = Math.min(LIMITS.tableCols, Math.max(1, ...rows.map((row) => (Array.isArray(row) ? row.length : 0))))
+  const out = rows.map((row) =>
+    Array.from({ length: cols }, (_, j) => {
+      const c: unknown = Array.isArray(row) ? row[j] : ''
+      return (typeof c === 'string' ? c : typeof c === 'number' ? String(c) : '').replace(/[\r\n\t]/g, ' ').slice(0, LIMITS.tableCellChars)
+    }),
+  )
+  if (!out.length) out.push([''])
+  if (JSON.stringify(out) !== JSON.stringify(v)) r.note(`cells were repaired (at most ${LIMITS.tableRows} rows, ${LIMITS.tableCols} columns and ${LIMITS.tableCellChars} characters of one line per cell)`)
+  return out
+}
+
+function readColumns(r: Reader, o: Obj): TableColumns {
+  const v = r.obj(o, 'columns')
+  const mode = r.oneOf(v, 'mode', ['auto', 'equal', 'mm'] as const, 'auto')
+  return mode === 'mm' ? { mode, mm: r.num(v, 'mm', LIMITS.tableColumnMm.min, LIMITS.tableColumnMm.max, 20) } : { mode }
+}
+
 function readWifi(r: Reader, o: Obj): WifiSettings {
   return {
     ssid: r.str(o, 'ssid', '', LIMITS.ssidChars),
@@ -703,25 +797,33 @@ function readItem(r: Reader, o: Obj, id: string): Item | undefined {
   const frame = readItemFrame(r, o)
   const base = frame ? { id, frame } : { id }
   switch (o['kind']) {
-    case 'text': {
-      const weight = nearestWeight(o['fontWeight'])
-      if (weight === undefined && o['fontWeight'] !== undefined) r.note('fontWeight was malformed; using 600')
-      const customFont = readFontSource(r, o)
+    case 'text':
       return {
         ...base,
         kind: 'text',
         text: r.str(o, 'text', ''),
-        fontFamily: r.oneOf(o, 'fontFamily', FONT_FAMILIES, 'fira-sans'),
-        ...(customFont ? { customFont } : {}),
-        fontWeight: weight ?? 600,
-        italic: r.bool(o, 'italic', false),
+        ...readFont(r, o),
         size: readTextSize(r, o),
         align: r.oneOf(o, 'align', ALIGNS, 'center'),
         lineHeight: r.num(o, 'lineHeight', LIMITS.lineHeight.min, LIMITS.lineHeight.max, 1.1),
         invert: r.bool(o, 'invert', false),
         ...(o['clipTall'] === true ? { clipTall: true as const } : {}),
       }
-    }
+    case 'table':
+      return {
+        ...base,
+        kind: 'table',
+        cells: readCells(r, o['cells']),
+        ...readFont(r, o),
+        size: readTextSize(r, o),
+        align: r.oneOf(o, 'align', ALIGNS, 'center'),
+        direction: r.oneOf(o, 'direction', DIRECTIONS, 'along'),
+        columns: readColumns(r, o),
+        paddingMm: r.num(o, 'paddingMm', LIMITS.tablePaddingMm.min, LIMITS.tablePaddingMm.max, 1),
+        grid: r.bool(o, 'grid', false),
+        cutMarks: r.bool(o, 'cutMarks', false),
+        cutBetween: r.bool(o, 'cutBetween', false),
+      }
     case 'icon':
       return { ...base, kind: 'icon', iconId: r.str(o, 'iconId', 'bolt', 64), size: readSize(r, o) }
     case 'code': {
@@ -880,7 +982,14 @@ export function validateDoc(raw: unknown): { ok: true; doc: LabelDoc; notices: s
       r.note(`item ${i + 1} has unknown kind ${JSON.stringify(rawItem['kind'] ?? null)}; dropped`)
       return
     }
-    chars += item.kind === 'text' ? item.text.length : item.kind === 'code' ? item.data.length + (item.wifi ? item.wifi.ssid.length + item.wifi.password.length : 0) : 0
+    chars +=
+      item.kind === 'text'
+        ? item.text.length
+        : item.kind === 'code'
+          ? item.data.length + (item.wifi ? item.wifi.ssid.length + item.wifi.password.length : 0)
+          : item.kind === 'table'
+            ? item.cells.flat().join('').length
+            : 0
     if (chars > LIMITS.totalChars) {
       overBudget = true
       r.note(`more than ${LIMITS.totalChars} characters of text; blocks from ${i + 1} on were dropped`)

@@ -1,9 +1,9 @@
 // W3 — doc.print → JobOptions mapping, copies clamp, print preflight.
 import { describe, expect, it } from 'vitest'
 import { createDoc, DEFAULT_PRINT } from '../../../src/doc/schema'
-import { buildPrintJob, copiesOf, estimateTape, jobOptions, LEADER_MM, printBlocker } from '../../../src/render/job'
+import { buildPrintJob, copiesOf, estimateTape, jobOptions, LEADER_MM, MAX_JOB_PAGES, pageLengthsMm, pageSpans, printBlocker } from '../../../src/render/job'
 import type { RenderResult, RenderTarget } from '../../../src/render/types'
-import { Bitmap1, printArea, mediaForWidth } from '../../../src/wasm'
+import { Bitmap1, decodeJob, printArea, mediaForWidth } from '../../../src/wasm'
 import { loadWasmForTests } from '../../helpers/wasm'
 import { AREA_12, AREA_24, AREA_6, MEDIA_12, MEDIA_24, MEDIA_6 } from './fixtures'
 
@@ -70,3 +70,49 @@ describe('estimateTape', () => {
     expect(estimateTape([Number.NaN, -5], Number.NaN).totalMm).toBe(LEADER_MM)
   })
 })
+
+describe('pieces (table cut between columns, docs/TABLE-PLAN.md §3)', () => {
+  it('pageSpans: the whole label, or one span per piece', () => {
+    expect(pageSpans({ lengthDots: 100 })).toEqual([[0, 100]])
+    expect(pageSpans({ lengthDots: 100, cuts: [30, 60] })).toEqual([
+      [0, 30],
+      [30, 60],
+      [60, 100],
+    ])
+    expect(pageLengthsMm({ lengthDots: 100, lengthMm: 10, cuts: [30, 60] }).map((v) => Math.round(v * 10) / 10)).toEqual([3, 3, 4])
+    expect(pageLengthsMm({ lengthDots: 100, lengthMm: 10 })).toEqual([10])
+  })
+
+  it('a cut label prints as one job of its pieces, repeated per copy (A B C A B C)', () => {
+    loadWasmForTests()
+    const packed = new Uint8Array(90 * 16)
+    // Piece k has k + 1 ink lines at its start, so the decoded pages tell the pieces apart.
+    for (const [start, n] of [[0, 1], [30, 2], [60, 3]] as const) for (let i = 0; i < n; i++) packed.fill(0xff, (start + i) * 16, (start + i + 1) * 16)
+    const bm = Bitmap1.fromPacked(90, 128, packed)
+    const r = result({ bitmap: bm, lengthDots: 90, lengthMm: dotsMm(90), cuts: [30, 60] })
+    const job = buildPrintJob(createDoc({ print: { ...DEFAULT_PRINT, copies: 2 } }), r, target)
+    expect(job.pageCount).toBe(6)
+    const decoded = decodeJob('PT-P710BT', job.toBytes())
+    const pages = decoded.pages()
+    expect(pages.map((p) => p.length)).toEqual([30, 30, 30, 30, 30, 30])
+    const inkLines = (p: Bitmap1) => Array.from({ length: p.length }, (_, x) => p.get(x, 0)).filter(Boolean).length
+    expect(pages.map(inkLines)).toEqual([1, 2, 3, 1, 2, 3])
+    for (const p of pages) p.free()
+    decoded.free()
+    job.free()
+    expect(bm.isBlank()).toBe(false) // the preview keeps its bitmap
+    bm.free()
+  })
+
+  it('refuses more pieces × copies than one job holds', () => {
+    loadWasmForTests()
+    const bm = Bitmap1.fromPacked(100, 128, new Uint8Array(100 * 16))
+    const cuts = Array.from({ length: 99 }, (_, i) => i + 1)
+    expect(() => buildPrintJob(createDoc({ print: { ...DEFAULT_PRINT, copies: 11 } }), result({ bitmap: bm, cuts }), target)).toThrow(`${MAX_JOB_PAGES}`)
+    bm.free()
+  })
+})
+
+function dotsMm(d: number): number {
+  return (d * 25.4) / 180
+}

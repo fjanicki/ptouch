@@ -6,16 +6,17 @@
 // page. Canvas x = along the label (column 0 = left end as read), y = across the tape (row 0 =
 // top of the printable band). The core encoder handles the printer's feed order.
 import { Raster, release, type Bitmap1, type ModuleMatrix, type ToneOptions } from '../wasm'
-import type { CodeItem, IconItem, ImageItem, Item, LabelDoc, Rotation, ShapeItem, TextItem } from '../doc/schema'
+import type { CodeItem, IconItem, ImageItem, Item, LabelDoc, Rotation, ShapeItem, TableItem, TextItem } from '../doc/schema'
 import { canvasReadbackIsNoisy } from './antifp'
 import { context2d, createCanvas, rgbaBytes, type AnyCanvas, type Ctx2D } from './canvas'
 import { chooseModuleDots, codeMatrix, humanReadable, isLinear, padMatrix, quietModules, repeatRow, rotateMatrix, tapeMarginDots } from './codes'
 import { CODE_TEXT_FONT, MIN_QUALITY_CAP_MM, activeCustomFamily, ensureFonts, fontDef, isFaceReady, resolveWeight, textFaceReady } from './fonts'
 import { loadIcons, loadedIcons } from './icon-set'
+import { loadTables } from './table-set'
 import type { IconDef } from './icons'
 import { MAX_IMAGE_DOTS, decodeImage, imageSize, resolveImageBlob, type RgbaImage } from './images'
 import { contentLength, flowSettings, layoutFlow, layoutFree, type FlowLayout, type FramedItem, type MeasuredItem } from './layout'
-import { DEFAULT_CRISP_FACTOR, MIN_SHRINK, canvasMeasure, drawTextBlock, faceMetrics, fitTextBlock, lineHeightOf, pixelGrid, shrinkFactor, sizeTextBlock, splitLines } from './text'
+import { DEFAULT_CRISP_FACTOR, MIN_SHRINK, canvasMeasure, cssFont, drawTextBlock, faceMetrics, fitTextBlock, lineHeightOf, pixelGrid, shrinkFactor, sizeTextBlock, splitLines } from './text'
 import type { ItemBox, RenderOptions, RenderResult, RenderTarget, RenderWarning, TextRenderInfo } from './types'
 import { dotsToMm, mmToDots } from './units'
 import { wifiWarnings } from './wifi'
@@ -60,6 +61,8 @@ interface Prepared {
   autoLinear?: boolean
   /** A non-empty text block: how it was sized (`RenderResult.texts`). */
   text?: TextRenderInfo
+  /** Machine cuts inside the item (table "cut between columns"), dots from its left edge. */
+  cuts?: number[]
 }
 
 interface Ctx {
@@ -73,6 +76,8 @@ interface Ctx {
   marginDots: number
   /** Length a linear `'auto'` code may take on a fixed-length label (dots, incl. its zone). */
   autoLinearW?: number
+  /** Tables may be cut between columns (flow layout, Cut each on, a printer with a cutter). */
+  cut: boolean
 }
 
 // ------------------------------------------------------------------------------------------
@@ -145,7 +150,7 @@ function prepareText(item: TextItem, band: number, c: Ctx, maxW?: number, scale 
 
 /** `font-quality`: a thin or script library font (`FontDef.quality`) below a readable cap height.
  * "Thin" families are only thin below semibold. Not for custom fonts (their own file is drawn). */
-function qualityWarning(item: TextItem, capDots: number, c: Ctx): void {
+function qualityWarning(item: Pick<TextItem, 'id' | 'fontFamily' | 'fontWeight' | 'customFont'>, capDots: number, c: Ctx): void {
   if (activeCustomFamily(item)) return
   const def = fontDef(item.fontFamily)
   if (!def.quality || (def.quality === 'thin' && resolveWeight(def, item.fontWeight) >= 600)) return
@@ -516,7 +521,34 @@ async function prepareItem(item: Item, band: number, c: Ctx, rotation: Rotation,
       return prepareImage(item, band, c, rotation, maxW)
     case 'spacer':
       return { id: item.id, w: Math.max(0, mmToDots(item.widthMm, c.dpi)), h: 0, spacer: true }
+    case 'table':
+      return prepareTable(item, band, c)
   }
+}
+
+/** A table (lazy chunk, render/table-set.ts); `cut` only in the flow (never in a frame). */
+async function prepareTable(item: TableItem, band: number, c: Ctx): Promise<Prepared> {
+  const t = await loadTables().catch(() => undefined)
+  if (!t) {
+    c.warn({ code: 'table-missing', itemId: item.id, blocking: true, message: 'The table could not be loaded. Reload the page while online.' })
+    return { id: item.id, w: 0, h: 0 }
+  }
+  const font = (px: number): string => tableFont(item, px)
+  return t.prepareTable(item, band, {
+    ...c,
+    face: faceMetrics(c.mctx, item, textFaceReady(item)),
+    measure: canvasMeasure(c.mctx, item, font),
+    font,
+    pixel: pixelGrid(item),
+    cut: c.cut && item.cutBetween,
+    quality: (cap) => qualityWarning(item, cap, c),
+  })
+}
+
+/** CSS font of a table at `px` (T12): its face, then JetBrains Mono, the only bundled family with
+ * ♯ and ♭ (fonts.ts `fontsUsed` loads it), then the generic: never a system font for them. */
+export function tableFont(item: TableItem, px: number): string {
+  return cssFont(item, px).replace(/, ([a-z-]+)$/, `, "${fontDef('jetbrains-mono').family}", $1`)
 }
 
 // ------------------------------------------------------------------------------------------
@@ -731,8 +763,8 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
   const inner = Math.max(1, band - 2 * reserve)
   // A code in the flow may count the unprinted tape margin as quiet zone, unless a frame line
   // runs along the band edge; codes in free-layout frames never do (neighbours may be there).
-  const c: Ctx = { f, dpi, mctx: measuring(), warn, marginDots: frame ? 0 : tapeMarginDots(target.area), ...(opts.loadBlob ? { loadBlob: opts.loadBlob } : {}) }
-  const cFramed: Ctx = { ...c, marginDots: 0 }
+  const c: Ctx = { f, dpi, mctx: measuring(), warn, marginDots: frame ? 0 : tapeMarginDots(target.area), cut: doc.print.autoCut && opts.cutter !== false, ...(opts.loadBlob ? { loadBlob: opts.loadBlob } : {}) }
+  const cFramed: Ctx = { ...c, marginDots: 0, cut: false }
 
   // Measure. Free layout: items with a frame are placed by it; the rest flow.
   const free = doc.layout.mode === 'free'
@@ -768,7 +800,12 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
     abortIfNeeded(signal)
   }
 
-  const limits = { minLengthDots: target.area.minLengthDots, ...(target.area.maxLengthDots !== undefined ? { maxLengthDots: target.area.maxLengthDots } : {}), insetDots: reserve }
+  // A table cut between its columns prints as one page per piece (render/job.ts pageSpans), and
+  // the printer's maximum applies to each page: the strip itself is not cut to the maximum, its
+  // pieces are checked below instead (an 88-key keyboard is well over 1 m of tape).
+  const pieceMax = target.area.maxLengthDots
+  const cutting = flowItems.some((p) => !!p.cuts?.length)
+  const limits = { minLengthDots: target.area.minLengthDots, ...(pieceMax !== undefined && !cutting ? { maxLengthDots: pieceMax } : {}), insetDots: reserve }
   if (shrinking) {
     shrinkTextToLength(doc, flowItems, flowSource, inner, c, limits, held)
     for (const ws of held.values()) for (const w of ws) warn(w)
@@ -834,6 +871,18 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
     const boxes: ItemBox[] = placed
       .filter((pl) => pl.w > 0 || pl.p.spacer)
       .map((pl) => (pl.p.spacer ? { itemId: pl.p.id, x: pl.x, y: reserve, w: Math.max(1, pl.w), h: inner } : { itemId: pl.p.id, x: pl.x, y: pl.y, w: pl.w, h: pl.h }))
+    const cuts = placed.flatMap((pl) => (pl.p.cuts ?? []).map((x) => pl.x + x)).filter((x) => x > 0 && x < length)
+    if (cuts.length && pieceMax !== undefined) {
+      const edges = [0, ...cuts, length]
+      const longest = Math.max(...edges.slice(1).map((e, i) => e - (edges[i] ?? 0)))
+      if (longest > pieceMax) {
+        warn({
+          code: 'length-clamped',
+          blocking: true,
+          message: `A piece is ${Math.round(dotsToMm(longest, dpi))} mm long; this printer prints at most ${Math.round(dotsToMm(pieceMax, dpi))} mm per piece. Make the columns narrower or shorten the blocks next to the table.`,
+        })
+      }
+    }
     const blocking = warnings.some((w) => w.blocking)
     warnings.sort((a, b) => Number(!!b.blocking) - Number(!!a.blocking))
     const texts = placed.flatMap((pl) => (pl.p.text ? [pl.p.text] : []))
@@ -848,6 +897,7 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
       blocking,
       overflow: layout.overflow || placed.some((pl) => pl.p.tooTall),
       texts,
+      ...(cuts.length ? { cuts } : {}),
     }
   } finally {
     if (!finished) raster.free()

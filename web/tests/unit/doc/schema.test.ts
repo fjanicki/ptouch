@@ -1,10 +1,10 @@
 // W3 — schema factories, ops immutability, history (undo/redo/coalesce), validateDoc.
 import { describe, expect, it } from 'vitest'
-import { createBatch, createDoc, createItem, FONT_FAMILY_IDS, LIMITS, SCHEMA_VERSION, validateDoc, type ItemKind, type LabelDoc, type TextItem } from '../../../src/doc/schema'
+import { createBatch, createDoc, createItem, FONT_FAMILY_IDS, LIMITS, SCHEMA_VERSION, validateDoc, type ItemKind, type LabelDoc, type TableItem, type TextItem } from '../../../src/doc/schema'
 import { addItem, duplicateItem, moveItem, removeItem, updateDoc, updateItem } from '../../../src/doc/ops'
 import { COALESCE_MS, createHistory } from '../../../src/doc/history'
 
-const KINDS: ItemKind[] = ['text', 'icon', 'code', 'image', 'shape', 'spacer']
+const KINDS: ItemKind[] = ['text', 'icon', 'code', 'image', 'shape', 'spacer', 'table']
 
 /** Deep-freezes a doc so any mutation by an op throws. */
 function frozen<T>(v: T): T {
@@ -157,7 +157,7 @@ describe('history', () => {
 
 describe('validateDoc', () => {
   it('rejects things that are not current-schema labels', () => {
-    for (const raw of [null, 42, 'x', [], {}, { schema: 1, items: [] }, { schema: 2, items: [] }, { schema: 3, items: [] }, { schema: 5, items: [] }, { schema: 4 }, { schema: 4, items: {} }]) {
+    for (const raw of [null, 42, 'x', [], {}, { schema: 1, items: [] }, { schema: 2, items: [] }, { schema: 3, items: [] }, { schema: 4, items: [] }, { schema: 6, items: [] }, { schema: 5 }, { schema: 5, items: {} }]) {
       const v = validateDoc(raw)
       expect(v.ok, JSON.stringify(raw)).toBe(false)
       if (!v.ok) expect(v.problems[0]).toMatch(/not a ptouch label document/)
@@ -399,5 +399,61 @@ describe('validateDoc (schema 2 fields)', () => {
     expect(createBatch()).toMatchObject({ enabled: false, columns: [], rows: [], counters: [{ name: 'n', start: 1, step: 1, pad: 0 }] })
     const w = validateDoc({ ...base(), batch: createBatch() })
     expect(w.ok && w.doc.batch).toEqual(createBatch())
+  })
+})
+
+describe('validateDoc (schema 5: tables)', () => {
+  const read = (patch: Record<string, unknown>) => {
+    const v = validateDoc({ ...createDoc({ items: [] }), items: [{ ...createItem('table'), ...patch }] })
+    if (!v.ok) throw new Error(v.problems.join())
+    return { item: v.doc.items[0] as TableItem, notices: v.notices }
+  }
+
+  it('a new table: 2 × 3 cells, fit, centred, along, columns fit the text, every switch off', () => {
+    expect(SCHEMA_VERSION).toBe(5)
+    const t = createItem('table')
+    expect(t).toMatchObject({ kind: 'table', fontFamily: 'fira-sans', fontWeight: 600, italic: false, size: { mode: 'fit' }, align: 'center', direction: 'along', columns: { mode: 'auto' }, paddingMm: 1, grid: false, cutMarks: false, cutBetween: false })
+    expect(t.cells).toEqual([
+      ['A', 'B', 'C'],
+      ['1', '2', '3'],
+    ])
+    expect(read({}).notices).toEqual([])
+  })
+
+  it('keeps every option', () => {
+    const custom = { kind: 'user', ref: `sha256-${'a'.repeat(32)}`, family: 'My Font' }
+    const patch = { cells: [['DO♯', 'RE']], direction: 'across-up', columns: { mode: 'mm', mm: 18 }, size: { mode: 'pt', pt: 14 }, align: 'end', paddingMm: 0.5, grid: true, cutMarks: true, cutBetween: true, customFont: custom, fontFamily: 'jetbrains-mono', fontWeight: 700, italic: true }
+    expect(read(patch)).toEqual({ item: { ...createItem('table'), ...patch, id: expect.any(String) }, notices: [] })
+    expect(read({ columns: { mode: 'equal' } }).item.columns).toEqual({ mode: 'equal' })
+  })
+
+  it('repairs cells: rectangular, single-line text, numbers as text, within the limits', () => {
+    const r = read({ cells: [['A', 'B\nC', 7], ['x'], 'bad'] })
+    expect(r.item.cells).toEqual([
+      ['A', 'B C', '7'],
+      ['x', '', ''],
+      ['', '', ''],
+    ])
+    expect(r.notices).toHaveLength(1)
+    const big = read({ cells: Array.from({ length: 9 }, () => Array.from({ length: 130 }, () => 'y'.repeat(50))) }).item.cells
+    expect(big).toHaveLength(LIMITS.tableRows)
+    expect(big[0]).toHaveLength(LIMITS.tableCols)
+    expect(big[0]?.[0]).toHaveLength(LIMITS.tableCellChars)
+    expect(read({ cells: 'nope' }).item.cells).toEqual([['']])
+    expect(read({ cells: [] }).item.cells).toEqual([['']])
+  })
+
+  it('unknown direction, columns mode or a bad padding fall back to the defaults with notices', () => {
+    const r = read({ direction: 'diagonal', columns: { mode: 'wide' }, paddingMm: 99, grid: 'yes' })
+    expect(r.item).toMatchObject({ direction: 'along', columns: { mode: 'auto' }, paddingMm: LIMITS.tablePaddingMm.max, grid: false })
+    expect(r.notices).toHaveLength(4)
+    expect(read({ columns: { mode: 'mm', mm: 1 } }).item.columns).toEqual({ mode: 'mm', mm: LIMITS.tableColumnMm.min })
+  })
+
+  it('cells count towards the label’s character budget', () => {
+    const cells = Array.from({ length: 6 }, () => Array.from({ length: 100 }, () => 'z'.repeat(40)))
+    const items = Array.from({ length: 2 }, () => ({ ...createItem('table'), cells }))
+    const v = validateDoc({ ...createDoc({ items: [] }), items })
+    expect(v.ok && v.doc.items).toHaveLength(1)
   })
 })

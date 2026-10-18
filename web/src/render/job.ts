@@ -1,5 +1,5 @@
 // W3 — RenderResult + doc.print → wasm Job (copies = repeated pages, one job, leader once).
-import { encodeJob, type Job, type JobOptions } from '../wasm'
+import { encodeJob, release, type Bitmap1, type Job, type JobOptions } from '../wasm'
 import { LIMITS, type LabelDoc } from '../doc/schema'
 import type { RenderResult, RenderTarget } from './types'
 
@@ -58,15 +58,48 @@ export function printBlocker(result: RenderResult, target: RenderTarget): string
   return undefined
 }
 
+/** Pages one job may hold (the wasm binding's limit). */
+export const MAX_JOB_PAGES = 999
+
+/** Throws (user-facing) when a job would have more than `MAX_JOB_PAGES` pages (pieces). */
+export function tooManyPages(n: number): void {
+  if (n > MAX_JOB_PAGES) throw new Error(`That is ${n} pieces; one print job holds at most ${MAX_JOB_PAGES}. Lower the copies.`)
+}
+
 /**
- * Encodes the rendered label as one job of `copies` pages (the leader is fed once). Throws an
- * Error with a user-facing message when the render is blocking or stale for `target`, and the
- * wasm `PtouchError` from `encodeJob` otherwise. The caller frees the returned Job.
+ * The pages a render prints as, `[start, end)` in dots: the whole label, or one piece per
+ * `result.cuts` gap (a table cut between its columns, docs/TABLE-PLAN.md §3).
+ */
+export function pageSpans(result: Pick<RenderResult, 'lengthDots' | 'cuts'>): [number, number][] {
+  const edges = [0, ...(result.cuts ?? []), result.lengthDots]
+  return edges.slice(1).map((e, i) => [edges[i] ?? 0, e])
+}
+
+/** Length of every page of `result` (mm), without the feed margins. */
+export function pageLengthsMm(result: Pick<RenderResult, 'lengthDots' | 'lengthMm' | 'cuts'>): number[] {
+  const mmPerDot = result.lengthDots > 0 ? result.lengthMm / result.lengthDots : 0
+  return pageSpans(result).map(([a, b]) => (b - a) * mmPerDot)
+}
+
+/**
+ * Encodes the rendered label as one job: its page (or its pieces, `pageSpans`) repeated
+ * `copies` times inside the core (A B C A B C; the leader is fed once). Throws an Error with a
+ * user-facing message when the render is blocking or stale for `target` or has too many pages,
+ * and the wasm `PtouchError` from `encodeJob` otherwise. The caller frees the returned Job.
  */
 export function buildPrintJob(doc: LabelDoc, result: RenderResult, target: RenderTarget): Job {
   const why = printBlocker(result, target)
   if (why) throw new Error(why)
-  // encodeJob consumes its pages: hand it one clone, the preview keeps `result.bitmap`. Copies
-  // repeat that page inside the core (JobOptions.copies), never as N bitmap clones.
-  return encodeJob(target.model, target.media.id, [result.bitmap.clone()], jobOptions(doc))
+  const spans = pageSpans(result)
+  const copies = copiesOf(doc)
+  tooManyPages(spans.length * copies)
+  // encodeJob consumes its pages: hand it clones/crops, the preview keeps `result.bitmap`. Copies
+  // repeat the pages inside the core (JobOptions.copies), never as N bitmap clones.
+  const pages: Bitmap1[] = []
+  try {
+    for (const [a, b] of spans) pages.push(spans.length === 1 ? result.bitmap.clone() : result.bitmap.cropLines(a, b))
+    return encodeJob(target.model, target.media.id, pages, jobOptions(doc))
+  } finally {
+    for (const p of pages) release(p) // consumed by a successful encodeJob; freed otherwise
+  }
 }

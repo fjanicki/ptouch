@@ -2,8 +2,7 @@
 // on `BatchData`, empty-cell checks, copy for counters and dates, preview-grid paging and the
 // print bar's batch numbers. No Svelte, no DOM (unit-tested in node).
 import { LIMITS, VARIABLE_NAME_RE, createBatch, type BatchCounter, type BatchData, type DateFormat, type LabelDoc } from '../../doc/schema'
-import { addDays, batchSize, counterValue, formatDate, usedColumns } from '../../doc/variables'
-import { estimateTape } from '../../render/job'
+import { addDays, counterValue, formatDate, usedColumns } from '../../doc/variables'
 
 /** The doc's batch data, or the defaults (off). */
 export function batchOf(doc: LabelDoc): BatchData {
@@ -193,51 +192,6 @@ export function pageOf(row: number, size: number): number {
   return Math.max(0, Math.floor(row / size))
 }
 
-/** The preview row clamped to the batch (0 without a batch). */
-export function clampRow(doc: LabelDoc, row: number): number {
-  const n = doc.batch ? Math.max(batchSize(doc), doc.batch.rows.length, 1) : 1
-  return Math.max(0, Math.min(n - 1, Math.floor(Number.isFinite(row) ? row : 0)))
-}
-
-export interface BatchTape {
-  totalMm: number
-  /** Every label was measured (otherwise extrapolated from the measured ones). */
-  exact: boolean
-}
-
-/**
- * Tape for a batch of `labels` × `copies` (render/job.ts estimateTape). `lengthsMm[i]` is label
- * i's measured length or undefined; unmeasured labels count as the average measured one (or
- * `fallbackMm`, e.g. the preview's length).
- */
-export function batchTape(lengthsMm: readonly (number | undefined)[], labels: number, copies: number, feedMarginMm: number, leader: boolean, fallbackMm: number): BatchTape {
-  const known = lengthsMm.slice(0, labels).filter((l): l is number => l !== undefined)
-  const avg = known.length ? known.reduce((a, b) => a + b, 0) / known.length : fallbackMm
-  const pages: number[] = []
-  for (let i = 0; i < labels; i++) {
-    const l = lengthsMm[i] ?? avg
-    for (let c = 0; c < copies; c++) pages.push(l)
-  }
-  return { totalMm: estimateTape(pages, feedMarginMm, { leader }).totalMm, exact: known.length >= labels }
-}
-
-/**
- * The print bar note for a plain label (`copies` pages). Same formula as the print itself
- * (studio.print → usage counter): estimateTape, with the leader when the next job feeds one
- * (`studio.tapeLeader`), so the note, the batch note and the counter always agree.
- */
-export function singleTapeNote(lengthMm: number, feedMarginMm: number, copies: number, leader: boolean): string {
-  const total = estimateTape(new Array<number>(Math.max(1, Math.round(copies) || 1)).fill(lengthMm), feedMarginMm, { leader }).totalMm
-  return `Uses about ${formatTape(total)} of tape${leader ? ' incl. the ~24 mm leader' : ''}.`
-}
-
-/** "1.24 m" / "86 mm" for tape totals. */
-export function formatTape(mm: number): string {
-  return mm >= 1000 ? `${(mm / 1000).toFixed(2)} m` : `${Math.round(mm)} mm`
-}
-
-/** Print button copy for a batch: "Print 25 labels" (labels × copies). */
-export function batchPrintText(labels: number, copies: number): string {
-  const n = labels * copies
-  return n === 1 ? 'Print label' : `Print ${n} labels`
-}
+// The print bar's numbers live in batch-tape.ts (initial JS, docs/TABLE-PLAN.md T15); re-exported
+// so the batch UI and the tests keep importing them from here.
+export { batchPrintText, batchTape, clampRow, formatTape, singleTapeNote, type BatchTape } from './batch-tape'

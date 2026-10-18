@@ -38,6 +38,7 @@ describe('buildBatchJob', () => {
     const built = await buildBatchJob(doc, t, { now: NOW, leader: true, onProgress: (p) => progress.push({ ...p }) })
     try {
       expect(built.labels).toBe(6)
+      expect(built.pieced).toBe(false)
       expect(built.job.pageCount).toBe(6)
       expect(progress[0]).toEqual({ done: 0, total: 3 })
       expect(progress.at(-1)).toEqual({ done: 3, total: 3 })
@@ -117,6 +118,19 @@ describe('buildBatchJob', () => {
     await expect(p).rejects.toThrow(/cancelled/)
   })
 
+  it('a table cut between its columns: every label in pieces, and the job says so', async () => {
+    const table = { ...createItem('table'), cells: [['DO', 'RE', 'MI']], cutBetween: true }
+    const d = batchDoc([text('{{name}}'), table], [['a'], ['b']], 2)
+    const built = await buildBatchJob(d, target(12), { now: NOW, leader: true })
+    try {
+      // 2 labels × 2 copies, each cut between the 3 columns (the text is on the first piece).
+      expect(built.pieced).toBe(true)
+      expect(built.labels).toBe(2 * 2 * 3)
+    } finally {
+      release(built.job)
+    }
+  })
+
   it('release() tolerates the consumed pages (no leaks or double frees on success)', async () => {
     const d = batchDoc([text('{{name}}')], [['x']])
     const built = await buildBatchJob(d, target(12), { now: NOW, leader: true })
@@ -127,7 +141,7 @@ describe('buildBatchJob', () => {
 })
 
 describe('BatchMeasure (background lengths + lazy thumbnails)', () => {
-  const fakeStudio = { store: { getBlob: async () => undefined }, fonts: { get: async () => undefined } } as unknown as Studio
+  const fakeStudio = { store: { getBlob: async () => undefined }, fonts: { get: async () => undefined }, cutterFor: () => true } as unknown as Studio
   const until = async (ok: () => boolean, ms = 10_000): Promise<void> => {
     const end = performance.now() + ms
     while (!ok()) {
@@ -153,7 +167,7 @@ describe('BatchMeasure (background lengths + lazy thumbnails)', () => {
         expect(lengths[i]).toBeCloseTo(r.lengthMm, 6)
         r.bitmap.free()
       }
-      expect(lengths[1]).toBeGreaterThan(lengths[0] ?? Infinity)
+      expect(lengths[1]).toBeGreaterThan((lengths[0] as number | undefined) ?? Infinity)
       expect(m.problems).toEqual([])
 
       // Same doc again: nothing restarts. A new doc: results cleared, measured again, repainted.

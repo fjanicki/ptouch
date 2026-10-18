@@ -25,9 +25,14 @@ export interface VirtualRun {
   commands: string[]
 }
 
-export async function runVirtual(doc: LabelDoc, target: RenderTarget, loadBlob?: (ref: string) => Promise<Blob | undefined>, signal?: AbortSignal): Promise<VirtualRun> {
+/**
+ * Renders `doc` as the studio would for `target` and runs it through the encoder and decoder.
+ * `cutter`: the model has a cutter (Studio.cutterFor), so a table cut between its columns is
+ * split into pieces exactly as in the preview and the real print (render `RenderOptions.cutter`).
+ */
+export async function runVirtual(doc: LabelDoc, target: RenderTarget, loadBlob?: (ref: string) => Promise<Blob | undefined>, signal?: AbortSignal, cutter?: boolean): Promise<VirtualRun> {
   await ensureFonts(doc)
-  const render = await renderLabel(doc, target, { ...(loadBlob ? { loadBlob } : {}), ...(signal ? { signal } : {}) })
+  const render = await renderLabel(doc, target, { ...(loadBlob ? { loadBlob } : {}), ...(signal ? { signal } : {}), ...(cutter !== undefined ? { cutter } : {}) })
   try {
     const job = buildPrintJob(doc, render, target)
     let bytes: Uint8Array

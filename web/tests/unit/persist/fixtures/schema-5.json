@@ -1,0 +1,95 @@
+{
+  "schema": 5,
+  "id": "7a2d2e3f-1d2e-4d66-8b54-7e3a1c2a5c01",
+  "name": "Piano notes",
+  "createdAt": "2026-10-18T09:00:00.000Z",
+  "updatedAt": "2026-10-18T09:30:00.000Z",
+  "tape": {
+    "widthMm": 24,
+    "mediaId": "tze231-24",
+    "model": "PT-P710BT"
+  },
+  "length": {
+    "mode": "auto"
+  },
+  "marginsMm": {
+    "start": 0,
+    "end": 0
+  },
+  "layout": {
+    "mode": "flow",
+    "gapMm": 3,
+    "align": "center"
+  },
+  "items": [
+    {
+      "id": "7a2d2e3f-1d2e-4d66-8b54-7e3a1c2a5c02",
+      "kind": "table",
+      "cells": [
+        ["DO", "RE", "MI", "FA", "SOL"],
+        ["C", "D", "E", "F", "G"]
+      ],
+      "fontFamily": "fira-sans",
+      "fontWeight": 700,
+      "italic": false,
+      "size": {
+        "mode": "fit"
+      },
+      "align": "center",
+      "direction": "along",
+      "columns": {
+        "mode": "equal"
+      },
+      "paddingMm": 1,
+      "grid": true,
+      "cutMarks": true,
+      "cutBetween": false
+    },
+    {
+      "id": "7a2d2e3f-1d2e-4d66-8b54-7e3a1c2a5c03",
+      "kind": "table",
+      "cells": [
+        ["DO", "DO♯", "RE"],
+        ["C", "C♯", "D"]
+      ],
+      "fontFamily": "jetbrains-mono",
+      "fontWeight": 700,
+      "italic": false,
+      "size": {
+        "mode": "pt",
+        "pt": 14
+      },
+      "align": "start",
+      "direction": "across-down",
+      "columns": {
+        "mode": "mm",
+        "mm": 18
+      },
+      "paddingMm": 0.5,
+      "grid": false,
+      "cutMarks": false,
+      "cutBetween": true
+    },
+    {
+      "id": "7a2d2e3f-1d2e-4d66-8b54-7e3a1c2a5c04",
+      "kind": "text",
+      "text": "Octave 4",
+      "fontFamily": "fira-sans",
+      "fontWeight": 600,
+      "italic": false,
+      "size": {
+        "mode": "fit"
+      },
+      "align": "center",
+      "lineHeight": 1.1,
+      "invert": false
+    }
+  ],
+  "print": {
+    "copies": 1,
+    "autoCut": true,
+    "chain": false,
+    "mirror": false,
+    "threshold": 128
+  }
+}

@@ -68,6 +68,15 @@ export function fontsUsed(doc: LabelDoc): FontUse[] {
   for (const it of doc.items) {
     if (it.kind === 'text' && it.text.trim() !== '') add(it.fontFamily, it.fontWeight)
     if (it.kind === 'code' && it.showText && it.symbology !== 'qr') add(CODE_TEXT_FONT.id, CODE_TEXT_FONT.weight)
+    if (it.kind === 'table') {
+      const all = it.cells.flat().join('')
+      if (all.trim() !== '') add(it.fontFamily, it.fontWeight)
+      // ♭ ♮ ♯ are drawn with JetBrains Mono (render/renderer.ts tableFont). The CSS font asks for
+      // the table face's resolved weight (text.ts cssFont), so load the JetBrains face CSS
+      // matching picks for *that* weight (400 or 700), not for the raw item weight: an imported
+      // anton@600 asks for 400, and must not find only a 700 face loaded.
+      if (/[\u266d-\u266f]/.test(all)) add('jetbrains-mono', resolveWeight(fontDef(it.fontFamily), it.fontWeight) >= 600 ? 700 : 400)
+    }
   }
   return [...seen.values()]
 }
@@ -252,10 +261,10 @@ const customLoading = new Map<string, Promise<boolean>>()
 /** Keys whose last load attempt failed (the font is not on this device). */
 const customFailed = new Set<string>()
 
-/** Every distinct custom font a document's (non-empty) text items use. */
+/** Every distinct custom font a document's (non-empty) text items and tables use. */
 export function customFontsUsed(doc: LabelDoc): FontSource[] {
   const seen = new Map<string, FontSource>()
-  for (const it of doc.items) if (it.kind === 'text' && it.customFont && it.text.trim() !== '') seen.set(customKey(it.customFont), it.customFont)
+  for (const it of doc.items) if (((it.kind === 'text' && it.text.trim() !== '') || it.kind === 'table') && it.customFont) seen.set(customKey(it.customFont), it.customFont)
   return [...seen.values()]
 }
 

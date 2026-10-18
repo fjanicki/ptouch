@@ -10,7 +10,7 @@
   import Icon from '../common/Icon.svelte'
   import { getStudio } from '../state/studio.svelte'
   import { batchMeasure } from './batch-measure.svelte'
-  import { clampRow } from './batch-model'
+  import { clampRow } from './batch-tape'
   import { BATCH_PANEL_ID, batchPanel } from './panel-state.svelte'
 
   const loadBody = () => import('./BatchBody.svelte')

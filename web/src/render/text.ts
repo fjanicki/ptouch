@@ -288,10 +288,10 @@ export function cssFont(item: FontItem, px: number): string {
   return custom ? bundled.replace(`"${def.family}"`, `"${custom}", "${def.family}"`) : bundled
 }
 
-/** A `MeasureFn` for `item`'s face on `ctx`. */
-export function canvasMeasure(ctx: Ctx2D, item: FontItem): MeasureFn {
+/** A `MeasureFn` for `item`'s face on `ctx` (or another CSS `font` per px: a table's stack). */
+export function canvasMeasure(ctx: Ctx2D, item: FontItem, font = (px: number): string => cssFont(item, px)): MeasureFn {
   return (text, px) => {
-    ctx.font = cssFont(item, px)
+    ctx.font = font(px)
     const m = ctx.measureText(text)
     return {
       advance: quantize(m.width),

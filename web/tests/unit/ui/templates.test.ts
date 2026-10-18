@@ -7,7 +7,7 @@ import { listModels, mediaForWidth, printArea, type ModelInfo } from '../../../s
 import { loadWasmForTests } from '../../helpers/wasm'
 import { findModel, tapeWidthsOf } from '../../../src/ui/state/models'
 import { fallbackBand } from '../../../src/ui/state/text-defaults'
-import { TAPE_WIDTHS_MM, validateDoc, type CodeItem, type LabelDoc, type SpacerItem, type TextItem } from '../../../src/doc/schema'
+import { TAPE_WIDTHS_MM, validateDoc, type CodeItem, type LabelDoc, type SpacerItem, type TableItem, type TextItem } from '../../../src/doc/schema'
 import { iconById } from '../../../src/render/icons'
 import { mmToDots } from '../../../src/render/units'
 import { matchQuickSize } from '../../../src/render/text-size'
@@ -59,6 +59,9 @@ describe('template catalogue', () => {
       'folder-spine-36',
       'name-tag',
       'name-tag-36',
+      'piano-white-24',
+      'piano-12-24',
+      'piano-12-flats-24',
     ])
     expect(new Set(TEMPLATES.map((t) => t.name)).size).toBe(TEMPLATES.length)
     for (const t of TEMPLATES) {
@@ -433,5 +436,52 @@ describe('createTaskQueue', () => {
     await flush()
     expect(ran).toBe(false)
     await expect(q.run(async () => 1, AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
+describe('Music templates (tables, docs/TABLE-PLAN.md §5)', () => {
+  const tables = (d: LabelDoc) => d.items.filter((i): i is TableItem => i.kind === 'table')
+
+  it('three 24 mm piano strips in the Music section: along, equal columns, cut marks, margins 0', () => {
+    expect(TEMPLATE_CATEGORIES.map((c) => c.id)).toContain('music')
+    expect(templatesIn('music').map((t) => t.id)).toEqual(['piano-white-24', 'piano-12-24', 'piano-12-flats-24'])
+    for (const t of templatesIn('music')) {
+      expect(t.tapeWidthMm).toBe(24)
+      const d = t.build()
+      expect(d.marginsMm).toEqual({ start: 0, end: 0 })
+      expect(d.length).toEqual({ mode: 'auto' })
+      const [tb] = tables(d)
+      expect(tb).toMatchObject({ direction: 'along', columns: { mode: 'equal' }, cutMarks: true, grid: false, cutBetween: false })
+      expect(primaryItemId(d)).toBe(tb?.id)
+    }
+  })
+
+  it('white keys over letters; all 12 keys with real sharps; flats in two more rows under the black keys', () => {
+    expect(tables(build('piano-white-24'))[0]?.cells).toEqual([
+      ['DO', 'RE', 'MI', 'FA', 'SOL', 'LA', 'SI'],
+      ['C', 'D', 'E', 'F', 'G', 'A', 'B'],
+    ])
+    const twelve = tables(build('piano-12-24'))[0]
+    expect(twelve).toMatchObject({ fontFamily: 'jetbrains-mono', fontWeight: 700 })
+    expect(twelve?.cells[0]).toEqual(['DO', 'DO♯', 'RE', 'RE♯', 'MI', 'FA', 'FA♯', 'SOL', 'SOL♯', 'LA', 'LA♯', 'SI'])
+    expect(twelve?.cells[1]).toEqual(['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'])
+    const flats = tables(build('piano-12-flats-24'))[0]
+    expect(flats?.cells).toHaveLength(4)
+    expect(flats?.cells[2]?.[1]).toBe('RE♭')
+    expect(flats?.cells[3]?.[10]).toBe('B♭')
+    // A flat sits only under a black key (a sharp above it).
+    flats?.cells[2]?.forEach((v, c) => expect(v !== '').toBe((flats.cells[0]?.[c] ?? '').includes('♯')))
+  })
+
+  it('valid in both directions (the user flips Along / Across in the editor)', () => {
+    for (const t of templatesIn('music')) {
+      for (const direction of ['along', 'across-down', 'across-up'] as const) {
+        const d = t.build()
+        const doc = { ...d, items: d.items.map((i) => (i.kind === 'table' ? { ...i, direction } : i)) }
+        const v = validateDoc(JSON.parse(JSON.stringify(doc)))
+        expect(v.ok && v.notices).toEqual([])
+        expect(v.ok && v.doc).toEqual(doc)
+      }
+    }
   })
 })

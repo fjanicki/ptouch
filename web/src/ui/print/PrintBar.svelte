@@ -9,11 +9,11 @@
   import Icon from '../common/Icon.svelte'
   import Switch from '../common/Switch.svelte'
   import { getStudio } from '../state/studio.svelte'
-  import { MAX_COPIES } from '../../render'
+  import { MAX_COPIES, pageLengthsMm } from '../../render'
   import { clampCopies, modKey, printButtonText, progressFraction, progressText } from '../state/view-model'
   import { batchMeasure } from '../batch/batch-measure.svelte'
   import { batchBlocker } from '../batch/batch-job'
-  import { batchPrintText, batchTape, formatTape, singleTapeNote } from '../batch/batch-model'
+  import { batchPrintText, batchTape, formatTape, singleTapeNote } from '../batch/batch-tape'
 
   const studio = getStudio()
   const print = $derived(studio.doc.print)
@@ -31,9 +31,10 @@
     return row !== undefined ? `Label ${row + 1} can’t be printed: ${message}` : null
   })
   const reason = $derived(studio.printBlocked ?? batchProblem)
-  const singleNote = $derived(studio.render ? singleTapeNote(studio.render.lengthMm, studio.render.feedMarginMm, copies, studio.tapeLeader) : null)
+  const pages = $derived(studio.render ? pageLengthsMm(studio.render) : [])
+  const singleNote = $derived(studio.render ? singleTapeNote(pages, studio.render.feedMarginMm, copies, studio.tapeLeader) : null)
   const batchTapeUse = $derived(
-    batchN > 0 ? batchTape(measure.lengths, batchN, copies, measure.feedMarginMm || (studio.render?.feedMarginMm ?? 0), studio.tapeLeader, studio.render?.lengthMm ?? 0) : null,
+    batchN > 0 ? batchTape(measure.lengths, batchN, copies, measure.feedMarginMm || (studio.render?.feedMarginMm ?? 0), studio.tapeLeader, pages.length ? pages : 0) : null,
   )
   const batchNote = $derived.by(() => {
     const t = batchTapeUse

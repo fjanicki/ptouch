@@ -6,7 +6,7 @@
 // it was measured / painted. Shared by BatchPanel and PrintBar (one instance per Studio).
 import type { LabelDoc } from '../../doc/schema'
 import { batchSize } from '../../doc/variables'
-import type { RenderTarget } from '../../render'
+import { pageLengthsMm, type RenderTarget } from '../../render'
 import type { Bitmap1 } from '../../wasm'
 import type { Studio } from '../state/studio.svelte'
 import { renderBatchLabel } from './batch-job'
@@ -16,6 +16,8 @@ export type Painter = (bitmap: Bitmap1) => void
 
 export interface RowInfo {
   lengthMm: number
+  /** Piece lengths when the printer cuts the label into pieces (a table cut between columns). */
+  pieces?: number[]
   /** The label cannot be printed (first blocking warning). */
   problem?: string
   /** It prints, but not as designed: text cut off or too small to read (first such warning). */
@@ -66,10 +68,10 @@ export class BatchMeasure {
     return this.#feedMarginMm
   }
 
-  /** Measured length per label (undefined = not yet). */
-  get lengths(): (number | undefined)[] {
+  /** Measured length per label, or its piece lengths (undefined = not yet). */
+  get lengths(): (number | number[] | undefined)[] {
     void this.#version
-    return Array.from({ length: this.#total }, (_, i) => this.#rows.get(i)?.lengthMm)
+    return Array.from({ length: this.#total }, (_, i) => this.#rows.get(i)?.pieces ?? this.#rows.get(i)?.lengthMm)
   }
 
   row(i: number): RowInfo | undefined {
@@ -157,6 +159,7 @@ export class BatchMeasure {
             loadBlob: (ref) => studio.store.getBlob(ref),
             loadFontBlob: (ref) => studio.fonts.get(ref),
             signal: ac.signal,
+            cutter: studio.cutterFor(target.model),
           })
         } catch (e) {
           if (ac.signal.aborted) return
@@ -169,7 +172,8 @@ export class BatchMeasure {
           if (ac.signal.aborted || this.#doc !== doc) return
           const w = r.blocking ? (r.warnings.find((x) => x.blocking) ?? r.warnings[0]) : undefined
           const n = r.blocking ? undefined : ROW_NOTICES.map((code) => r.warnings.find((x) => x.code === code)).find((x) => x !== undefined)
-          this.#rows.set(i, { lengthMm: r.lengthMm, ...(r.blocking ? { problem: w?.message ?? 'Cannot be printed as designed.' } : {}), ...(n ? { notice: n.message } : {}) })
+          const pieces = r.cuts ? pageLengthsMm(r) : undefined
+          this.#rows.set(i, { lengthMm: r.lengthMm, ...(pieces ? { pieces } : {}), ...(r.blocking ? { problem: w?.message ?? 'Cannot be printed as designed.' } : {}), ...(n ? { notice: n.message } : {}) })
           this.#feedMarginMm = r.feedMarginMm
           for (const p of this.#painters.get(i) ?? []) {
             if (this.#painted.get(p) === doc) continue

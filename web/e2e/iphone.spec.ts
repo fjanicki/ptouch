@@ -297,7 +297,7 @@ test('iPhone: design a 36 mm label for a PT-P910BT and hand it off', async ({ pa
   const field = dialog.getByRole('textbox', { name: 'Share link' })
   await expect(field).toHaveValue(/\/ptouch\/#d=/)
   const doc = JSON.parse(decodeLink(await field.inputValue())) as { schema: number; tape: { widthMm: number; model?: string } }
-  expect(doc.schema).toBe(4)
+  expect(doc.schema).toBe(5)
   expect(doc.tape).toMatchObject({ widthMm: 36, model: 'PT-P910BT' })
 })
 
@@ -339,4 +339,39 @@ test('the built index.html has the iOS home-screen tags and keeps the CSP', asyn
   expect(icon.headers()['content-type']).toBe('image/png')
   const manifest = await (await request.get('./manifest.webmanifest')).json()
   expect(manifest).toMatchObject({ start_url: '/ptouch/', scope: '/ptouch/', display: 'standalone', short_name: 'ptouch' })
+})
+
+// Tables (docs/TABLE-PLAN.md T16): the same table editor on an iPhone.
+const tableCell = (page: Page, r: number, c: number) => page.getByRole('textbox', { name: `Row ${r}, column ${c}`, exact: true })
+
+test('iPhone 375 px: edit a table, no horizontal scroll, 44 px controls, the link carries the table', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 760 })
+  await startDesigning(page)
+  await page.getByRole('button', { name: 'Insert Table' }).click()
+  await expect(page.getByRole('heading', { name: /Table block/ })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
+  for (const name of ['Insert sharp ♯', 'Insert flat ♭']) {
+    const box = await page.getByRole('button', { name }).boundingBox()
+    expect(box?.height, name).toBeGreaterThanOrEqual(44)
+    expect(box?.width, name).toBeGreaterThanOrEqual(44)
+  }
+  const box = await tableCell(page, 1, 1).boundingBox()
+  expect(box?.height).toBeGreaterThanOrEqual(44)
+  await page.getByText('Type or paste the whole table').click()
+  await page.getByLabel(/One line per row/).fill('DO RE MI FA SOL LA SI\nC D E F G A B')
+  await page.getByRole('button', { name: 'Fill table' }).click()
+  await expect(page.getByText('2 rows × 7 columns')).toBeVisible()
+  // The wide grid scrolls in its own box, never the page.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
+  await tableCell(page, 1, 7).scrollIntoViewIfNeeded()
+  await expect(tableCell(page, 1, 7)).toBeInViewport()
+
+  await page.getByRole('button', { name: 'Send to computer…' }).click()
+  const field = page.getByRole('dialog', { name: 'Send to computer' }).getByRole('textbox', { name: 'Share link' })
+  await expect(field).toHaveValue(/#d=/)
+  const url = await field.inputValue()
+  expect(decodeLink(url)).toContain('"cells":[["DO","RE","MI","FA","SOL","LA","SI"],["C","D","E","F","G","A","B"]]')
+  await page.goto(url)
+  await expect(page.getByRole('region', { name: 'Label preview' })).toHaveAttribute('data-ready', 'true')
+  await expect(page.getByRole('region', { name: 'Blocks' }).getByRole('listitem').nth(1)).toContainText('2 × 7 · DO RE MI FA SOL LA SI')
 })

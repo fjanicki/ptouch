@@ -71,13 +71,13 @@ test('design a 36 mm label for the PT-P910BT: it exports at 360 dpi, 454 dots ac
 
 test('PT-P710BT: 36 mm templates sit under "other tape widths", marked, and open on the stand-in with "Fit to 24 mm"', async ({ page }) => {
   await openFromLabels(page, 'New from template…', 'New from template')
-  await expect(gallery(page).locator('[data-template]')).toHaveCount(10)
+  await expect(gallery(page).locator('[data-template]')).toHaveCount(13)
   await expect(card(page, 'Wi-Fi sticker (36 mm)')).toHaveCount(0)
   const toggle = gallery(page).getByRole('button', { name: 'Show templates for other tape widths (4)' })
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
   await toggle.click()
   await expect(toggle).toHaveAttribute('aria-expanded', 'true')
-  await expect(gallery(page).locator('[data-template]')).toHaveCount(14)
+  await expect(gallery(page).locator('[data-template]')).toHaveCount(17)
   for (const name of ['Wi-Fi sticker (36 mm)', 'Shelf or bin label (36 mm)', 'Folder spine (36 mm)', 'Name tag (36 mm)']) {
     await expect(card(page, name), name).toHaveAccessibleDescription(/^Needs 36 mm tape · PT-P710BT takes up to 24 mm/)
   }
@@ -114,14 +114,14 @@ test('PT-P910BT: 36 mm templates are in their sections and open with M of the 36
   await designFor(page, 'PT-P910BT')
   await openFromLabels(page, 'New from template…', 'New from template')
   await expect(gallery(page).getByLabel('Printer model')).toHaveValue('PT-P910BT')
-  await expect(gallery(page).locator('[data-template]')).toHaveCount(14)
+  await expect(gallery(page).locator('[data-template]')).toHaveCount(17)
   await expect(gallery(page).getByRole('button', { name: /Show templates for other tape widths/ })).toHaveCount(0)
   await expect(card(page, 'Wi-Fi sticker (36 mm)')).toHaveAccessibleDescription(/^36 mm tape/)
 
   // Switching the model in the gallery moves the 36 mm templates out again.
   await gallery(page).getByLabel('Printer model').selectOption('PT-P300BT')
   await expect(gallery(page).locator('[data-template]')).toHaveCount(6) // the 9 and 12 mm templates
-  await gallery(page).getByRole('button', { name: /Show templates for other tape widths \(8\)/ }).click()
+  await gallery(page).getByRole('button', { name: /Show templates for other tape widths \(11\)/ }).click()
   await expect(card(page, 'Wi-Fi sticker (24 mm)')).toHaveAccessibleDescription(/^Needs 24 mm tape · PT-P300BT takes up to 12 mm/)
   await gallery(page).getByLabel('Printer model').selectOption('PT-P910BT')
 
@@ -193,7 +193,7 @@ test('a 36 mm share link carries width and model; on a PT-P710BT it opens unchan
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('#d=')
   const link = await page.evaluate(() => navigator.clipboard.readText())
   const json = inflateRawSync(Buffer.from(link.split('#d=')[1] ?? '', 'base64url')).toString('utf8')
-  expect(json).toContain('"schema":4')
+  expect(json).toContain('"schema":5')
   expect(json).toMatch(/"tape":\{[^}]*"widthMm":36[^}]*\}/)
   expect(json).toMatch(/"tape":\{[^}]*"model":"PT-P910BT"[^}]*\}/)
 

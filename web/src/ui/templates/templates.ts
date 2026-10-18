@@ -15,13 +15,13 @@
 // only as long as it needs to be (text that fits the band makes short words several cm long).
 // Where it fits the design, the size is the quick size M of that tape (`QUICK_M_MM`), so the
 // text properties show it as "M". Fixed-length templates shrink long text to fit the length.
-import { createBatch, createDoc, createItem, createWifi, type CodeItem, type IconItem, type Item, type LabelDoc, type SpacerItem, type TapeWidthMm, type TextItem, type TextSize } from '../../doc/schema'
+import { createBatch, createDoc, createItem, createWifi, type CodeItem, type IconItem, type Item, type LabelDoc, type SpacerItem, type TableItem, type TapeWidthMm, type TextItem, type TextSize } from '../../doc/schema'
 import { quickTextSizes } from '../../render/text-size'
 import type { ModelInfo } from '../../wasm'
 import { findModel, standInModel, tapeWidthsOf } from '../state/models'
 import { formatMm } from '../state/view-model'
 
-export type TemplateCategory = 'network' | 'cables' | 'storage' | 'office'
+export type TemplateCategory = 'network' | 'cables' | 'storage' | 'office' | 'music'
 
 /** Gallery sections, in display order. */
 export const TEMPLATE_CATEGORIES: readonly { id: TemplateCategory; label: string }[] = [
@@ -29,6 +29,7 @@ export const TEMPLATE_CATEGORIES: readonly { id: TemplateCategory; label: string
   { id: 'cables', label: 'Cables' },
   { id: 'storage', label: 'Shelves, bins & drawers' },
   { id: 'office', label: 'Office' },
+  { id: 'music', label: 'Music' },
 ]
 
 export interface TemplateDef {
@@ -83,9 +84,60 @@ const code = (patch: Partial<CodeItem>): CodeItem => ({ ...createItem('code'), .
 /** A QR code for a Wi-Fi network (the network is filled in the code editor). */
 const wifiQr = (patch: Partial<CodeItem>): CodeItem => code({ content: 'wifi', data: '', wifi: createWifi(), moduleDots: 'auto', ...patch })
 
+/** A table block (docs/TABLE-PLAN.md §5): equal columns and cut marks, text along the tape. */
+const table = (cells: string[][], patch: Partial<TableItem> = {}): TableItem => ({ ...createItem('table'), cells, columns: { mode: 'equal' }, cutMarks: true, ...patch })
+
+/** Piano keys in keyboard order, solfège and letter names (♯ = U+266F, ♭ = U+266D). */
+export const PIANO_WHITE = [
+  ['DO', 'RE', 'MI', 'FA', 'SOL', 'LA', 'SI'],
+  ['C', 'D', 'E', 'F', 'G', 'A', 'B'],
+] as const
+export const PIANO_12 = [
+  ['DO', 'DO♯', 'RE', 'RE♯', 'MI', 'FA', 'FA♯', 'SOL', 'SOL♯', 'LA', 'LA♯', 'SI'],
+  ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'],
+] as const
+/** The flat names of the black keys (empty under the white keys). */
+export const PIANO_FLATS = [
+  ['', 'RE♭', '', 'MI♭', '', '', 'SOL♭', '', 'LA♭', '', 'SI♭', ''],
+  ['', 'D♭', '', 'E♭', '', '', 'G♭', '', 'A♭', '', 'B♭', ''],
+] as const
+const rows = (...r: readonly (readonly string[])[]): string[][] => r.map((x) => [...x])
+
 function label(name: string, widthMm: TapeWidthMm, items: Item[], patch: Partial<Omit<LabelDoc, 'schema' | 'items'>> = {}): LabelDoc {
   return createDoc({ name, tape: { widthMm }, items, ...patch })
 }
+
+// Music (docs/TABLE-PLAN.md §5): a strip of note names to cut apart and stick on the keys. Margins
+// 0, so the cut marks at both ends are the ends of the strip and every piece is one column wide.
+// "Across" is one click away in the table editor (for sticking a piece lengthwise on a key).
+const PIANO_LAYOUT = { marginsMm: { start: 0, end: 0 } }
+const MUSIC: TemplateDef[] = [
+  {
+    id: 'piano-white-24',
+    name: 'Piano notes',
+    description: 'The white keys, DO RE MI … over C D E …, in equal columns with cut marks: cut the strip apart and stick one piece on each key.',
+    category: 'music',
+    tapeWidthMm: 24,
+    build: () => label('Piano notes', 24, [table(rows(...PIANO_WHITE), { fontWeight: 700 })], PIANO_LAYOUT),
+  },
+  {
+    id: 'piano-12-24',
+    name: 'Piano notes, all 12 keys',
+    description: 'White and black keys in keyboard order (DO DO♯ RE … over C C♯ D …) in equal columns with cut marks.',
+    category: 'music',
+    tapeWidthMm: 24,
+    build: () => label('Piano notes, all 12 keys', 24, [table(rows(...PIANO_12), { fontFamily: 'jetbrains-mono', fontWeight: 700 })], PIANO_LAYOUT),
+  },
+  {
+    // Flats get their own rows: a combined "DO♯/RE♭" cell would make every cell smaller.
+    id: 'piano-12-flats-24',
+    name: 'Piano notes, all 12 keys with flats',
+    description: 'All 12 keys with the flat names of the black keys in two more rows (RE♭ under DO♯, D♭ under C♯): smaller text, more names.',
+    category: 'music',
+    tapeWidthMm: 24,
+    build: () => label('Piano notes, all 12 keys with flats', 24, [table(rows(...PIANO_12, ...PIANO_FLATS), { fontFamily: 'jetbrains-mono', fontWeight: 700 })], PIANO_LAYOUT),
+  },
+]
 
 export const TEMPLATES: readonly TemplateDef[] = [
   {
@@ -245,6 +297,7 @@ export const TEMPLATES: readonly TemplateDef[] = [
         frame: { thicknessMm: 0.5, radiusMm: 3, insetMm: 0 },
       }),
   },
+  ...MUSIC,
 ]
 
 export function templateById(id: string): TemplateDef | undefined {
