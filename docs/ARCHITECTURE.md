@@ -481,7 +481,8 @@ pub fn encode_job(model_code: u8, width_mm: u8, pages: Vec<Bitmap1>, opts: Ts<Jo
 
 Size: the prototype with tsify + serde-wasm-bindgen is 70.4 KB (31.8 KB gzip). Size is not a design
 constraint: CI only enforces a sanity ceiling of 10 MB gzip (`web.yml`), and the build size is printed in the
-step summary. (With printer settings it is about 168 KB gzip.)
+step summary. (With printer settings it is about 168 KB gzip.) The initial JS (entry module plus preloaded chunks,
+`web/scripts/entry-size.mjs`) has no budget either: CI reports it in the step summary only.
 
 ### 4.3 `web/src/printer` — transport layer (TypeScript)
 

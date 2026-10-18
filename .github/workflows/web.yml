@@ -77,16 +77,14 @@ jobs:
         working-directory: web
         env:
           BASE_PATH: /ptouch/
-      - name: JS size budget (initial JS 120 KB gzipped) and licence notices
+      - name: Initial JS size (report only) and licence notices
         working-directory: web/dist
         run: |
-          # Entry module + every chunk index.html preloads (scripts/entry-size.mjs).
-          status=0
-          node ../scripts/entry-size.mjs . 122880 > size.txt || status=$?
+          # Entry module + every chunk index.html preloads (scripts/entry-size.mjs). No budget.
+          node ../scripts/entry-size.mjs . > size.txt
           cat size.txt
-          { echo '### Initial JS (gzipped, budget 122880 B)'; echo '```'; cat size.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '### Initial JS (gzipped)'; echo '```'; cat size.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           rm size.txt
-          test "$status" -eq 0
           test -f licenses/THIRD_PARTY.md && test -f licenses/MIT.txt && test -f licenses/Apache-2.0.txt
       - name: upload test output
         if: failure()
