@@ -533,7 +533,7 @@ async function prepareTable(item: TableItem, band: number, c: Ctx): Promise<Prep
     c.warn({ code: 'table-missing', itemId: item.id, blocking: true, message: 'The table could not be loaded. Reload the page while online.' })
     return { id: item.id, w: 0, h: 0 }
   }
-  const font = (px: number): string => tableFont(item, px)
+  const font = (px: number): string => cssFont(item, px)
   return t.prepareTable(item, band, {
     ...c,
     face: faceMetrics(c.mctx, item, textFaceReady(item)),
@@ -545,11 +545,6 @@ async function prepareTable(item: TableItem, band: number, c: Ctx): Promise<Prep
   })
 }
 
-/** CSS font of a table at `px` (T12): its face, then JetBrains Mono, the only bundled family with
- * ♯ and ♭ (fonts.ts `fontsUsed` loads it), then the generic: never a system font for them. */
-export function tableFont(item: TableItem, px: number): string {
-  return cssFont(item, px).replace(/, ([a-z-]+)$/, `, "${fontDef('jetbrains-mono').family}", $1`)
-}
 
 // ------------------------------------------------------------------------------------------
 // Placement and rotation

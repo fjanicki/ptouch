@@ -55,31 +55,51 @@ export interface EnsureFontsOptions {
 export interface FontUse {
   id: FontFamilyId
   weight: FontWeight
+  /** Loaded as a symbol fallback face (`SYMBOL_FONTS`): its own family, limited to its `range`. */
+  symbols?: true
 }
 
 /** Every (family, resolved weight) a document draws with, deduplicated. */
 export function fontsUsed(doc: LabelDoc): FontUse[] {
   const seen = new Map<string, FontUse>()
-  const add = (id: FontFamilyId, weight: number): void => {
+  const add = (id: FontFamilyId, weight: number, symbols = false): void => {
     const def = fontDef(id)
     const w = resolveWeight(def, weight)
-    seen.set(`${def.id}:${w}`, { id: def.id, weight: w })
+    seen.set(`${def.id}:${w}${symbols ? ':sym' : ''}`, { id: def.id, weight: w, symbols: symbols || undefined })
   }
   for (const it of doc.items) {
-    if (it.kind === 'text' && it.text.trim() !== '') add(it.fontFamily, it.fontWeight)
     if (it.kind === 'code' && it.showText && it.symbology !== 'qr') add(CODE_TEXT_FONT.id, CODE_TEXT_FONT.weight)
-    if (it.kind === 'table') {
-      const all = it.cells.flat().join('')
-      if (all.trim() !== '') add(it.fontFamily, it.fontWeight)
-      // ♭ ♮ ♯ are drawn with JetBrains Mono (render/renderer.ts tableFont). The CSS font asks for
-      // the table face's resolved weight (text.ts cssFont), so load the JetBrains face CSS
-      // matching picks for *that* weight (400 or 700), not for the raw item weight: an imported
-      // anton@600 asks for 400, and must not find only a 700 face loaded.
-      if (/[\u266d-\u266f]/.test(all)) add('jetbrains-mono', resolveWeight(fontDef(it.fontFamily), it.fontWeight) >= 600 ? 700 : 400)
-    }
+    const all = it.kind === 'text' ? it.text : it.kind === 'table' ? it.cells.flat().join('') : ''
+    if (all.trim() === '' || (it.kind !== 'text' && it.kind !== 'table')) continue
+    add(it.fontFamily, it.fontWeight)
+    // Symbols the face lacks are drawn with the symbol faces (`faceCss`). The CSS font asks for
+    // the face's resolved weight, so load the symbol face CSS matching picks for *that* weight
+    // (400 or 700), not for the raw item weight: an imported anton@600 asks for 400.
+    const w = resolveWeight(fontDef(it.fontFamily), it.fontWeight) >= 600 ? 700 : 400
+    for (const f of SYMBOL_FONTS) if (f.chars.test(all)) add(f.id, w, true)
   }
   return [...seen.values()]
 }
+
+/**
+ * The symbol fallback faces (docs/TABLE-PLAN.md §12), in CSS fallback order after the item's own
+ * face: the bundled JetBrains Mono (core) for Greek, daggers, letterlike symbols, arrows, maths,
+ * shapes, ⚠ ⚡ ✓ ✗ and ♯ ♭, then B612 for ★ ☐ ☑ ☒ (menu symbols JetBrains Mono lacks). Each is
+ * registered under its own family with exactly the `unicode-range` `range` (the code points of
+ * `chars`), and `fontsUsed` loads it whenever a text has one of them, so the stack draws the same
+ * whatever else this page has loaded: a character outside the range never reaches these files
+ * (the JetBrains Mono and B612 *families*, loaded by the picker or a barcode caption, are not in
+ * the stack).
+ */
+export const SYMBOL_FONTS: readonly { id: FontFamilyId; family: string; chars: RegExp; range: string }[] = [
+  {
+    id: 'jetbrains-mono',
+    family: 'ptouch Symbols JetBrains Mono',
+    chars: /[\u0370-\u03ff\u2020\u2021\u2070-\u209f\u20bd\u2100-\u2bff]/,
+    range: 'U+370-3FF, U+2020-2021, U+2070-209F, U+20BD, U+2100-2BFF',
+  },
+  { id: 'b612', family: 'ptouch Symbols B612', chars: /[\u2605\u2610-\u2612]/, range: 'U+2605, U+2610-2612' },
+]
 
 type FontSet = FontFaceSet & { add(font: FontFace): FontFaceSet }
 
@@ -112,8 +132,9 @@ export function onLibraryFontFile(fn: FileListener): () => void {
 }
 
 /** Loads one face (once per page); resolves `true` when it is usable. */
-function loadFace(def: FontDef, weight: FontWeight): Promise<boolean> {
-  const key = `${def.id}:${weight}`
+function loadFace(def: FontDef, weight: FontWeight, symbols = false): Promise<boolean> {
+  const sym = symbols ? SYMBOL_FONTS.find((f) => f.id === def.id) : undefined
+  const key = `${def.id}:${weight}${sym ? ':sym' : ''}`
   const cached = loading.get(key)
   if (cached) return cached
   const p = (async () => {
@@ -124,10 +145,11 @@ function loadFace(def: FontDef, weight: FontWeight): Promise<boolean> {
     // browser then sets the `wght` axis from the requested weight.
     let face: FontFace | undefined
     try {
-      face = new FontFace(def.family, `url("${fontUrl(file)}") format("woff2")`, {
+      face = new FontFace(sym?.family ?? def.family, `url("${fontUrl(file)}") format("woff2")`, {
         weight: String(weight),
         style: 'normal',
         display: 'block',
+        ...(sym ? { unicodeRange: sym.range } : {}),
       })
       set.add(face)
       await face.load()
@@ -181,12 +203,17 @@ export function familyLoading(id: FontFamilyId, weight: number = 400): boolean {
   return loading.has(`${def.id}:${resolveWeight(def, weight)}`) && !isFaceReady(def, resolveWeight(def, weight))
 }
 
+const SYMBOL_STACK = SYMBOL_FONTS.map((f) => `"${f.family}"`).join(', ')
+
 /**
- * CSS `font` shorthand that selects the bundled face, with a generic fallback of the same kind
- * (`def.generic`: `sans-serif`, `monospace`…) so a face that failed to load never turns into Times.
+ * CSS `font` shorthand that selects the bundled face, then the symbol faces for the characters
+ * it lacks (`SYMBOL_FONTS`: JetBrains Mono, then B612, each limited to its ranges and loaded by
+ * `fontsUsed`; never a system font for ♯ ♭ → ≤ ✓ ★…, docs/TABLE-PLAN.md §12), then a generic of
+ * the same kind (`def.generic`: `sans-serif`, `monospace`…) so a face that failed to load never
+ * turns into Times.
  */
 export function faceCss(def: FontDef, weight: FontWeight, px: number, italic = false): string {
-  return `${exactFaceCss(def, weight, px, italic)}, ${def.generic}`
+  return `${exactFaceCss(def, weight, px, italic)}, ${SYMBOL_STACK}, ${def.generic}`
 }
 
 /** Only the bundled face (no fallback): for `fonts.check()`. */
@@ -235,8 +262,9 @@ export async function ensureFonts(doc: LabelDoc, opts: EnsureFontsOptions = {}):
   const [results, custom] = await Promise.all([
     Promise.all(uses.map(async (u) => {
       const def = fontDef(u.id)
-      const ok = await loadFace(def, u.weight)
-      return ok && isFaceReady(def, u.weight) ? undefined : `${def.label} ${u.weight}`
+      // A symbol face is ready once loaded (`fonts.check` would ignore it: its range has no space).
+      const ok = await loadFace(def, u.weight, u.symbols)
+      return ok && (u.symbols || isFaceReady(def, u.weight)) ? undefined : `${def.label} ${u.weight}`
     })),
     Promise.all(customFontsUsed(doc).map(async (src) => ((await loadCustomFont(src, opts.loadFontBlob)) ? undefined : src.family))),
   ])

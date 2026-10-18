@@ -1,7 +1,9 @@
 <!-- W4 — properties of a text block. Edits go through Studio.updateItem (doc/ops.updateItem).
      P4 — a custom font is stored as `customFont` next to the bundled `fontFamily`, which stays
      the fallback. Fonts and size (docs/FONTS-AND-SIZE-PLAN.md): the font control is
-     ui/fonts/FontPicker (P-picker), the quick sizes ui/editor/props/TextSizeQuick (P-size). -->
+     ui/fonts/FontPicker (P-picker), the quick sizes ui/editor/props/TextSizeQuick (P-size).
+     "Insert special character" (Ω, ../SymbolButton) inserts at the text's caret
+     (docs/TABLE-PLAN.md §12). -->
 <script lang="ts">
   import type { FontWeight, TextItem } from '../../../doc/schema'
   import { fontDef, itemSizingBand } from '../../../render'
@@ -15,12 +17,14 @@
   import { getStudio } from '../../state/studio.svelte'
   import VariableHint from '../../batch/VariableHint.svelte'
   import TextSizeQuick from './TextSizeQuick.svelte'
+  import SymbolButton from '../SymbolButton.svelte'
   import { defaultSizeOf, measureTextAt } from '../../../render/text-size'
   import { fallbackBand } from '../../state/text-defaults'
 
   let { item }: { item: TextItem } = $props()
   const studio = getStudio()
   const id = $props.id()
+  let textArea: HTMLTextAreaElement | undefined = $state()
   const set = (patch: Partial<Omit<TextItem, 'id' | 'kind'>>, key?: string) => studio.updateItem<TextItem>(item.id, patch, key ? `${item.id}:${key}` : undefined)
 
   const WEIGHT_NAMES: Record<FontWeight, string> = { 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Extra bold' }
@@ -48,8 +52,11 @@
 
 <div class="field">
   <label class="field-label" for="{id}-text">Text</label>
-  <textarea id="{id}-text" class="textarea" rows="3" value={item.text} placeholder="Type the label text" oninput={(e) => set({ text: e.currentTarget.value }, 'text')}></textarea>
-  <p class="hint">Press Enter for a new line.</p>
+  <textarea bind:this={textArea} id="{id}-text" class="textarea" rows="3" value={item.text} placeholder="Type the label text" oninput={(e) => set({ text: e.currentTarget.value }, 'text')}></textarea>
+  <div class="text-tools">
+    <p class="hint">Press Enter for a new line.</p>
+    <SymbolButton field={() => textArea} oninsert={(text) => set({ text })} />
+  </div>
   <VariableHint text={item.text} />
 </div>
 
@@ -139,6 +146,15 @@
   .missing :global(svg) {
     flex: none;
     color: var(--warn);
+  }
+  .text-tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+  .text-tools .hint {
+    margin: 0;
   }
   .toggles {
     display: grid;

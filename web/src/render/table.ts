@@ -1,7 +1,7 @@
 // Tables (docs/TABLE-PLAN.md §2) — sizing warnings and drawing on the crisp plane. Lazy chunk:
 // render/table-set.ts loads it the first time a label with a table renders; renderer.ts measures
-// with the table's font stack (`tableFont`) and passes it in, then treats the result like any
-// flow block. Imports nothing at run time but table-layout.ts (see there).
+// with the table's font stack (`cssFont`, symbol fonts included) and passes it in, then treats
+// the result like any flow block. Imports nothing at run time but table-layout.ts (see there).
 import type { TableItem } from '../doc/schema'
 import type { Ctx2D } from './canvas'
 import { layoutTable, type TableLayout } from './table-layout'
@@ -16,7 +16,7 @@ const SMALL_TEXT_MM = 2
 export interface TableCtx {
   f: number
   dpi: number
-  /** Face metrics, measuring and CSS `font` with the table's font stack (renderer `tableFont`). */
+  /** Face metrics, measuring and CSS `font` with the table's font stack (text.ts `cssFont`). */
   face: FaceMetrics
   measure: MeasureFn
   font: (px: number) => string

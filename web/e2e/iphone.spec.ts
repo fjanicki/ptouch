@@ -350,20 +350,60 @@ test('iPhone 375 px: edit a table, no horizontal scroll, 44 px controls, the lin
   await page.getByRole('button', { name: 'Insert Table' }).click()
   await expect(page.getByRole('heading', { name: /Table block/ })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
-  for (const name of ['Insert sharp ♯', 'Insert flat ♭']) {
-    const box = await page.getByRole('button', { name }).boundingBox()
-    expect(box?.height, name).toBeGreaterThanOrEqual(44)
-    expect(box?.width, name).toBeGreaterThanOrEqual(44)
-  }
+  // The "Table cells" card comes right under the preview (before the tape settings and the
+  // inspector), in the one-column flow.
+  const cells = page.getByRole('region', { name: /^Table cells/ })
+  const cardBox = (await cells.boundingBox())!
+  const previewBox = (await page.getByRole('region', { name: 'Label preview' }).boundingBox())!
+  const inspectorBox = (await page.getByRole('heading', { name: /Table block/ }).boundingBox())!
+  expect(cardBox.y).toBeGreaterThanOrEqual(previewBox.y + previewBox.height)
+  expect(cardBox.y + cardBox.height).toBeLessThan(inspectorBox.y)
+  expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(375)
+  const symbolsButton = cells.getByRole('button', { name: 'Insert special character' })
+  const sym = await symbolsButton.boundingBox()
+  expect(sym?.height).toBeGreaterThanOrEqual(44)
+  expect(sym?.width).toBeGreaterThanOrEqual(44)
   const box = await tableCell(page, 1, 1).boundingBox()
   expect(box?.height).toBeGreaterThanOrEqual(44)
+  // The symbols open in the viewport with 44 px targets; a tap inserts at the cell's caret.
+  await tableCell(page, 1, 1).tap()
+  await tableCell(page, 1, 1).evaluate((el: HTMLInputElement) => el.setSelectionRange(1, 1))
+  await symbolsButton.tap()
+  const menu = page.getByRole('dialog', { name: 'Special characters' })
+  await expect(menu).toBeVisible()
+  const menuBox = (await menu.boundingBox())!
+  expect(menuBox.x).toBeGreaterThanOrEqual(0)
+  expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(375)
+  const sharp = menu.getByRole('button', { name: 'Sharp ♯' })
+  expect((await sharp.boundingBox())?.height).toBeGreaterThanOrEqual(44)
+  await sharp.tap()
+  await expect(menu).toBeHidden()
+  await expect(tableCell(page, 1, 1)).toHaveValue('A♯')
+  // A tap outside only closes the menu (a shade takes it): it never also presses Undo underneath.
+  await symbolsButton.tap()
+  await expect(menu).toBeVisible()
+  const undo = (await page.getByRole('button', { name: 'Undo' }).first().boundingBox())!
+  await page.touchscreen.tap(undo.x + undo.width / 2, undo.y + undo.height / 2)
+  await expect(menu).toBeHidden()
+  await expect(tableCell(page, 1, 1)).toHaveValue('A♯')
+  // …and it has a 44 px Close button.
+  await symbolsButton.tap()
+  const close = menu.getByRole('button', { name: 'Close' })
+  expect((await close.boundingBox())?.height).toBeGreaterThanOrEqual(44)
+  await close.tap()
+  await expect(menu).toBeHidden()
+  await expect(tableCell(page, 1, 1)).toHaveValue('A♯')
   await page.getByText('Type or paste the whole table').click()
   await page.getByLabel(/One line per row/).fill('DO RE MI FA SOL LA SI\nC D E F G A B')
   await page.getByRole('button', { name: 'Fill table' }).click()
-  await expect(page.getByText('2 rows × 7 columns')).toBeVisible()
+  await expect(cells.getByText('2 rows × 7 columns')).toBeVisible()
   // The wide grid scrolls in its own box, never the page.
   expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
-  await tableCell(page, 1, 7).scrollIntoViewIfNeeded()
+  // Seven columns fit at 375 px without scrolling the grid (rows are removed from the toolbar).
+  await cells.scrollIntoViewIfNeeded()
+  const last = (await tableCell(page, 1, 7).boundingBox())!
+  expect(last.x + last.width).toBeLessThanOrEqual(cardBox.x + cardBox.width)
+  await expect(cells.getByText(/More columns/)).toHaveCount(0)
   await expect(tableCell(page, 1, 7)).toBeInViewport()
 
   await page.getByRole('button', { name: 'Send to computer…' }).click()

@@ -1,12 +1,13 @@
-<!-- Tables (docs/TABLE-PLAN.md §4) — properties of a table block (lazy chunk, with TableGrid and
-     doc/table.ts): the cells, "type or paste the whole table", text direction, one font, weight
-     and size for every cell, column width / piece length, alignment, padding, grid lines, cut
-     marks and "cut between columns" (hidden on printers without a cutter). Edits go through
-     Studio.updateItem; typing coalesces per cell, every other change is one undo step. -->
+<!-- Tables (docs/TABLE-PLAN.md §4, §12) — properties of a table block (lazy chunk, with
+     TableCells, TableGrid and doc/table.ts): its size and a link to the "Table cells" card under
+     the preview (where the cells are edited), text direction, one font, weight and size for every
+     cell, column width / piece length, alignment, padding, grid lines, cut marks and "cut between
+     columns" (hidden on printers without a cutter). Edits go through Studio.updateItem; every
+     change is one undo step. -->
 <script lang="ts">
   import { LIMITS, type FontWeight, type LabelDoc, type TableColumns, type TableDirection, type TableItem, type TextItem } from '../../../doc/schema'
   import { updateDoc, updateItem } from '../../../doc/ops'
-  import { cellsToText, colCount, parseCells, setCell, type Cells } from '../../../doc/table'
+  import { colCount } from '../../../doc/table'
   import { dotsToMm, fontDef, pageLengthsMm } from '../../../render'
   import { emDotsToPt } from '../../../render/text-size'
   import { customFontMissing } from '../../../render/fonts'
@@ -18,7 +19,6 @@
   import Switch from '../../common/Switch.svelte'
   import { getStudio } from '../../state/studio.svelte'
   import { formatMm, piecesText } from '../../state/view-model'
-  import TableGrid from './TableGrid.svelte'
 
   let { item }: { item: TableItem } = $props()
   const studio = getStudio()
@@ -51,28 +51,12 @@
     return !!item.customFont && customFontMissing(item.customFont)
   })
 
-  function showNotices(notices: readonly string[] | undefined): void {
-    if (notices?.length) studio.toast('info', notices[0] ?? '', notices.slice(1).join(' ') || undefined)
-  }
-  function setCells(cells: Cells, message: string, notices?: string[]): void {
-    set({ cells })
-    studio.announce(notices?.length ? `${message}. ${notices.join(' ')}` : message)
-    showNotices(notices)
-  }
-
-  // "Type or paste the whole table" (the path on a phone): replaces every cell. The draft belongs
-  // to the table and the cells it was typed over: selecting another table (the same editor is
-  // reused) or changing the cells elsewhere (the grid, undo / redo) drops it, so it can never be
-  // written into the wrong table or over newer cells.
-  let draft = $state.raw<{ id: string; cells: Cells; text: string } | null>(null)
-  const ownDraft = $derived(draft && draft.id === item.id && draft.cells === item.cells ? draft.text : null)
-  const shownDraft = $derived(ownDraft ?? cellsToText(item.cells))
-  function fill(): void {
-    // Unchanged text is the table itself (cellsToText reads back the same): nothing to do.
-    if (ownDraft === null) return
-    const parsed = parseCells(ownDraft)
-    draft = null
-    setCells(parsed.cells, `Table filled: ${parsed.cells.length} × ${colCount(parsed.cells)}`, parsed.notices)
+  /** The cells are edited in the "Table cells" card under the preview: focus its current cell. */
+  function editCells(): void {
+    const card = document.getElementById('table-cells')
+    const cell = card?.querySelector<HTMLInputElement>('input[data-cur]') ?? card?.querySelector<HTMLInputElement>('input')
+    card?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    cell?.focus({ preventScroll: true })
   }
 
   const DIRECTION_HINTS: Record<TableDirection, string> = {
@@ -127,23 +111,10 @@
   }
 </script>
 
-<!-- Another table reuses this editor: start its grid (current cell) and paste box (closed) afresh. -->
-{#key item.id}
-  <div class="field">
-    <span class="field-label" id="{id}-cells">Cells <span class="dims">{rows} {rows === 1 ? 'row' : 'rows'} × {cols} {cols === 1 ? 'column' : 'columns'}</span></span>
-    <TableGrid cells={item.cells} oncell={(r, c, v) => set({ cells: setCell(item.cells, r, c, v) }, `cell:${r}:${c}`)} oncells={setCells} />
-  </div>
-
-  <details class="paste">
-    <summary>Type or paste the whole table</summary>
-    <label class="field-label" for="{id}-paste">One line per row; cells separated by tabs, commas or semicolons, or by spaces when there are none (“quote a cell” to keep its spaces)</label>
-    <textarea id="{id}-paste" class="textarea" rows="3" spellcheck="false" autocapitalize="characters" value={shownDraft} oninput={(e) => (draft = { id: item.id, cells: item.cells, text: e.currentTarget.value })}></textarea>
-    <div class="paste-actions">
-      <button type="button" class="btn small primary" disabled={ownDraft === null} title={ownDraft === null ? 'Change the text first' : undefined} onclick={fill}>Fill table</button>
-      {#if ownDraft !== null}<button type="button" class="btn small ghost" onclick={() => (draft = null)}>Reset</button>{/if}
-    </div>
-  </details>
-{/key}
+<p class="cells-link">
+  <span>{rows} {rows === 1 ? 'row' : 'rows'} × {cols} {cols === 1 ? 'column' : 'columns'}</span> ·
+  <button type="button" class="link" onclick={editCells}>edit the cells below the preview</button>
+</p>
 
 <Segmented
   label="Text direction"
@@ -262,31 +233,21 @@
 {/if}
 
 <style>
-  .dims {
-    margin-left: 6px;
-    font-weight: 500;
-    letter-spacing: 0;
-    text-transform: none;
+  .cells-link {
+    margin: 0;
+    font-size: 13px;
     color: var(--text-muted);
   }
-  .paste {
-    display: grid;
-    gap: var(--space-2);
-  }
-  .paste summary {
-    cursor: pointer;
-    font-size: 13px;
+  .link {
+    padding: 0;
+    border: 0;
+    background: none;
     color: var(--accent);
+    font: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
     min-height: 28px;
-    display: flex;
-    align-items: center;
-  }
-  .paste[open] {
-    padding-bottom: var(--space-1);
-  }
-  .paste-actions {
-    display: flex;
-    gap: var(--space-2);
   }
   .fixed {
     margin: 0;
@@ -314,7 +275,7 @@
     margin: 0;
   }
   @media (pointer: coarse) {
-    .paste summary {
+    .link {
       min-height: 44px;
     }
   }

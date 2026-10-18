@@ -147,7 +147,7 @@ describe('table alignment', () => {
     try {
       expect(r.warnings).toEqual([])
       expect(r.lengthDots).toBeGreaterThan(plain.lengthDots)
-      expect(document.fonts.check('700 20px "ptouch JetBrains Mono"')).toBe(true)
+      expect(document.fonts.check('700 20px "ptouch Symbols JetBrains Mono"', '♯')).toBe(true)
     } finally {
       release(r.bitmap)
       release(plain.bitmap)

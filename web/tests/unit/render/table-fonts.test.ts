@@ -29,11 +29,11 @@ describe('table fonts', () => {
     expect(fontsUsed(createDoc({ items: [table([['DO', 'RE']])] }))).toEqual([{ id: 'fira-sans', weight: 600 }])
     expect(fontsUsed(createDoc({ items: [table([['DO♯']], { fontWeight: 700 })] }))).toEqual([
       { id: 'fira-sans', weight: 700 },
-      { id: 'jetbrains-mono', weight: 700 },
+      { id: 'jetbrains-mono', weight: 700, symbols: true },
     ])
     expect(fontsUsed(createDoc({ items: [table([['MI♭']], { fontWeight: 500, fontFamily: 'oswald' })] }))).toEqual([
       { id: 'oswald', weight: resolveWeight(fontDef('oswald'), 500) },
-      { id: 'jetbrains-mono', weight: 400 },
+      { id: 'jetbrains-mono', weight: 400, symbols: true },
     ])
     expect(fontsUsed(createDoc({ items: [table([['', ' ']])] }))).toEqual([])
   })
@@ -44,13 +44,13 @@ describe('table fonts', () => {
     expect(resolveWeight(fontDef('anton'), 600)).toBe(400)
     expect(fontsUsed(createDoc({ items: [table([['DO♯']], { fontFamily: 'anton', fontWeight: 600 })] }))).toEqual([
       { id: 'anton', weight: 400 },
-      { id: 'jetbrains-mono', weight: 400 },
+      { id: 'jetbrains-mono', weight: 400, symbols: true },
     ])
     // quicksand@600 → its nearest weight; JetBrains follows that weight.
     const q = resolveWeight(fontDef('quicksand'), 600)
     expect(fontsUsed(createDoc({ items: [table([['DO♯']], { fontFamily: 'quicksand', fontWeight: 600 })] }))).toEqual([
       { id: 'quicksand', weight: q },
-      { id: 'jetbrains-mono', weight: q >= 600 ? 700 : 400 },
+      { id: 'jetbrains-mono', weight: q >= 600 ? 700 : 400, symbols: true },
     ])
   })
 

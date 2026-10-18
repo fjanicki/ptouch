@@ -18,7 +18,7 @@
     image: () => import('./props/ImageProps.svelte'),
     shape: () => import('./props/ShapeProps.svelte'),
     spacer: () => import('./props/SpacerProps.svelte'),
-    table: () => import('./props/TableProps.svelte'),
+    table: () => import('./props/table-editor').then((m) => ({ default: m.TableProps })),
   }
 
   const studio = getStudio()

@@ -4,9 +4,11 @@
      Lead-owned since studio v1: the v1 packages' entry points (BatchPanel, DesignOnlyBanner and
      the dialogs) are mounted here and filled by their packages (docs/STUDIO-V1-PLAN.md); the
      dialogs load on their first open. The compact quick text sizes under the preview belong to
-     P-size (docs/FONTS-AND-SIZE-PLAN.md). -->
+     P-size (docs/FONTS-AND-SIZE-PLAN.md). A selected table's "Table cells" card goes under the
+     preview (lazy, with the table inspector: docs/TABLE-PLAN.md §12). -->
 <script lang="ts">
   import { onDestroy, onMount, type Component } from 'svelte'
+  import type { TableItem } from './doc/schema'
   import { Studio, provideStudio, type StudioDialog } from './ui/state/studio.svelte'
   import TopBar from './ui/TopBar.svelte'
   import ConnectDialog from './ui/connect/ConnectDialog.svelte'
@@ -54,6 +56,11 @@
   }
   $effect(() => lazyDialog(studio.libraryOpen, Library, () => import('./ui/labels/LibraryDialog.svelte'), (c) => (Library = c), () => (studio.libraryOpen = false)))
   $effect(() => lazyDialog(studio.shortcutsOpen, Shortcuts, () => import('./ui/ShortcutsDialog.svelte'), (c) => (Shortcuts = c), () => (studio.shortcutsOpen = false)))
+  // The table cells card: the table editor's chunk (the inspector reports a failed load).
+  let TableCells = $state<Component<{ item: TableItem }> | null>(null)
+  $effect(() => {
+    if (studio.selected?.kind === 'table' && !TableCells) import('./ui/editor/props/table-editor').then((m) => (TableCells = m.TableCells), () => {})
+  })
   let dialogs = $state<Partial<Record<StudioDialog, Component>>>({})
   const loading = new Set<StudioDialog>()
   $effect(() => {
@@ -117,6 +124,9 @@
           </div>
         {/if}
         <Preview />
+        {#if TableCells && studio.selected?.kind === 'table'}
+          <div class="near-cells"><TableCells item={studio.selected} /></div>
+        {/if}
         <BatchPanel />
       </main>
       <div class="right">
@@ -172,6 +182,9 @@
     grid-area: right;
     min-width: 0;
   }
+  .near-cells {
+    min-width: 0;
+  }
   @media (min-width: 1181px) {
     .left,
     .right {
@@ -217,7 +230,8 @@
     .center > :global(.preview) {
       order: -2;
     }
-    .center > .near-size {
+    .center > .near-size,
+    .center > .near-cells {
       order: -1;
     }
     .center > :global(.banner),

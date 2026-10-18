@@ -54,7 +54,7 @@ What the code does today (the facts the decisions rest on):
 | T9 | `cutBetween` (off): the machine cuts after each column. Each piece becomes **its own page of the existing multi-page job** (`Bitmap1.cropLines` at the column edges, `cut: 'every-label'`, leader fed once, chain/copies/mirror as today). **No core change.** | This is the batch mechanism, applied inside one label. The core already pads short pages and handles cuts. |
 | T10 | Pieces are cut only when `print.autoCut` is on and the model has a cutter. Turning `cutBetween` on also turns on `print.autoCut`, in the same undo step. When the table is the only printing block, it also sets the label margins to 0, so every piece has the same length (announced). On a model without a cutter the option is hidden, and a note suggests cut marks. With `cutBetween` on, cut marks are not drawn. With `grid` on, every piece gets its own full box. | The first and last pieces would otherwise be longer by the 2 mm label margins. Cuts must never surprise the user. |
 | T11 | No half cut in v1. | The PT-P710BT has none (D1), and nothing can be tested on the user's printer. A follow-up can add "Half cut between columns" for `caps.halfCut` models (`CutMode 'half-cut'`). |
-| T12 | ♯/♭/♮ in a table cell are drawn with the bundled **JetBrains Mono** whatever the table's family. The table's CSS font stack is `"ptouch <Family>", "ptouch JetBrains Mono", <generic>`, and `fontsUsed` adds JetBrains Mono (700 when weight ≥ 600, else 400) when a cell contains U+266D–U+266F. The chromatic templates use JetBrains Mono Bold, which has the real glyphs. No font file changes. | Preview, export and print are then the same on every device, and a system font is never used. No "#"/"b" fallback is needed. Extending Fira Sans is not allowed (RFN). Scoped to tables, so existing text renders do not change. |
+| T12 | ♯/♭/♮ in a table cell are drawn with the bundled **JetBrains Mono** whatever the table's family. The table's CSS font stack is `"ptouch <Family>", "ptouch JetBrains Mono", <generic>`, and `fontsUsed` adds JetBrains Mono (700 when weight ≥ 600, else 400) when a cell contains U+266D–U+266F. The chromatic templates use JetBrains Mono Bold, which has the real glyphs. No font file changes. | Preview, export and print are then the same on every device, and a system font is never used. No "#"/"b" fallback is needed. Extending Fira Sans is not allowed (RFN). Scoped to tables, so existing text renders do not change. *§12 extends this stack to text blocks and adds B612 after JetBrains Mono; ♮ turned out to be in no bundled font.* |
 | T13 | Cells are literal text: `{{variables}}` are not resolved in v1. Custom fonts (`customFont`) are supported, the same way as text. | Variables cost entry bytes and were not requested. Custom fonts come for free with the reused FontPicker. |
 | T14 | Schema **5**. `MIGRATIONS[4]` changes only the version. An older (schema-4) app opens a v5 label **read-only** through the existing newer-schema path: its validator drops the table with a notice, and the first edit forks a copy, so the original is never saved over. | The existing mechanism (persist-migrate.ts). |
 | T15 | Entry budget: the table renderer (`render/table.ts` + `render/table-layout.ts`) and the editor (`TableProps.svelte`, `TableGrid.svelte`, `doc/table.ts`) are **lazy chunks**. To make room for the eager hooks, **LibraryDialog and ShortcutsDialog become lazy too**: they load on their first open and then stay mounted, like the v1 `DIALOGS` in App.svelte, so their `showModal` and focus logic is unchanged. The budget stays 122,880. | Measured, §6: the eager hooks cost ≈ 1.05 KB but only 793 B are left. Making the two dialogs lazy saves 1,385 B. |
@@ -204,7 +204,8 @@ Order in the inspector:
    Each column header has a remove button ("Remove column 3"), each row a remove button, and
    there are "Add column" / "Add row" buttons (disabled at the limits, with the reason as hint),
    plus "2 rows × 7 columns". Two buttons insert **♯** / **♭** at the caret of the focused cell
-   (most keyboards have neither).
+   (most keyboards have neither). *Superseded by §12: the grid moved to a "Table cells" card
+   under the preview, and ♯ / ♭ are in the "Insert special character" (Ω) menu.*
    - Keys: Tab / Shift+Tab = next / previous cell (native, row-major). ↑ / ↓ = row above /
      below. Enter = the cell below; on the last row, the first row of the next column, adding a
      column after the last one (so "DO ⏎ C ⏎ RE ⏎ D …" types notes in pairs). Shift+Enter = the
@@ -371,8 +372,8 @@ Unchanged: `crates/*` (no core capability is missing) and `docs/PROTOCOL.md`.
 ## 10. Not in v1
 
 Per-column alignment, half cut between columns, `{{variables}}` in cells, clicking a cell in
-the preview to edit it, multi-line cells, header-row styles (bold/inverted), and the ♯/♭
-fallback for plain text blocks.
+the preview to edit it, multi-line cells and header-row styles (bold/inverted). (The ♯/♭
+fallback for plain text blocks came with §12.)
 
 ## 11. Implementation notes (2026-10-18)
 
@@ -388,7 +389,8 @@ What was built follows §0–§10, except:
 - **The lazy table chunk has no run-time imports.** When render/table.ts imported text.ts /
   fonts.ts, Rolldown moved units, font-catalog, fonts, layout and text into a separate
   *preloaded* shared chunk, which cost ≈ 700 B of initial JS. So the renderer measures with the
-  table's font stack (`tableFont`, `canvasMeasure(ctx, item, font)`) and passes the face
+  table's font stack (`cssFont` in text.ts, whose stack is `fonts.ts faceCss` and so includes the
+  symbol faces of §12; `canvasMeasure(ctx, item, font)`) and passes the face
   metrics, the measure function, the CSS font and the pixel grid in (`TableCtx`); table-layout.ts
   repeats the two one-line unit conversions. icon-set.ts and table-set.ts share one tiny loader
   (render/lazy.ts `lazyModule`).
@@ -450,3 +452,121 @@ What was built follows §0–§10, except:
     slider goes to the schema's 10 mm.
   - *Batch toast / Diagnostics.* A batch with a cut table says "N pieces printed"; the
     Diagnostics virtual printer passes the model's cutter, as the studio does.
+
+## 12. Cells under the preview, "Insert special character" (2026-10-18)
+
+User feedback: in the narrow inspector the cell grid was clipped (4 of 7 columns visible, a
+sideways scroll nobody found), and the ♯ / ♭ buttons took space for rarely used characters.
+
+**Placement.**
+
+- *Desktop / tablet (two or three columns).* A selected table gets a full-width **"Table cells"**
+  card in the centre column, directly under the preview card and above "Variables & batch"
+  (App.svelte). It holds the grid (TableGrid: add / remove row and column, the keys, paste) and
+  "Type or paste the whole table". The inspector (TableProps) keeps only the formatting
+  (direction, font, size, widths, alignment, padding, grid lines, cut marks, cut between
+  columns) plus "2 rows × 7 columns · edit the cells below the preview", a link that focuses the
+  grid's current cell. With several tables the card edits the selected one ("Table cells ·
+  block 3"); it is not shown when the selection is not a table.
+- *Phone (≤ 860 px, one column).* The card sits right under the preview, before the tape settings
+  and the inspector, with the same `order: -1` as the quick text sizes: the cells are the content
+  of a table block, so they come next to the preview that shows them, as the quick sizes do for
+  text; the formatting stays further down in the inspector.
+- *Grid.* Each column is as wide as its longest cell (2 to 14 characters, at least 40 px, 44 px
+  on touch), so the 12-key template shows all 12 columns at 1280 × 800. At ≤ 600 px the column of
+  row × buttons is hidden (rows are removed with the toolbar's "− Row n", the current cell's row)
+  and the grid box has no inner padding, so the 7-column templates fit at 375 px with no scroll. A wider grid scrolls in
+  its own box with an always-visible scroll bar, faded edges on the sides that have more columns,
+  "More columns → · scroll sideways", and `scroll-padding` so the focused cell is never under a
+  fade (the page itself never scrolls sideways).
+- *Lazy.* TableProps and TableCells are one chunk (`ui/editor/props/table-editor.ts`), loaded by
+  the inspector and the card the first time a table is selected. The entry only has the mount
+  point in App.svelte. Undo / redo, the per-cell typing coalescing and the unsent paste draft
+  (it belongs to its table and cells) are unchanged.
+- *Entry budget.* The entry keeps only the Ω button, the empty popover and the shade (the header,
+  Close and the symbols are in the SymbolMenu chunk): initial JS **122,853 B** gzip, under the
+  unchanged 122,880 B budget.
+
+**Insert special character.** The ♯ / ♭ buttons are gone. An **Ω** button ("Symbols: insert
+special character", `ui/editor/SymbolButton.svelte`) is in the cell card's toolbar, as a bordered
+**"Ω Symbols"** button like its neighbours (the ♯ / ♭ are only there now, and a title tooltip never
+shows on touch), and as an icon-only Ω next to a Text block's text. It opens a top-layer popover
+(the scrolling inspector never clips it) with a "Special characters" header and a **Close**
+button (44 px on touch); the header and the symbols (`SymbolMenu.svelte` + `symbols.ts`) load on
+the first open. With a mouse it is `popover="auto"`: a click outside closes it (and goes on to
+what was clicked). On a touch or narrow screen (`(pointer: coarse), (max-width: 599px)`) the
+menu is a `manual` popover over a dimmed **shade** (another `manual` popover, shown first so it
+sits under the menu in the top layer): a tap outside lands on the shade and only closes the menu,
+it never also presses Undo or the print bar underneath (a popover's `::backdrop` does not take
+the tap). Symbols are grouped; one roving tab stop, ← → / ↑ ↓ (the nearest symbol on the
+row above / below), Home / End, Escape closes and gives the button its focus back (without the
+studio's Escape = deselect). A symbol replaces the selection of the field that last had the
+focus (the current cell, or the text), as **one undo step** (no coalesce key), and that field
+gets the focus back with the caret after the symbol. 44 px targets on touch; centred on a phone.
+Elsewhere it is placed next to the button but **never over that field** (the cell being edited,
+the text): under the button, else above it, else beside the field (right, then left), else on
+the roomier side of the button, shortened to fit with its own scroll. The card's toolbar is
+under the grid near the bottom of the screen, so at 1280 × 800 the menu opens to the right of the
+current cell.
+
+**Glyph coverage.** The studio draws only with bundled fonts. T12's fallback is now general:
+every text block and table uses the CSS font stack `"ptouch <Face>", "ptouch Symbols JetBrains
+Mono", "ptouch Symbols B612", <generic>` (`fonts.ts faceCss`, `SYMBOL_FONTS`). The browser takes
+each character from the first face that has it, so the face draws what it has and a symbol it
+lacks comes from JetBrains Mono (core, precached), else from B612. The two **symbol faces** are
+the JetBrains Mono and B612 files registered under their own family names with a
+`unicode-range` of exactly U+0370–03FF, U+2020–2021, U+2070–209F, U+20BD, U+2100–2BFF (JetBrains
+Mono) and U+2605, U+2610–2612 (★ ☐ ☑ ☒, B612); `fontsUsed` loads a symbol face (`symbols: true`)
+whenever the text has a character in its range, at the weight CSS matching picks (700 when the
+face's resolved weight is ≥ 600, else 400). The plain JetBrains Mono and B612 *families*, which
+the font picker, the symbol menu and barcode captions load, are not in the stack: a character
+outside the ranges that the face lacks (‼ ‽ ⁂…) goes to the generic font on every render, never
+to JetBrains Mono "if something else happened to load it", so a label draws the same whatever
+else the page has loaded.
+Plain text (ASCII, Latin-1, – — … €) loads neither, and its rendering is unchanged (every
+existing bitmap snapshot is identical). A symbol that no bundled font has is not offered.
+
+Final list (25 bundled families; "all" = every family has it, "n/25 → JBM" = the other families
+draw it with JetBrains Mono, "→ B612" = with B612):
+
+| Group | Symbols | Coverage |
+|---|---|---|
+| Music | ♯ ♭ | JetBrains Mono only → JBM |
+| Arrows | ← → ↑ ↓ | 6/25 → JBM |
+| | ↔ ↕ | 5/25 → JBM |
+| | ⇐ ⇒ | 2/25 → JBM |
+| | ▲ ◀ / ▼ ▶ | 4/25 / 5/25 → JBM |
+| Maths | ± × ÷ ° ½ ¼ ¾ ² ³ µ | all |
+| | − | 24/25 → JBM |
+| | ≈ ≠ ≤ ≥ | 23, 22, 21, 21/25 → JBM |
+| | ∞ π / √ | 20/25 / 19/25 → JBM |
+| | Ω / ∅ | 15/25 / 12/25 → JBM |
+| Typography | • · … – — « » ‹ › © ® § ¶ | all |
+| | ™ † | 24/25 → JBM |
+| | № | 16/25 → JBM |
+| Currency | € £ ¥ ¢ | all |
+| Marks | ✓ ⚠ ⚡ ⏻ / ✗ | 2/25 / 1/25 → JBM |
+| | ● ■ | 3/25 → JBM |
+| | ★ ☐ ☑ ☒ | B612 only → B612 |
+
+Left out because no bundled font has them: ♮ ♩ ♪ ♫ ♥ ⌀ ✔ ✘ (also ♦ ☆ ✉ ✈ ⚙ ♀ ♂ ☢).
+
+**Tests.** `tests/unit/render/symbol-fonts.test.ts`: for every symbol, every bundled family and
+weight, in a text block and a table, the first face of the stack whose woff2 cmap has it exists,
+and `fontsUsed` loads that face; every symbol is in JetBrains Mono or B612 (so a custom font that
+lacks it still falls back to a bundled one), and inside that symbol face's `unicode-range`; each
+face's `unicode-range` is exactly the characters that make `fontsUsed` load it; the left-out
+symbols are in no bundled font; plain text loads no symbol font. `tests/browser/symbols.browser.test.ts`: bitmap snapshots
+`symbols-text-24mm` (→ ½ 20° €5 ✓ ⚠ ≈ ★ ☑ in Fira Sans Bold) and `symbols-table-24mm` (♯ ♭ ≤ ★
+± ✓ ☐ ⚡ in a table with grid lines), no font fallback, and through the renderer's CSS font a
+missing glyph measures exactly as the fallback face (and not as the system font); and a label
+with ‼ ‽ ⁂ ♯ renders bit-for-bit the same before and after the page loads the JetBrains Mono and
+B612 families for something else. e2e:
+`e2e/table.spec.ts` (card placement, the inspector link, two tables, undo / redo, all 12 columns
+visible, 40 columns scroll with the focused cell in view, the symbol menu's keys, Escape, one
+undo step, a text block, the labelled "Ω Symbols" button, the menu never over the focused cell,
+Close) and `e2e/iphone.spec.ts` (card under the preview at 375 px, 44 px Ω, symbols and Close, a
+tap inserts, a tap on Undo while the menu is open only closes it, 7 columns fit without a
+scroll). `TABLE_SCREENS=<dir>` now saves `table-desktop-dark.png` (symbols open),
+`table-desktop-light.png`, `table-desktop.png`, `table-desktop-cut.png` (1280 × 800),
+`table-iphone.png`, `table-iphone-symbols.png` and `table-iphone-inspector.png` (375 px).
