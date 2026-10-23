@@ -1,7 +1,7 @@
 // W3 — doc.print → JobOptions mapping, copies clamp, print preflight.
 import { describe, expect, it } from 'vitest'
 import { createDoc, DEFAULT_PRINT } from '../../../src/doc/schema'
-import { buildPrintJob, copiesOf, estimateTape, jobOptions, LEADER_MM, MAX_JOB_PAGES, pageLengthsMm, pageSpans, printBlocker } from '../../../src/render/job'
+import { buildPrintJob, copiesOf, estimateTape, handPiecesMm, jobOptions, LEADER_MM, MAX_JOB_PAGES, pageLengthsMm, pageSpans, printBlocker, tooManyPages } from '../../../src/render/job'
 import type { RenderResult, RenderTarget } from '../../../src/render/types'
 import { Bitmap1, decodeJob, printArea, mediaForWidth } from '../../../src/wasm'
 import { loadWasmForTests } from '../../helpers/wasm'
@@ -116,3 +116,26 @@ describe('pieces (table cut between columns, docs/TABLE-PLAN.md §3)', () => {
 function dotsMm(d: number): number {
   return (d * 25.4) / 180
 }
+
+describe('pieces of Cut blocks (docs/CUT-PLAN.md §3)', () => {
+  it('pageSpans: table cuts and Cut block cuts are one list, one page per piece', () => {
+    // The renderer merges both sources (sorted, unique) into `cuts`.
+    expect(pageSpans({ lengthDots: 564, cuts: [100, 188, 366] })).toEqual([
+      [0, 100],
+      [100, 188],
+      [188, 366],
+      [366, 564],
+    ])
+  })
+
+  it('handPiecesMm: pieces between the cut marks, the feed margin only at the strip ends', () => {
+    expect(handPiecesMm({ lengthDots: 100, lengthMm: 10, feedMarginMm: 2 })).toEqual([])
+    const p = handPiecesMm({ lengthDots: 100, lengthMm: 10, feedMarginMm: 2, marks: [30, 60] }).map((v) => Math.round(v * 10) / 10)
+    expect(p).toEqual([5, 3, 6])
+  })
+
+  it('tooManyPages counts pieces × copies', () => {
+    expect(() => tooManyPages(3 * 333)).not.toThrow()
+    expect(() => tooManyPages(4 * 250)).toThrow(/1000 pieces; one print job holds at most 999/)
+  })
+})

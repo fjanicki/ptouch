@@ -9,14 +9,25 @@ describe('migrate()', () => {
     for (let n = 0; n < CURRENT_SCHEMA; n++) expect(MIGRATIONS[n], `step ${n} → ${n + 1}`).toBeTypeOf('function')
   })
 
-  it('accepts a current (schema 5) document unchanged: tables along and across, cut marks, cut between, ♯', () => {
-    const raw = fixture('schema-5.json') as { items: Record<string, unknown>[] }
+  it('accepts a current (schema 6) document unchanged: cuts (one doubled), a frame, fixed length, a table cut between its columns', () => {
+    const raw = fixture('schema-6.json') as { items: Record<string, unknown>[] }
     const r = migrate(raw)
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.readOnly).toBe(false)
     expect(r.migratedFrom).toBeUndefined()
     expect(r.doc).toEqual(raw)
+    expect(r.doc.items.map((i) => i.kind)).toEqual(['text', 'cut', 'text', 'cut', 'cut', 'code', 'cut', 'table'])
+  })
+
+  it('schema 5 → 6 changes nothing but the version: tables along and across, cut marks, cut between, ♯', () => {
+    const raw = fixture('schema-5.json') as { items: Record<string, unknown>[] }
+    const r = migrate(raw)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.readOnly).toBe(false)
+    expect(r.migratedFrom).toBe(5)
+    expect(r.doc).toEqual({ ...raw, schema: CURRENT_SCHEMA })
     expect(r.doc.items.map((i) => i.kind)).toEqual(['table', 'table', 'text'])
     expect(r.doc.items[1]).toMatchObject({ direction: 'across-down', cutBetween: true, columns: { mode: 'mm', mm: 18 } })
   })
@@ -28,7 +39,7 @@ describe('migrate()', () => {
     if (!r.ok) return
     expect(r.readOnly).toBe(false)
     expect(r.migratedFrom).toBe(4)
-    expect(r.doc).toEqual({ ...raw, schema: 5 })
+    expect(r.doc).toEqual({ ...raw, schema: CURRENT_SCHEMA })
     expect(r.doc.tape).toEqual({ widthMm: 36, mediaId: 'tze560-36', model: 'PT-P910BT', colors: { tape: '#ffd400', ink: '#000000' } })
   })
 
@@ -40,6 +51,17 @@ describe('migrate()', () => {
     expect(r.ok && r.readOnly).toBe(true)
     if (!r.ok) return
     expect(r.doc.items.map((i) => i.kind)).toEqual(['table', 'table', 'text'])
+  })
+
+  it('a schema-6 label opened by an older app is read-only and loses only its cuts (newer-version path)', () => {
+    // What a schema-5 app does with a schema-6 file: validate it as its own schema, read-only.
+    // Simulated with the current validator and a kind it does not know standing in for the cut.
+    const raw = fixture('schema-6.json') as { items: Record<string, unknown>[] }
+    const items = raw.items.map((i) => (i['kind'] === 'cut' ? { ...i, kind: 'future-cut' } : i))
+    const r = migrate({ ...raw, schema: CURRENT_SCHEMA + 1, items })
+    expect(r.ok && r.readOnly).toBe(true)
+    if (!r.ok) return
+    expect(r.doc.items.map((i) => i.kind)).toEqual(['text', 'text', 'code', 'table'])
   })
 
   it('schema 3 → 4 changes nothing but the version (renders pixel-identically)', () => {

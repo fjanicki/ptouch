@@ -5,6 +5,10 @@
 import { LIMITS, type Item, type ItemKind, type LabelDoc, type TapeWidthMm } from '../../doc/schema'
 import type { ClientState, ConnectionSnapshot, OpenProgress, PrintProgress, TransportKind } from '../../printer'
 import type { BatteryInfo, MediaInfo } from '../../wasm'
+import { handPiecesMm, pageLengthsMm, pageSpans } from '../../render/job'
+import { splitPieces, type IgnoredCutReason } from '../../render/layout'
+import type { CutInfo, RenderResult } from '../../render/types'
+import { dotsToMm, mmToDots } from '../../render/units'
 
 // ---------------------------------------------------------------------------------------------
 // Formatting
@@ -354,6 +358,7 @@ export const KIND_META: Record<ItemKind, { label: string; icon: string }> = {
   shape: { label: 'Shape', icon: 'square' },
   spacer: { label: 'Spacer', icon: 'space' },
   table: { label: 'Table', icon: 'table' },
+  cut: { label: 'Cut', icon: 'scissors' },
 }
 
 const SYMBOLOGY_LABEL = { qr: 'QR', code128: 'Code 128', ean13: 'EAN-13', datamatrix: 'DataMatrix' } as const
@@ -379,6 +384,9 @@ export function itemSummary(item: Item, iconLabel?: (id: string) => string | und
       return { title: 'Spacer', summary: formatMm(item.widthMm) }
     case 'table':
       return { title: 'Table', summary: truncate(`${item.cells.length} × ${item.cells[0]?.length} · ${item.cells[0]?.join(' ')}`, 40) }
+    case 'cut':
+      // The block list replaces this with `cutSummary` once the label has rendered.
+      return { title: 'Cut', summary: 'Cut the strip here' }
   }
 }
 
@@ -394,6 +402,218 @@ export function piecesText(pagesMm: readonly number[], feedMm: number): string |
   const mm = (v: number): string => formatMm(v + 2 * feedMm)
   const same = hi - lo < 0.05
   return n < 2 ? null : `Cut into ${n} pieces · about ${same ? mm(lo) : `${mm(lo)} to ${mm(hi)}`} each (${same ? `${formatMm(lo)} printed + ` : 'incl. '}2 × ${formatMm(feedMm)} feed)`
+}
+
+/** "30.5", "29" — a length without its unit. */
+function mmNumber(mm: number): string {
+  const s = mm.toFixed(1)
+  return s.endsWith('.0') ? s.slice(0, -2) : s
+}
+
+/** "a, b and c" */
+function andList(v: readonly string[]): string {
+  return v.length < 2 ? (v[0] ?? '') : `${v.slice(0, -1).join(', ')} and ${v[v.length - 1]}`
+}
+
+/** "30.5, 29.1 and 31.9" */
+function mmList(values: readonly number[]): string {
+  return andList(values.map(mmNumber))
+}
+
+/** The lengths read the same once rounded for display ("27" and "27"). */
+function sameMm(values: readonly number[]): boolean {
+  return new Set(values.map(mmNumber)).size === 1
+}
+
+/** Pieces listed one by one up to this many; more are shown as a range. */
+const LISTED_PIECES = 8
+
+/**
+ * The readout of a strip the printer cuts at its Cut blocks (docs/CUT-PLAN.md C11): "Cut into 3
+ * pieces: about 30.5, 29.1 and 31.9 mm, each incl. 2 × 2 mm feed" (`pagesMm` = render/job.ts
+ * pageLengthsMm, without the feed). Above 8 pieces the range of `piecesText`; null for one piece.
+ */
+export function pieceListText(pagesMm: readonly number[], feedMm: number): string | null {
+  const n = pagesMm.length
+  if (n < 2) return null
+  if (n > LISTED_PIECES) return piecesText(pagesMm, feedMm)
+  const cut = pagesMm.map((p) => p + 2 * feedMm)
+  const same = Math.max(...cut) - Math.min(...cut) < 0.05
+  const feed = `2 × ${formatMm(feedMm)} feed`
+  return same ? `Cut into ${n} pieces: about ${formatMm(cut[0] ?? 0)} each, incl. ${feed}` : `Cut into ${n} pieces: about ${mmList(cut)} mm, each incl. ${feed}`
+}
+
+/**
+ * The readout of a strip cut apart by hand at its cut marks (`piecesMm` = render/job.ts
+ * handPiecesMm, as cut): "3 pieces to cut apart at the marks: about 28.5, 25.1 and 29.9 mm".
+ */
+export function handPiecesText(piecesMm: readonly number[]): string | null {
+  const n = piecesMm.length
+  if (n < 2) return null
+  const lo = Math.min(...piecesMm)
+  const hi = Math.max(...piecesMm)
+  const what = sameMm(piecesMm) ? `${mmNumber(lo)} mm each` : n > LISTED_PIECES ? `${mmNumber(lo)} to ${mmNumber(hi)} mm` : `${mmList(piecesMm)} mm`
+  return `${n} pieces to cut apart at the marks: about ${what}`
+}
+
+/**
+ * Distance from the print head to the cutter (docs/PROTOCOL.md §5.6): about 24.5 mm on the 180 dpi
+ * models, about 27 mm at 360 dpi. Whether a shorter piece is cut at its own length is not yet
+ * checked on a printer (HW-T1 / HW-C1).
+ */
+export function shortPieceMm(dpi: number): number {
+  return dpi >= 360 ? 27 : 24.5
+}
+
+/**
+ * The shortest whole-mm fixed length whose machine-cut pieces, with the printer's feed at both
+ * ends, reach the head-to-cutter distance (`shortPieceMm`) once rounded to dots: 21 mm at 180 dpi
+ * (2 mm feed), 26 mm at 360 dpi (1 mm feed). `shortPieceHint` is null for pieces this long.
+ */
+export function safePieceMm(feedMm: number, dpi: number): number {
+  const limit = shortPieceMm(dpi)
+  for (let mm = 1; mm < 100; mm++) if (dotsToMm(mmToDots(mm, dpi), dpi) + 2 * feedMm >= limit - 1e-6) return mm
+  return Math.ceil(limit)
+}
+
+/** What `shortPieceHint` knows besides the page lengths (from the render, `shortPieceHintFor`). */
+export interface ShortPieceContext {
+  /** Per page: a piece of a table cut between its columns (a fixed length does not lengthen it). */
+  column?: readonly boolean[]
+  /** The longest auto length of the Cut pieces (mm, no feed): a shorter fixed length cuts it off. */
+  longestAutoMm?: number
+  /** The label has a fixed length (every Cut piece is that long: a Spacer does not lengthen it). */
+  fixed?: boolean
+}
+
+/**
+ * The gentle hint for machine-cut pieces shorter than the head-to-cutter distance (C11), or null:
+ * "Piece 1 is about 17.4 mm. Pieces shorter than about 24.5 mm as cut have not been checked on a
+ * printer yet and may come out longer. To be sure, set a fixed length of 21 mm (about 25 mm as
+ * cut)." The tip fits the short pieces: a fixed length only when every Cut piece fits in it
+ * (`safePieceMm`, or the longest piece when the length is already fixed), a Spacer otherwise;
+ * wider columns for table pieces. Every length in it is as cut (feed included), except a fixed
+ * length, which also gives its as-cut length. The threshold is the real one, and a short piece
+ * that would round up to it is shown rounded down ("26.9 mm", not "27 mm" under 27 mm).
+ */
+export function shortPieceHint(pagesMm: readonly number[], feedMm: number, dpi: number, ctx: ShortPieceContext = {}): string | null {
+  if (pagesMm.length < 2) return null
+  const limit = shortPieceMm(dpi)
+  // A short piece is shown below the threshold: rounded down if it would round up to it.
+  const shown = (mm: number): number => (Number(mm.toFixed(1)) >= limit ? Math.floor(mm * 10) / 10 : mm)
+  const short = pagesMm.flatMap((p, i) => (p + 2 * feedMm < limit - 1e-6 ? [{ n: i + 1, mm: shown(p + 2 * feedMm), column: !!ctx.column?.[i] }] : []))
+  if (!short.length) return null
+  const first = short[0] as { n: number; mm: number }
+  const lengths = short.map((s) => s.mm)
+  const threshold = formatMm(limit)
+  const which =
+    short.length === 1
+      ? `Piece ${first.n} is about ${formatMm(first.mm)}.`
+      : short.length <= LISTED_PIECES
+        ? `Pieces ${andList(short.map((s) => String(s.n)))} are ${sameMm(lengths) ? `${short.length === 2 ? 'both' : 'each'} about ${formatMm(first.mm)}` : `about ${mmList(lengths)} mm`}.`
+        : `${short.length} pieces are shorter than about ${threshold}.`
+  const tips: string[] = []
+  if (short.some((s) => !s.column)) {
+    const safe = safePieceMm(feedMm, dpi)
+    const fits = (mm: number): boolean => ctx.longestAutoMm === undefined || ctx.longestAutoMm <= dotsToMm(mmToDots(mm, dpi), dpi) + 1e-6
+    let fixedMm: number | undefined = fits(safe) ? safe : undefined
+    if (fixedMm === undefined && ctx.fixed && ctx.longestAutoMm !== undefined) {
+      // Already a fixed length: every piece is that long, so the length that holds the longest.
+      fixedMm = Math.max(safe, Math.ceil(ctx.longestAutoMm - 1e-6))
+      while (!fits(fixedMm)) fixedMm++
+    }
+    const asCut = (mm: number): string => formatMm(dotsToMm(mmToDots(mm, dpi), dpi) + 2 * feedMm)
+    tips.push(
+      fixedMm !== undefined
+        ? `To be sure, set a fixed length of ${fixedMm} mm (about ${asCut(fixedMm)} as cut).`
+        : `To be sure, lengthen the short pieces to about ${asCut(safe)} or more as cut (${safe} mm printed), e.g. with a Spacer (a fixed length would cut off the longer pieces).`,
+    )
+  }
+  if (short.some((s) => s.column)) tips.push('Wider table columns make longer table pieces.')
+  return `${which} Pieces shorter than about ${threshold} as cut have not been checked on a printer yet and may come out longer. ${tips.join(' ')}`
+}
+
+/**
+ * `shortPieceHint` for a render: its machine-cut pages, which of them are table column pieces
+ * (not a whole Cut piece, `RenderResult.cutPieces`) and the longest Cut piece at the auto length.
+ */
+export function shortPieceHintFor(result: Pick<RenderResult, 'lengthDots' | 'lengthMm' | 'cuts' | 'feedMarginMm' | 'cutPieces'>, dpi: number, fixed: boolean): string | null {
+  if (!result.cuts?.length) return null
+  const pieces = result.cutPieces ?? []
+  const column = pageSpans(result).map(([a, b]) => !pieces.some((p) => p.start === a && p.end === b))
+  const mmPerDot = result.lengthDots > 0 ? result.lengthMm / result.lengthDots : 0
+  const ctx: ShortPieceContext = { column, fixed, ...(pieces.length ? { longestAutoMm: Math.max(...pieces.map((p) => p.autoDots)) * mmPerDot } : {}) }
+  return shortPieceHint(pageLengthsMm(result), result.feedMarginMm, dpi, ctx)
+}
+
+/**
+ * The line under a fixed length while the label is in pieces (media bar, C7): machine-cut pieces
+ * carry the printer's feed at both ends; pieces cut apart by hand at the marks carry it only at
+ * the strip's ends (render/job.ts handPiecesMm, as the readout lists them). Null without pieces.
+ */
+export function pieceLengthHint(result: Pick<RenderResult, 'lengthDots' | 'lengthMm' | 'marks' | 'feedMarginMm' | 'cutItems'>, lengthMm: number): string | null {
+  if (result.cutItems?.some((c) => c.how === 'printer')) return `Each cut piece ≈ ${formatMm(lengthMm + 2 * result.feedMarginMm)} with the printer’s feed`
+  const hand = handPiecesMm(result)
+  if (hand.length < 2) return null
+  const ends = hand[0] ?? 0
+  const inner = hand[1] ?? 0
+  return hand.length === 2 || sameMm(hand)
+    ? `Each piece ≈ ${formatMm(ends)} when cut apart at the marks (incl. the printer’s feed)`
+    : `Pieces ≈ ${formatMm(inner)} when cut apart at the marks; the first and last ≈ ${formatMm(ends)} with the printer’s feed`
+}
+
+/**
+ * What the render will make of a Cut block, ahead of it (render/layout.ts splitPieces, C3):
+ * 'kept', or why it is ignored. A block prints when it is not a Cut or a Spacer, flows (free
+ * layout: no frame) and, when `boxes` (the last render's) is given, had a width there (an empty
+ * text block prints nothing); a block the last render has not seen is taken to print.
+ */
+export function cutFate(doc: Pick<LabelDoc, 'items' | 'layout'>, cutId: string, boxes?: Pick<RenderResult, 'boxes'>['boxes']): 'kept' | IgnoredCutReason {
+  const free = doc.layout.mode === 'free'
+  const flow = doc.items.filter((i) => i.kind === 'cut' || !(free && i.frame))
+  const seen = boxes ? new Map(boxes.map((b) => [b.itemId, b.w > 0])) : undefined
+  const split = splitPieces(
+    flow.map((i) => ({ itemId: i.id, w: i.kind === 'cut' || i.kind === 'spacer' ? 0 : (seen?.get(i.id) ?? true) ? 1 : 0, h: 0, ...(i.kind === 'spacer' ? { spacer: true } : {}), ...(i.kind === 'cut' ? { cut: true } : {}) })),
+  )
+  return split.ignored.find((g) => g.itemId === cutId)?.why ?? 'kept'
+}
+
+/** The pieces on either side of a Cut block (mm as cut), from the render; undefined when ignored. */
+export function cutNeighbours(result: Pick<RenderResult, 'lengthDots' | 'lengthMm' | 'cuts' | 'marks' | 'feedMarginMm'>, info: CutInfo): { before: number; after: number } | undefined {
+  if (info.how === 'ignored' || info.x === undefined) return undefined
+  const machine = info.how === 'printer'
+  const k = (machine ? (result.cuts ?? []) : (result.marks ?? [])).indexOf(info.x)
+  if (k < 0) return undefined
+  const pieces = machine ? pageLengthsMm(result).map((p) => p + 2 * result.feedMarginMm) : handPiecesMm(result)
+  const before = pieces[k]
+  const after = pieces[k + 1]
+  return before !== undefined && after !== undefined ? { before, after } : undefined
+}
+
+/** The ignored-Cut reasons, short (block list) — the full sentences are the `cut-ignored` warnings. */
+const IGNORED_SHORT: Record<NonNullable<CutInfo['why']>, string> = {
+  start: 'Ignored: nothing before it',
+  double: 'Ignored: nothing since the cut before',
+  end: 'Ignored: nothing after it',
+  max: 'Ignored: past the printer maximum',
+}
+
+/**
+ * The block list summary of a Cut block, short and led by the numbers so a narrow row still shows
+ * them: "30.5 / 29.1 mm" (the pieces before and after it, the printer cuts), "30.5 / 29.1 mm, by
+ * hand" (a cut mark), "Ignored: nothing after it"; "Cut the strip here" before the first render.
+ * `spoken` is the same in words for the row's accessible name.
+ */
+export function cutSummary(info: CutInfo | undefined, around?: { before: number; after: number }): { summary: string; spoken: string } {
+  const same = (summary: string): { summary: string; spoken: string } => ({ summary, spoken: summary })
+  if (!info) return same('Cut the strip here')
+  if (info.how === 'ignored') return same(IGNORED_SHORT[info.why ?? 'end'])
+  const hand = info.how === 'mark'
+  if (!around) return same(hand ? 'Cut mark · cut by hand' : 'Printer cuts')
+  // Wraps only after the slash (no-break spaces elsewhere): "40.8 /" then "32.9 mm".
+  const lengths = `${mmNumber(around.before)}\u00a0/ ${mmNumber(around.after)}\u00a0mm`
+  const spoken = `pieces of ${mmNumber(around.before)} and ${mmNumber(around.after)} mm`
+  return hand ? { summary: `${lengths}, by hand`, spoken: `Cut mark, cut by hand: ${spoken}` } : { summary: lengths, spoken: `Printer cuts: ${spoken}` }
 }
 
 function truncate(s: string, n: number): string {
@@ -412,6 +632,7 @@ export function docIsEmpty(doc: Pick<LabelDoc, 'items' | 'frame'>): boolean {
       case 'image':
         return !!(i.blobRef || i.dataUrl)
       case 'spacer':
+      case 'cut':
         return false
       case 'table':
         return i.cells.some((r) => r.some((c) => c.trim() !== ''))

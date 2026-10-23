@@ -87,6 +87,12 @@ export const MIGRATIONS: Readonly<Record<number, Migration>> = {
    * notice) instead of saving it back without them.
    */
   4: (raw) => ({ ...raw, schema: 5 }),
+  /**
+   * Schema 5 → 6 (cut lines, docs/CUT-PLAN.md). The `cut` item is new; nothing else changes. The
+   * bump exists for older apps: they open a schema-6 label read-only (dropping its cuts with a
+   * notice) instead of saving it back as one uncut strip.
+   */
+  5: (raw) => ({ ...raw, schema: 6 }),
 }
 
 /** Schema version of a raw object (0 = unversioned), or a problem string. */

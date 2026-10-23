@@ -149,7 +149,8 @@ The browser also needs write access to the printer's `/dev/bus/usb/…` node. Mo
 
 **What you can make.**
 
-- **Blocks:** text, images, icons, QR codes, DataMatrix, Code 128 and EAN-13.
+- **Blocks:** text, images, icons, QR codes, DataMatrix, Code 128 and EAN-13, shapes, spacers, tables and cuts.
+- **Cuts:** insert a *Cut* block between blocks to print one long strip that the printer cuts into pieces (Cut each on). Every piece gets the label's margins, frame and fixed length, so it looks like a label printed on its own; the preview lists the length of every piece. On a printer without a cutter (PT-P300BT, PT-N25BT) or with Cut each off, a cut mark is printed instead, to cut with scissors.
 - **Templates** (*Labels → New from template…*): a Wi-Fi sticker (12 and 24 mm), a cable flag and a cable wrap, shelf, bin and drawer labels (including a 12 mm Gridfinity bin label), an asset tag with a running number, a folder spine and a name tag. Each card shows how long the label prints; the 12 mm Wi-Fi sticker is about 35 mm.
 - **Wi-Fi QR codes:** choose *Wi-Fi network* as the content of a QR code and enter the network name, security type and password. The iPhone Camera app (and Android) offers to join the network when it scans the code. *Add network name label* prints the name next to the code.
 - **Bigger codes on narrow tape:** the *Compact* quiet zone counts the tape's unprinted edge as the blank margin above and below the code. With the module size on *Auto* (the largest that fits), a code can then fill the printable height. The editor shows the printed size in mm and how well a phone will read it: 3 or more dots per module is good, 2 works close up, 1 is unreliable.

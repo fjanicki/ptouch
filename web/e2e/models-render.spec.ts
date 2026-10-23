@@ -193,7 +193,7 @@ test('a 36 mm share link carries width and model; on a PT-P710BT it opens unchan
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('#d=')
   const link = await page.evaluate(() => navigator.clipboard.readText())
   const json = inflateRawSync(Buffer.from(link.split('#d=')[1] ?? '', 'base64url')).toString('utf8')
-  expect(json).toContain('"schema":5')
+  expect(json).toContain('"schema":6')
   expect(json).toMatch(/"tape":\{[^}]*"widthMm":36[^}]*\}/)
   expect(json).toMatch(/"tape":\{[^}]*"model":"PT-P910BT"[^}]*\}/)
 

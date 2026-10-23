@@ -15,6 +15,15 @@ import {
   KIND_META,
   itemSummary,
   piecesText,
+  pieceListText,
+  handPiecesText,
+  shortPieceHint,
+  shortPieceHintFor,
+  shortPieceMm,
+  safePieceMm,
+  pieceLengthHint,
+  cutSummary,
+  cutNeighbours,
   mediaMismatch,
   openProgressText,
   previewColors,
@@ -319,5 +328,115 @@ describe('tables', () => {
     expect(piecesText([20], 2)).toBeNull()
     expect(piecesText([21.1, 21.1, 21.1], 2)).toBe('Cut into 3 pieces · about 25.1 mm each (21.1 mm printed + 2 × 2 mm feed)')
     expect(piecesText([20, 22], 2)).toBe('Cut into 2 pieces · about 24 mm to 26 mm each (incl. 2 × 2 mm feed)')
+  })
+})
+
+describe('Cut blocks (docs/CUT-PLAN.md §4)', () => {
+  it('KIND_META and the summary before the first render', () => {
+    expect(KIND_META.cut).toEqual({ label: 'Cut', icon: 'scissors' })
+    expect(itemSummary(createItem('cut'))).toEqual({ title: 'Cut', summary: 'Cut the strip here' })
+    expect(docIsEmpty({ items: [createItem('cut')] })).toBe(true)
+  })
+
+  it('pieceListText: 2–8 pieces listed, equal pieces "each", 9+ as a range', () => {
+    expect(pieceListText([26.5], 2)).toBeNull()
+    expect(pieceListText([26.5, 25.1, 27.9], 2)).toBe('Cut into 3 pieces: about 30.5, 29.1 and 31.9 mm, each incl. 2 × 2 mm feed')
+    expect(pieceListText([26, 26], 2)).toBe('Cut into 2 pieces: about 30 mm each, incl. 2 × 2 mm feed')
+    expect(pieceListText(Array.from({ length: 9 }, () => 21.1), 2)).toBe(piecesText(Array.from({ length: 9 }, () => 21.1), 2))
+  })
+
+  it('handPiecesText: the pieces to cut apart at the marks', () => {
+    expect(handPiecesText([28.5])).toBeNull()
+    expect(handPiecesText([28.5, 25.1, 29.9])).toBe('3 pieces to cut apart at the marks: about 28.5, 25.1 and 29.9 mm')
+    expect(handPiecesText([10, 12, 12, 12, 12, 12, 12, 12, 14])).toBe('9 pieces to cut apart at the marks: about 10 to 14 mm')
+    // Equal lengths once: not "about 27 and 27 mm".
+    expect(handPiecesText([26.98, 27.02])).toBe('2 pieces to cut apart at the marks: about 27 mm each')
+  })
+
+  it('shortPieceHint: below the head-to-cutter distance, 24.5 mm at 180 dpi and 27 mm at 360 dpi', () => {
+    expect(shortPieceMm(180)).toBe(24.5)
+    expect(shortPieceMm(360)).toBe(27)
+    expect(shortPieceHint([30], 2, 180)).toBeNull()
+    expect(shortPieceHint([21, 21], 2, 180)).toBeNull() // 25 mm as cut
+    expect(shortPieceHint([13.4, 30], 2, 180)).toBe(
+      'Piece 1 is about 17.4 mm. Pieces shorter than about 24.5 mm as cut have not been checked on a printer yet and may come out longer. To be sure, set a fixed length of 21 mm (about 25 mm as cut).',
+    )
+    expect(shortPieceHint([10, 30, 12], 2, 180)).toMatch(/^Pieces 1 and 3 are about 14 and 16 mm\. /)
+    // Equal lengths once.
+    expect(shortPieceHint([10, 10, 30], 2, 180)).toMatch(/^Pieces 1 and 2 are both about 14 mm\. /)
+    expect(shortPieceHint([10, 10, 10.01, 30], 2, 180)).toMatch(/^Pieces 1, 2 and 3 are each about 14 mm\. /)
+    // 360 dpi: 1 mm feed, 27 mm threshold.
+    expect(shortPieceHint([24, 30], 1, 360)).toMatch(/^Piece 1 is about 26 mm\. Pieces shorter than about 27 mm/)
+    expect(shortPieceHint([25, 30], 1, 360)).toBeNull()
+    // The real threshold: 24.6 mm as cut is not under 24.5 mm; 24.46 mm is, and is not shown as
+    // "24.5 mm" (shorter than about 24.5 mm).
+    expect(shortPieceHint([20.6, 30], 2, 180)).toBeNull()
+    expect(shortPieceHint([20.46, 30], 2, 180)).toMatch(/^Piece 1 is about 24\.4 mm\. Pieces shorter than about 24\.5 mm as cut /)
+    expect(shortPieceHint([10, 10, 10, 10, 10, 10, 10, 10, 10, 30], 2, 180)).toMatch(/^9 pieces are shorter than about 24\.5 mm\. /)
+  })
+
+  it('shortPieceHint: the fixed length it suggests clears the hint, with the real feed of each model', () => {
+    // PT-P710BT: 14-dot feed at 180 dpi; PT-P910BT: 14-dot feed at 360 dpi (0.99 mm).
+    for (const dpi of [180, 360]) {
+      const feed = (14 * 25.4) / dpi
+      const safe = safePieceMm(feed, dpi)
+      const asPrinted = (mm: number): number => (Math.round((mm * dpi) / 25.4) * 25.4) / dpi
+      expect(shortPieceHint([asPrinted(safe), asPrinted(safe)], feed, dpi), `${dpi} dpi, ${safe} mm`).toBeNull()
+      expect(shortPieceHint([asPrinted(safe - 1), 40], feed, dpi), `${dpi} dpi, ${safe - 1} mm`).toMatch(new RegExp(`set a fixed length of ${safe} mm`))
+    }
+    expect(safePieceMm((14 * 25.4) / 180, 180)).toBe(21)
+    // 25 mm at 360 dpi is 354 dots = 24.98 mm, + 2 × 0.99 mm = 26.95 mm: still short of 27 mm.
+    expect(safePieceMm((14 * 25.4) / 360, 360)).toBe(26)
+    expect(shortPieceHint([(354 * 25.4) / 360, (354 * 25.4) / 360], (14 * 25.4) / 360, 360)).toMatch(/^Pieces 1 and 2 are both about 26\.9 mm\. Pieces shorter than about 27 mm as cut .* set a fixed length of 26 mm/)
+  })
+
+  it('shortPieceHint: a fixed length only when every piece fits in it; table column pieces get their own tip', () => {
+    // A long piece next to the short one: a fixed length of 21 mm would cut it off.
+    const spacer = shortPieceHint([13.4, 60], 2, 180, { longestAutoMm: 60 })
+    expect(spacer).toMatch(/To be sure, lengthen the short pieces to about 25 mm or more as cut \(21 mm printed\), e\.g\. with a Spacer \(a fixed length would cut off the longer pieces\)\.$/)
+    expect(spacer).not.toMatch(/set a fixed length/)
+    expect(shortPieceHint([13.4, 20], 2, 180, { longestAutoMm: 20 })).toMatch(/set a fixed length of 21 mm/)
+    // Already a fixed length (every piece is that long): the length that holds the longest piece.
+    expect(shortPieceHint([15, 15], 2, 180, { longestAutoMm: 40.2, fixed: true })).toMatch(/set a fixed length of 41 mm \(about 45\.1 mm as cut\)\.$/)
+    // Pieces of a table cut between its columns: a fixed length does not lengthen them.
+    const columns = shortPieceHint([59.5, 16.9, 15, 15], 2, 180, { column: [false, true, true, true], longestAutoMm: 59.5 })
+    expect(columns).toMatch(/^Pieces 2, 3 and 4 are about 20\.9, 19 and 19 mm\. .* Wider table columns make longer table pieces\.$/)
+    expect(columns).not.toMatch(/fixed length|Spacer/)
+  })
+
+  it('shortPieceHintFor: column pieces are the pages that are not a whole Cut piece', () => {
+    const mm = (d: number) => (d * 25.4) / 180
+    // Piece 1 = [0, 422) "Scale"; piece 2 = a table cut into 3 columns of 120 dots.
+    const r = { lengthDots: 782, lengthMm: mm(782), feedMarginMm: mm(14), cuts: [422, 542, 662], cutPieces: [{ start: 0, end: 422, autoDots: 422 }, { start: 422, end: 782, autoDots: 360 }] }
+    expect(shortPieceHintFor(r, 180, false)).toMatch(/^Pieces 2, 3 and 4 are each about 20\.9 mm\. .* Wider table columns make longer table pieces\.$/)
+    expect(shortPieceHintFor({ ...r, cuts: undefined }, 180, false)).toBeNull()
+  })
+
+  it('pieceLengthHint: machine-cut pieces carry the feed at both ends, hand-cut ones at the strip ends only', () => {
+    const r = { lengthDots: 354, lengthMm: (354 * 25.4) / 180, feedMarginMm: (14 * 25.4) / 180 }
+    expect(pieceLengthHint({ ...r, cutItems: [{ itemId: 'c', how: 'printer', x: 177 }] }, 25)).toBe('Each cut piece ≈ 29 mm with the printer’s feed')
+    expect(pieceLengthHint({ ...r, marks: [177], cutItems: [{ itemId: 'c', how: 'mark', x: 177 }] }, 25)).toBe('Each piece ≈ 27 mm when cut apart at the marks (incl. the printer’s feed)')
+    const three = { lengthDots: 531, lengthMm: (531 * 25.4) / 180, feedMarginMm: (14 * 25.4) / 180, marks: [177, 354], cutItems: [] }
+    expect(pieceLengthHint(three, 25)).toBe('Pieces ≈ 25 mm when cut apart at the marks; the first and last ≈ 27 mm with the printer’s feed')
+    expect(pieceLengthHint({ ...r, cutItems: [{ itemId: 'c', how: 'ignored', why: 'max' }] }, 25)).toBeNull()
+  })
+
+  it('cutSummary and cutNeighbours: printer cut, cut mark, ignored', () => {
+    const r = { lengthDots: 564, lengthMm: 79.6, feedMarginMm: 2, cuts: [188, 366] }
+    const around = cutNeighbours(r, { itemId: 'c', how: 'printer', x: 188 })
+    expect(around && [Math.round(around.before * 10) / 10, Math.round(around.after * 10) / 10]).toEqual([30.5, 29.1])
+    expect(cutSummary({ itemId: 'c', how: 'printer', x: 188 }, { before: 30.54, after: 29.12 })).toEqual({ summary: '30.5\u00a0/ 29.1\u00a0mm', spoken: 'Printer cuts: pieces of 30.5 and 29.1 mm' })
+    expect(cutSummary({ itemId: 'c', how: 'printer', x: 188 }).summary).toBe('Printer cuts')
+    const marks = { lengthDots: 564, lengthMm: 79.6, feedMarginMm: 2, marks: [188, 366] }
+    const hand = cutNeighbours(marks, { itemId: 'c', how: 'mark', x: 366 })
+    expect(hand && [Math.round(hand.before * 10) / 10, Math.round(hand.after * 10) / 10]).toEqual([25.1, 29.9])
+    expect(cutSummary({ itemId: 'c', how: 'mark', x: 366 }, hand)).toEqual({ summary: '25.1\u00a0/ 29.9\u00a0mm, by hand', spoken: 'Cut mark, cut by hand: pieces of 25.1 and 29.9 mm' })
+    expect(cutSummary({ itemId: 'c', how: 'mark', x: 366 }).summary).toBe('Cut mark · cut by hand')
+    expect(cutNeighbours(r, { itemId: 'c', how: 'ignored', why: 'end' })).toBeUndefined()
+    expect(cutSummary({ itemId: 'c', how: 'ignored', why: 'end' }).summary).toBe('Ignored: nothing after it')
+    expect(cutSummary({ itemId: 'c', how: 'ignored', why: 'start' }).summary).toBe('Ignored: nothing before it')
+    expect(cutSummary({ itemId: 'c', how: 'ignored', why: 'double' }).summary).toBe('Ignored: nothing since the cut before')
+    expect(cutSummary({ itemId: 'c', how: 'ignored', why: 'max' })).toEqual({ summary: 'Ignored: past the printer maximum', spoken: 'Ignored: past the printer maximum' })
+    expect(cutSummary(undefined).summary).toBe('Cut the strip here')
   })
 })

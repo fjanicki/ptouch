@@ -15,6 +15,8 @@
   const DEFAULT_FRAME = { thicknessMm: 0.5, radiusMm: 1, insetMm: 0.5 }
   /** The head resolution the label is printed at (the print area's; 180 before it is known). */
   const dpi = $derived(studio.target.ok ? studio.target.target.area.dpi : 180)
+  /** Cut blocks split the label into pieces, each with its own frame (docs/CUT-PLAN.md C8). */
+  const pieced = $derived(!!studio.render?.cutItems?.some((c) => c.how !== 'ignored'))
 
   function boldnessText(v: number): string {
     const step = Math.round((v - 128) / 16)
@@ -43,7 +45,7 @@
   {@const length = doc.length}
   <Switch
     label="Shrink text to fit length"
-    hint="Text that is too long for the {Math.round(length.mm)} mm label gets smaller instead of being cut off."
+    hint="Text that is too long for the {Math.round(length.mm)} mm {pieced ? 'piece' : 'label'} gets smaller instead of being cut off."
     checked={!!length.shrink}
     onchange={(on) => studio.updateDoc({ length: on ? { ...length, shrink: true } : { mode: 'fixed', mm: length.mm } })}
   />
@@ -60,7 +62,7 @@
   onchange={(v) => studio.updateDoc({ print: { ...doc.print, threshold: 256 - v } }, 'doc:threshold')}
 />
 
-<Switch label="Frame" hint="Border around the whole label" checked={!!doc.frame} onchange={(on) => studio.updateDoc({ frame: on ? DEFAULT_FRAME : undefined })} />
+<Switch label="Frame" hint={pieced ? 'Border around every piece' : 'Border around the whole label'} checked={!!doc.frame} onchange={(on) => studio.updateDoc({ frame: on ? DEFAULT_FRAME : undefined })} />
 {#if doc.frame}
   {@const frame = doc.frame}
   <div class="field-row three">

@@ -94,7 +94,7 @@
       next = updateDoc(next, { print: { ...doc.print, autoCut: true } })
       notes.push('Cut each turned on')
     }
-    const alone = doc.items.every((i) => i.id === item.id || i.kind === 'spacer' || (i.kind === 'text' && i.text.trim() === ''))
+    const alone = doc.items.every((i) => i.id === item.id || i.kind === 'spacer' || i.kind === 'cut' || (i.kind === 'text' && i.text.trim() === ''))
     if (on && alone && (doc.marginsMm.start > 0 || doc.marginsMm.end > 0)) {
       next = updateDoc(next, { marginsMm: { start: 0, end: 0 } })
       notes.push('label margins set to 0 so every piece is the same length')

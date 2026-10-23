@@ -1,10 +1,11 @@
 // W3 — schema factories, ops immutability, history (undo/redo/coalesce), validateDoc.
 import { describe, expect, it } from 'vitest'
 import { createBatch, createDoc, createItem, FONT_FAMILY_IDS, LIMITS, SCHEMA_VERSION, validateDoc, type ItemKind, type LabelDoc, type TableItem, type TextItem } from '../../../src/doc/schema'
+import { docIsEmpty } from '../../../src/ui/state/view-model'
 import { addItem, duplicateItem, moveItem, removeItem, updateDoc, updateItem } from '../../../src/doc/ops'
 import { COALESCE_MS, createHistory } from '../../../src/doc/history'
 
-const KINDS: ItemKind[] = ['text', 'icon', 'code', 'image', 'shape', 'spacer', 'table']
+const KINDS: ItemKind[] = ['text', 'icon', 'code', 'image', 'shape', 'spacer', 'table', 'cut']
 
 /** Deep-freezes a doc so any mutation by an op throws. */
 function frozen<T>(v: T): T {
@@ -157,7 +158,7 @@ describe('history', () => {
 
 describe('validateDoc', () => {
   it('rejects things that are not current-schema labels', () => {
-    for (const raw of [null, 42, 'x', [], {}, { schema: 1, items: [] }, { schema: 2, items: [] }, { schema: 3, items: [] }, { schema: 4, items: [] }, { schema: 6, items: [] }, { schema: 5 }, { schema: 5, items: {} }]) {
+    for (const raw of [null, 42, 'x', [], {}, { schema: 1, items: [] }, { schema: 2, items: [] }, { schema: 3, items: [] }, { schema: 4, items: [] }, { schema: 5, items: [] }, { schema: 7, items: [] }, { schema: 6 }, { schema: 6, items: {} }]) {
       const v = validateDoc(raw)
       expect(v.ok, JSON.stringify(raw)).toBe(false)
       if (!v.ok) expect(v.problems[0]).toMatch(/not a ptouch label document/)
@@ -410,7 +411,7 @@ describe('validateDoc (schema 5: tables)', () => {
   }
 
   it('a new table: 2 × 3 cells, fit, centred, along, columns fit the text, every switch off', () => {
-    expect(SCHEMA_VERSION).toBe(5)
+    expect(SCHEMA_VERSION).toBe(6)
     const t = createItem('table')
     expect(t).toMatchObject({ kind: 'table', fontFamily: 'fira-sans', fontWeight: 600, italic: false, size: { mode: 'fit' }, align: 'center', direction: 'along', columns: { mode: 'auto' }, paddingMm: 1, grid: false, cutMarks: false, cutBetween: false })
     expect(t.cells).toEqual([
@@ -455,5 +456,31 @@ describe('validateDoc (schema 5: tables)', () => {
     const items = Array.from({ length: 2 }, () => ({ ...createItem('table'), cells }))
     const v = validateDoc({ ...createDoc({ items: [] }), items })
     expect(v.ok && v.doc.items).toHaveLength(1)
+  })
+})
+
+describe('validateDoc (schema 6: cuts)', () => {
+  it('a new cut has an id and a kind, nothing else', () => {
+    expect(SCHEMA_VERSION).toBe(6)
+    const c = createItem('cut')
+    expect(c).toEqual({ id: expect.any(String), kind: 'cut' })
+  })
+
+  it('keeps a cut, drops unknown fields, and drops a frame with a note (a cut always flows)', () => {
+    const cut = createItem('cut')
+    const v = validateDoc({ ...createDoc({ items: [] }), layout: { mode: 'free' }, items: [{ ...cut, widthMm: 5 }, { ...createItem('cut'), frame: { xMm: 1, yMm: 1, wMm: 5, hMm: 5, rotation: 0 } }] })
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.doc.items[0]).toEqual(cut)
+    expect(v.doc.items[1]).toEqual({ id: expect.any(String), kind: 'cut' })
+    expect(v.notices.join('\n')).toMatch(/a cut has no frame; removed/)
+  })
+
+  it('a label of cuts only is empty; cuts count no characters', () => {
+    expect(docIsEmpty({ items: [createItem('cut'), createItem('cut')] })).toBe(true)
+    expect(docIsEmpty({ items: [createItem('cut'), { ...createItem('text'), text: 'A' }] })).toBe(false)
+    const text = { ...createItem('text'), text: 'y'.repeat(LIMITS.totalChars) }
+    const v = validateDoc({ ...createDoc({ items: [] }), items: [text, createItem('cut'), createItem('cut')] })
+    expect(v.ok && v.doc.items.map((i) => i.kind)).toEqual(['text', 'cut', 'cut'])
   })
 })

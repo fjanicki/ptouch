@@ -14,7 +14,7 @@
   import ModelPicker from './ModelPicker.svelte'
   import UnsupportedWidthNotice from './UnsupportedWidthNotice.svelte'
   import { connectedModelText } from '../connect/copy'
-  import { DEFAULT_COLORS, TAPE_PRESETS, capitalize, formatMm, previewColors } from '../state/view-model'
+  import { DEFAULT_COLORS, TAPE_PRESETS, capitalize, formatMm, pieceLengthHint, previewColors } from '../state/view-model'
 
   const studio = getStudio()
   const doc = $derived(studio.doc)
@@ -27,6 +27,8 @@
     studio.tapeWidths.map((w) => ({ value: w, label: loaded && Math.abs(loaded.widthMm - w) < 0.01 ? `${w} •` : String(w) })),
   )
   const support = $derived(studio.widthSupport)
+  /** The label has a kept Cut block: a fixed length is the length of each piece (docs/CUT-PLAN.md C7). */
+  const pieced = $derived(!!studio.render?.cutItems?.some((c) => c.how !== 'ignored'))
   const maxLen = $derived(studio.target.ok && studio.target.target.area.maxLengthDots ? Math.floor((studio.target.target.area.maxLengthDots * 25.4) / studio.target.target.area.dpi) : 999)
 
   // After "Fit to …" or "Dismiss" the pressed button is gone: keep keyboard focus nearby, on the
@@ -94,9 +96,9 @@
     {#if doc.length.mode === 'fixed'}
       <!-- The printer feeds ~2 mm before and after the printed part: say so, so "50 mm" isn't a
            surprise when the cut label measures 54 mm. -->
-      <NumberField label="Printed length" unit="mm" min={5} max={maxLen} step={1} value={doc.length.mm} onchange={(mm) => studio.updateDoc({ length: { mode: 'fixed', mm, ...(doc.length.mode === 'fixed' && doc.length.shrink ? { shrink: true } : {}) } }, 'doc:length')} />
+      <NumberField label={pieced ? 'Length of each piece' : 'Printed length'} unit="mm" min={5} max={maxLen} step={1} value={doc.length.mm} onchange={(mm) => studio.updateDoc({ length: { mode: 'fixed', mm, ...(doc.length.mode === 'fixed' && doc.length.shrink ? { shrink: true } : {}) } }, 'doc:length')} />
       {#if studio.render}
-        <p class="length-hint">Cut label ≈ {formatMm(doc.length.mm + 2 * studio.render.feedMarginMm)} with the printer’s feed</p>
+        <p class="length-hint">{(pieced && pieceLengthHint(studio.render, doc.length.mm)) || `Cut label ≈ ${formatMm(doc.length.mm + 2 * studio.render.feedMarginMm)} with the printer’s feed`}</p>
       {/if}
     {/if}
   </div>

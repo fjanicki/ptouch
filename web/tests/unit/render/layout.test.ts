@@ -1,7 +1,7 @@
 // W3 — pure layout maths: flow placement, gaps, margins, align, fixed length overflow, mm↔dots.
 import { describe, expect, it } from 'vitest'
 import { createDoc, type LabelDoc } from '../../../src/doc/schema'
-import { alignOffset, contentLength, layoutFlow, layoutFree, type MeasuredItem } from '../../../src/render/layout'
+import { alignOffset, contentLength, layoutFlow, layoutFree, layoutPieces, splitPieces, type MeasuredItem } from '../../../src/render/layout'
 import { cssToRgb, dotsToMm, mmToDots, rgbToCss } from '../../../src/render/units'
 
 const DPI = 180
@@ -127,5 +127,173 @@ describe('flow layout', () => {
     expect(l.lengthDots).toBe(70 + 14)
     expect(l.overflow).toBe(false)
     expect(layoutFree(d, [{ itemId: 'a', x: 0, y: 100, w: 50, h: 40 }], BAND, DPI).overflow).toBe(true)
+  })
+})
+
+describe('Cut blocks: splitPieces (docs/CUT-PLAN.md C3)', () => {
+  const cut = (id: string): MeasuredItem => ({ itemId: id, w: 0, h: 0, cut: true })
+
+  it('no Cut: one piece with every item', () => {
+    expect(splitPieces([item('a', 10, 10), item('b', 10, 10)])).toEqual({ pieces: [[0, 1]], kept: [], ignored: [] })
+  })
+
+  it('one and several Cuts: a piece per run of blocks', () => {
+    expect(splitPieces([item('a', 10, 10), cut('c1'), item('b', 10, 10)])).toEqual({ pieces: [[0], [2]], kept: [1], ignored: [] })
+    const s = splitPieces([item('a', 10, 10), cut('c1'), item('b', 10, 10), item('b2', 5, 10), cut('c2'), item('c', 10, 10)])
+    expect(s.pieces).toEqual([[0], [2, 3], [5]])
+    expect(s.kept).toEqual([1, 4])
+    expect(s.ignored).toEqual([])
+  })
+
+  it('a Cut at the start, right after another Cut or at the end is ignored, with the reason', () => {
+    const s = splitPieces([cut('s'), item('a', 10, 10), cut('k'), cut('d'), item('b', 10, 10), cut('e')])
+    expect(s.kept).toEqual([2])
+    expect(s.ignored).toEqual([
+      { index: 0, itemId: 's', why: 'start' },
+      { index: 3, itemId: 'd', why: 'double' },
+      { index: 5, itemId: 'e', why: 'end' },
+    ])
+    // Ignored Cuts stay in their piece (they take no space).
+    expect(s.pieces).toEqual([[0, 1], [3, 4, 5]])
+  })
+
+  it('two Cuts at the end: the first is "end", the second "double"', () => {
+    const s = splitPieces([item('a', 10, 10), cut('c1'), cut('c2')])
+    expect(s.kept).toEqual([])
+    expect(s.pieces).toEqual([[0, 1, 2]])
+    expect(s.ignored.map((i) => [i.itemId, i.why])).toEqual([
+      ['c1', 'end'],
+      ['c2', 'double'],
+    ])
+  })
+
+  it('spacers and empty text are not "something": they join the neighbouring piece', () => {
+    const s = splitPieces([item('a', 10, 10), cut('c1'), item('sp', 20, 0, true), item('empty', 0, 0), cut('c2'), item('b', 10, 10), cut('c3'), item('sp2', 5, 0, true)])
+    expect(s.kept).toEqual([1])
+    expect(s.ignored.map((i) => [i.itemId, i.why])).toEqual([
+      ['c2', 'double'],
+      ['c3', 'end'],
+    ])
+    expect(s.pieces).toEqual([[0], [2, 3, 4, 5, 6, 7]])
+  })
+})
+
+describe('Cut blocks: layoutPieces (docs/CUT-PLAN.md C2)', () => {
+  const cut = (id: string): MeasuredItem => ({ itemId: id, w: 0, h: 0, cut: true })
+  const limits = { minLengthDots: 3 }
+
+  it('the worked example: 24 mm, margins 2 / 2 mm, 160 | 150 | 170 dots → 188 | 178 | 198, cuts at 188 and 366', () => {
+    const items = [item('k', 160, 60), cut('c1'), item('o', 150, 60), cut('c2'), item('g', 170, 60)]
+    const L = layoutPieces(doc(), items, BAND, DPI, limits, true)
+    expect(L.spans).toEqual([
+      [0, 188],
+      [188, 366],
+      [366, 564],
+    ])
+    expect(L.pieceEdges).toEqual([188, 366])
+    expect(L.lengthDots).toBe(564)
+    expect(L.placements.map((p) => p.x)).toEqual([14, 188, 202, 366, 380])
+    // 28 blank dots between two pieces (end + start margin) instead of the 21-dot gap.
+    expect((L.placements[2]?.x ?? 0) - 160 - 14).toBe(28)
+  })
+
+  it('every piece is the label of its blocks alone, shifted (random widths, margins, gaps, insets, length modes)', () => {
+    let seed = 7
+    const rnd = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed % n
+    }
+    for (let run = 0; run < 200; run++) {
+      const d = doc({
+        marginsMm: { start: rnd(6), end: rnd(6) },
+        layout: { mode: 'flow', gapMm: rnd(5), align: (['start', 'center', 'end'] as const)[rnd(3)] ?? 'center' },
+        length: rnd(3) === 0 ? { mode: 'fixed', mm: 10 + rnd(40) } : { mode: 'auto' },
+      })
+      const lim = { minLengthDots: rnd(40), insetDots: rnd(8) }
+      const items: MeasuredItem[] = []
+      const n = 2 + rnd(8)
+      for (let i = 0; i < n; i++) {
+        const r = rnd(10)
+        items.push(r === 0 ? cut(`c${i}`) : r === 1 ? item(`s${i}`, rnd(30), 0, true) : r === 2 ? item(`e${i}`, 0, 0) : item(`b${i}`, 1 + rnd(200), 1 + rnd(140)))
+      }
+      const L = layoutPieces(d, items, BAND, DPI, lim, true)
+      L.split.pieces.forEach((idx, k) => {
+        const alone = layoutFlow(d, idx.map((i) => items[i] as MeasuredItem), BAND, DPI, lim)
+        const [a, b] = L.spans[k] ?? [0, 0]
+        expect(b - a).toBe(alone.lengthDots)
+        idx.forEach((i, j) => {
+          expect(L.placements[i]?.x).toBe((alone.placements[j]?.x ?? 0) + a)
+          expect(L.placements[i]?.y).toBe(alone.placements[j]?.y)
+        })
+      })
+      L.split.kept.forEach((i, k) => expect(L.placements[i]?.x).toBe(L.pieceEdges[k]))
+      // Every item knows its piece; a piece's auto length is its blocks alone at the auto length.
+      L.split.pieces.forEach((idx, k) => idx.forEach((i) => expect(L.pieceOf[i]).toBe(k)))
+      L.split.kept.forEach((i, k) => expect(L.pieceOf[i]).toBe(k))
+      L.split.pieces.forEach((idx, k) => {
+        const auto = layoutFlow({ ...d, length: { mode: 'auto' } }, idx.map((i) => items[i] as MeasuredItem), BAND, DPI, lim)
+        expect(L.autoDots[k]).toBe(auto.lengthDots)
+      })
+    }
+  })
+
+  it('a fixed length is the length of each piece, content centred in it', () => {
+    const d = doc({ length: { mode: 'fixed', mm: 30 } })
+    const L = layoutPieces(d, [item('a', 100, 60), cut('c'), item('b', 50, 60)], BAND, DPI, limits, true)
+    expect(L.spans).toEqual([
+      [0, 213],
+      [213, 426],
+    ])
+    expect(L.placements[0]?.x).toBe(14 + Math.floor((213 - 28 - 100) / 2))
+    expect(L.placements[2]?.x).toBe(213 + 14 + Math.floor((213 - 28 - 50) / 2))
+  })
+
+  it('a piece that overflows a fixed length: its blocks start at its margin and run past its end (the renderer cuts them off at the cut)', () => {
+    const d = doc({ length: { mode: 'fixed', mm: 20 } })
+    const L = layoutPieces(d, [item('a', 300, 60), cut('c'), item('b', 50, 60)], BAND, DPI, limits, true)
+    expect(L.spans).toEqual([
+      [0, 142],
+      [142, 284],
+    ])
+    expect(L.overflow).toBe(true)
+    expect(L.placements[0]?.x).toBe(14)
+    expect(L.pieceOf).toEqual([0, 0, 1])
+    expect(L.autoDots).toEqual([328, 78])
+  })
+
+  it('the printer minimum pads every piece', () => {
+    const d = doc({ marginsMm: { start: 0, end: 0 } })
+    const L = layoutPieces(d, [item('a', 10, 60), cut('c'), item('b', 50, 60)], BAND, DPI, { minLengthDots: 30 }, true)
+    expect(L.spans).toEqual([
+      [0, 30],
+      [30, 80],
+    ])
+    expect(L.pieceMin).toBe(true)
+    expect(L.placements[0]?.x).toBe(10)
+  })
+
+  it('the maximum: per piece when the printer cuts (the renderer checks it), the strip otherwise', () => {
+    const items = [item('a', 300, 60), cut('c'), item('b', 300, 60)]
+    const cutting = layoutPieces(doc(), items, BAND, DPI, { minLengthDots: 3, maxLengthDots: 400 }, true)
+    expect(cutting.lengthDots).toBe(656)
+    expect(cutting.clamped).toBeUndefined()
+    const marks = layoutPieces(doc(), items, BAND, DPI, { minLengthDots: 3, maxLengthDots: 400 }, false)
+    expect(marks.lengthDots).toBe(400)
+    expect(marks.clamped).toBe('max')
+    expect(marks.overflow).toBe(true)
+    expect(marks.spans).toEqual([
+      [0, 328],
+      [328, 400],
+    ])
+  })
+
+  it('ignored Cuts change nothing: same placements as without them', () => {
+    const plain = [item('a', 100, 60), item('b', 50, 60)]
+    const withIgnored = [cut('s'), item('a', 100, 60), item('b', 50, 60), cut('e')]
+    const A = layoutFlow(doc(), plain, BAND, DPI, limits)
+    const B = layoutPieces(doc(), withIgnored, BAND, DPI, limits, true)
+    expect(B.lengthDots).toBe(A.lengthDots)
+    expect([B.placements[1]?.x, B.placements[2]?.x]).toEqual(A.placements.map((p) => p.x))
+    expect(B.pieceEdges).toEqual([])
   })
 })

@@ -19,6 +19,7 @@
     shape: () => import('./props/ShapeProps.svelte'),
     spacer: () => import('./props/SpacerProps.svelte'),
     table: () => import('./props/table-editor').then((m) => ({ default: m.TableProps })),
+    cut: () => import('./props/CutProps.svelte'),
   }
 
   const studio = getStudio()

@@ -1,5 +1,6 @@
-<!-- W4 — INSERT tiles: text, icon, QR, Wi-Fi QR, barcode, image, shape, spacer, table (doc/ops.addItem
-     after the selected block). Image asks for a file first. -->
+<!-- W4 — INSERT tiles: text, icon, QR, Wi-Fi QR, barcode, image, shape, spacer, cut, table
+     (doc/ops.addItem after the selected block). Image asks for a file first; Cut may turn on Cut
+     each (Studio.insertCut, docs/CUT-PLAN.md C4). -->
 <script lang="ts">
   import { createWifi } from '../../doc/schema'
   import { dotsAt } from '../../render/codes'
@@ -32,6 +33,7 @@
     { id: 'image', label: 'Image', icon: 'image', run: () => fileInput?.click() },
     { id: 'shape', label: 'Shape', icon: 'square', run: () => studio.insert('shape') },
     { id: 'spacer', label: 'Spacer', icon: 'space', run: () => studio.insert('spacer') },
+    { id: 'cut', label: 'Cut', icon: 'scissors', run: () => studio.insertCut() },
     // The user's default font (as for new text); the size fits the rows.
     { id: 'table', label: 'Table', icon: 'table', run: () => studio.insert('table', { fontFamily: studio.prefs.defaultFont.family, fontWeight: studio.prefs.defaultFont.weight }) },
   ]

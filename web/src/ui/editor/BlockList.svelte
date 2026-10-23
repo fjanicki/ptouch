@@ -5,7 +5,7 @@
   import { loadIcons, loadedIcons, type IconSet } from '../../render'
   import Icon from '../common/Icon.svelte'
   import { getStudio } from '../state/studio.svelte'
-  import { KIND_META, itemSummary } from '../state/view-model'
+  import { KIND_META, cutNeighbours, cutSummary, itemSummary } from '../state/view-model'
 
   const studio = getStudio()
   const items = $derived(studio.doc.items)
@@ -23,6 +23,16 @@
     for (const w of studio.render?.warnings ?? []) if (w.itemId && !m.has(w.itemId)) m.set(w.itemId, w.message)
     return m
   })
+
+  /** A Cut block's summary from the render: printer cut (with the pieces either side), cut mark
+   * or ignored (docs/CUT-PLAN.md §4). */
+  function summaryOf(item: (typeof items)[number]): { title: string; summary: string; spoken: string } {
+    const s = itemSummary(item, (id) => icons?.iconById(id)?.label)
+    if (item.kind !== 'cut') return { ...s, spoken: s.summary }
+    const r = studio.render
+    const info = r?.cutItems?.find((c) => c.itemId === item.id)
+    return { title: s.title, ...(info && r ? cutSummary(info, cutNeighbours(r, info)) : { summary: s.summary, spoken: s.summary }) }
+  }
 
   let emptyEl: HTMLParagraphElement | undefined = $state()
 
@@ -98,7 +108,7 @@
   {:else}
     <ol class="blocks" bind:this={list} aria-describedby="blocks-help" data-shortcut-scope>
       {#each items as item, i (item.id)}
-        {@const s = itemSummary(item, (id) => icons?.iconById(id)?.label)}
+        {@const s = summaryOf(item)}
         {@const selected = studio.selectedId === item.id}
         {@const warn = warningsByItem.get(item.id)}
         <li class:selected class:drop-before={dropAt === i && dragId !== item.id} class:drop-after={dropAt === i + 1 && i === items.length - 1} class:dragging={dragId === item.id}>
@@ -108,7 +118,7 @@
             data-id={item.id}
             draggable="true"
             aria-pressed={selected}
-            aria-label="{s.title}: {s.summary}, block {i + 1} of {items.length}{warn ? `. Warning: ${warn}` : ''}"
+            aria-label="{s.title}: {s.spoken}, block {i + 1} of {items.length}{warn ? `. Warning: ${warn}` : ''}"
             onclick={() => studio.select(item.id)}
             onfocus={() => studio.select(item.id)}
             onkeydown={(e) => onkeydown(e, item.id)}
@@ -124,7 +134,7 @@
             <span class="kind" aria-hidden="true"><Icon name={item.kind === 'code' && item.symbology !== 'qr' ? 'barcode' : KIND_META[item.kind].icon} size={16} /></span>
             <span class="text">
               <span class="title">{s.title}</span>
-              <span class="summary">{s.summary}</span>
+              <span class="summary" class:wrap={item.kind === 'cut'} title={s.summary}>{s.summary}</span>
             </span>
             {#if warn}<span class="warn" title={warn} aria-hidden="true"><Icon name="alert" size={16} /></span>{/if}
           </button>
@@ -260,6 +270,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* A Cut's piece lengths are short and worth reading whole (docs/CUT-PLAN.md §4). */
+  .summary.wrap {
+    white-space: normal;
   }
   .warn {
     display: flex;

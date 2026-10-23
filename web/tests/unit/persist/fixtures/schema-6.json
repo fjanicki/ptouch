@@ -1,0 +1,120 @@
+{
+  "schema": 6,
+  "id": "5c6e9b20-4f1a-4c3d-9e8b-2d7f1a6c0001",
+  "name": "Room tags",
+  "createdAt": "2026-10-22T09:00:00.000Z",
+  "updatedAt": "2026-10-22T09:30:00.000Z",
+  "tape": {
+    "widthMm": 24,
+    "mediaId": "tze231-24",
+    "model": "PT-P710BT"
+  },
+  "length": {
+    "mode": "fixed",
+    "mm": 30
+  },
+  "marginsMm": {
+    "start": 2,
+    "end": 2
+  },
+  "layout": {
+    "mode": "flow",
+    "gapMm": 3,
+    "align": "center"
+  },
+  "frame": {
+    "thicknessMm": 0.5,
+    "radiusMm": 1,
+    "insetMm": 0.5
+  },
+  "items": [
+    {
+      "id": "5c6e9b20-4f1a-4c3d-9e8b-2d7f1a6c0002",
+      "kind": "text",
+      "text": "Kitchen",
+      "fontFamily": "fira-sans",
+      "fontWeight": 600,
+      "italic": false,
+      "size": {
+        "mode": "fit"
+      },
+      "align": "center",
+      "lineHeight": 1.1,
+      "invert": false
+    },
+    {
+      "id": "5c6e9b20-4f1a-4c3d-9e8b-2d7f1a6c0003",
+      "kind": "cut"
+    },
+    {
+      "id": "5c6e9b20-4f1a-4c3d-9e8b-2d7f1a6c0004",
+      "kind": "text",
+      "text": "Office",
+      "fontFamily": "fira-sans",
+      "fontWeight": 600,
+      "italic": false,
+      "size": {
+        "mode": "fit"
+      },
+      "align": "center",
+      "lineHeight": 1.1,
+      "invert": false
+    },
+    {
+      "id": "5c6e9b20-4f1a-4c3d-9e8b-2d7f1a6c0005",
+      "kind": "cut"
+    },
+    {
+      "id": "5c6e9b20-4f1a-4c3d-9e8b-2d7f1a6c0006",
+      "kind": "cut"
+    },
+    {
+      "id": "5c6e9b20-4f1a-4c3d-9e8b-2d7f1a6c0007",
+      "kind": "code",
+      "symbology": "qr",
+      "content": "text",
+      "data": "https://example.com/garage",
+      "moduleDots": "auto",
+      "quietZone": "standard",
+      "ecc": "M",
+      "showText": false
+    },
+    {
+      "id": "5c6e9b20-4f1a-4c3d-9e8b-2d7f1a6c0008",
+      "kind": "cut"
+    },
+    {
+      "id": "5c6e9b20-4f1a-4c3d-9e8b-2d7f1a6c0009",
+      "kind": "table",
+      "cells": [
+        [
+          "A",
+          "B",
+          "C"
+        ]
+      ],
+      "fontFamily": "fira-sans",
+      "fontWeight": 600,
+      "italic": false,
+      "size": {
+        "mode": "fit"
+      },
+      "align": "center",
+      "direction": "along",
+      "columns": {
+        "mode": "equal"
+      },
+      "paddingMm": 1,
+      "grid": true,
+      "cutMarks": false,
+      "cutBetween": true
+    }
+  ],
+  "print": {
+    "copies": 1,
+    "autoCut": true,
+    "chain": false,
+    "mirror": false,
+    "threshold": 128
+  }
+}

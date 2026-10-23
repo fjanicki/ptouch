@@ -217,7 +217,7 @@ test('a point size round-trips through a reload and a share link', async ({ page
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('#d=')
   const link = await page.evaluate(() => navigator.clipboard.readText())
   const json = inflateRawSync(Buffer.from(link.split('#d=')[1] ?? '', 'base64url')).toString('utf8')
-  expect(json).toContain('"schema":5')
+  expect(json).toContain('"schema":6')
   expect(json).toContain('"size":{"mode":"pt","pt":14}')
   const other = await context.newPage()
   await other.goto(link)

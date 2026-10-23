@@ -57,7 +57,7 @@ import { DEFAULT_MODEL, FALLBACK_TAPE_WIDTHS, findModel, isVerifiedModel, standI
 import { virtualScenarioFor } from './virtual-printer'
 import { inShortcutScope, matchShortcut, isEditableTarget, type ShortcutAction } from './shortcuts'
 import { fallbackBand, isBandSize, newTextDefaults, retapeTextSize } from './text-defaults'
-import { clampCopies, docIsEmpty, fitScale, formatMm, isConnected, mediaMismatch, nearestTapeWidth, previewColors, printBlockReason, printerModel, realScale, tapeText, themeColorMedia, zoomStep, type Zoom } from './view-model'
+import { clampCopies, cutFate, docIsEmpty, fitScale, formatMm, isConnected, mediaMismatch, nearestTapeWidth, previewColors, printBlockReason, printerModel, realScale, tapeText, themeColorMedia, zoomStep, type Zoom } from './view-model'
 
 export type View = 'studio' | 'diagnostics'
 export type WasmState = 'loading' | 'ready' | 'error'
@@ -745,6 +745,34 @@ export class Studio {
     return id
   }
 
+  /**
+   * Insert a Cut block after the selection (docs/CUT-PLAN.md C4). On a printer with a cutter, Cut
+   * each is turned on in the same undo step when it is off, and that is announced. The
+   * announcement says what the render will make of the cut (`cutFate`): one at the end of the
+   * label (the usual insert) is ignored until a block follows it, and says so.
+   */
+  insertCut(): string {
+    const [added, id] = addItem(this.doc, 'cut', this.selectedId ?? undefined)
+    const cutter = this.cutterFor(this.model)
+    const turnOn = cutter && !this.doc.print.autoCut
+    this.setDoc(turnOn ? updateDoc(added, { print: { ...added.print, autoCut: true } }) : added)
+    this.selectedId = id
+    const fate = cutFate(added, id, this.render?.boxes)
+    const what =
+      fate === 'end'
+        ? 'Add a block after it to start the next piece'
+        : fate !== 'kept'
+          ? 'Nothing is printed before it, so it is ignored'
+          : cutter
+            ? 'The printer cuts here'
+            : 'This printer has no cutter: a cut mark is printed'
+    if (turnOn) {
+      this.announce(`Added cut. Cut each turned on. ${what}`)
+      this.toast('info', 'Cut each turned on', 'The printer cuts the strip at every Cut block.')
+    } else this.announce(`Added cut. ${what}`)
+    return id
+  }
+
   updateItem<T extends Item>(id: string, patch: Partial<Omit<T, 'id' | 'kind'>>, coalesceKey?: string): void {
     this.setDoc(updateItem<T>(this.doc, id, patch), coalesceKey)
   }
@@ -1010,8 +1038,10 @@ export class Studio {
     let doc: LabelDoc
     let tapeMm: number
     let batchRows: number | undefined
-    /** Pieces of one label (a table cut between its columns); 0 = a batch with some label in pieces. */
+    /** Pieces of one label (a table cut between its columns, Cut blocks); 0 = a batch with some label in pieces. */
     let pieces = 1
+    /** The strip has cut marks to cut it apart by hand (Cut blocks, no machine cut). */
+    let marked = false
     let widthMm: number
     let mediaId: string
     let model: string
@@ -1036,6 +1066,7 @@ export class Studio {
         this.printing = false
         return
       }
+      marked = !!result.marks?.length
       widthMm = target.target.media.widthMm
       mediaId = target.target.media.id
       model = target.target.model
@@ -1083,7 +1114,7 @@ export class Studio {
       // `labels` counts pages: pieces when a table is cut between its columns.
       const text = labels === pieces && pieces > 1 ? `Label printed in ${pieces} pieces` : labels === 1 ? 'Label printed' : `${labels} ${pieces !== 1 ? 'pieces' : 'labels'} printed`
       // The toast region announces it (one announcer, not two).
-      this.toast('ok', text, doc.print.autoCut ? undefined : 'Cut the label off at the printer.')
+      this.toast('ok', text, marked ? 'Cut the pieces apart at the marks.' : doc.print.autoCut ? undefined : 'Cut the label off at the printer.')
       this.tapeLeader = !doc.print.chain
       this.#recordPrint({ doc, widthMm, mediaId, model, labels, tapeMm, ...(batchRows !== undefined ? { batchRows } : {}) })
     } catch (e) {

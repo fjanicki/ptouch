@@ -44,6 +44,8 @@
   })
   const preparing = $derived(studio.batchProgress)
   const halfCut = $derived(caps?.halfCut === true)
+  /** The label has Cut blocks (docs/CUT-PLAN.md): Cut each decides machine cuts or cut marks. */
+  const hasCutBlocks = $derived(studio.doc.items.some((i) => i.kind === 'cut'))
   const mod = modKey(studio.isMac ? 'mac' : 'other')
   let barH = $state(72)
   let optionsOpen = $state(false)
@@ -131,7 +133,12 @@
             hint={print.autoCut ? `Full cut after every label${halfCut ? '' : ' (this printer has no half cut)'}.` : 'Off: one strip; cut the labels apart yourself.'}
           />
         {:else}
-          <Switch label="Cut each" checked={print.autoCut} onchange={(autoCut) => set({ autoCut })} />
+          <Switch
+            label="Cut each"
+            checked={print.autoCut}
+            onchange={(autoCut) => set({ autoCut })}
+            {...hasCutBlocks ? { hint: print.autoCut ? 'Cuts at every Cut block and after the label.' : 'Off: the Cut blocks print as cut marks.' } : {}}
+          />
         {/if}
       {/if}
       {#if caps?.chain !== false}

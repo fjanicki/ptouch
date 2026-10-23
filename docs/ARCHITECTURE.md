@@ -699,7 +699,8 @@ CLI text rendering uses `fontdue 0.9.4` (test labels only; the studio renders te
 - **Code plane** (QR, Code128, EAN-13): module matrix from wasm, painted in wasm at an integer
   `module_dots` with quiet zones, never via canvas, never dithered; preflight blocks modules < 1 dot.
 - Compositing order in MVP: tone → crisp → codes (codes always on top). Free z-order arrives with the
-  v1 free-form editor.
+  v1 free-form editor. The cut marks of Cut blocks are blitted as protected dark dots between crisp
+  and codes, so a code's quiet zone never clears them (docs/CUT-PLAN.md §10 B17).
 - Fonts: `await document.fonts.load(\`${px}px "${family}"\`, text)` then assert `document.fonts.check`
   for every family/size used before drawing; report fallbacks in the print panel.
 
@@ -791,6 +792,10 @@ Schema 2 (studio v1, `docs/STUDIO-V1-PLAN.md` §2.1) adds, with a tested 1 → 2
 security: 'wpa' | 'wep' | 'open', hidden }`, `quietZone: 'standard' | 'compact' | 'none'` (was a
 boolean), `moduleDots: 'auto' | number`; `TextItem.customFont` (uploaded or local font, the bundled
 `fontFamily` stays as the fallback); `LabelDoc.batch` (columns, rows, count, counters, date format).
+Later schemas (each with a tested migration; an older app opens a newer label read-only): 3 text
+sizes in points and the font library (`docs/FONTS-AND-SIZE-PLAN.md`), 4 36 mm tape and
+`tape.model` (`docs/MODELS-PLAN.md`), 5 `TableItem` (`docs/TABLE-PLAN.md`), 6 `CutItem`, a cut that
+splits the flow into pieces the printer cuts apart (`docs/CUT-PLAN.md`).
 
 ### 6.2 MVP ("print a nice label from GitHub Pages")
 - **Connect panel** (§3.3): Bluetooth / Serial port / USB / No printer (virtual). Status chip with

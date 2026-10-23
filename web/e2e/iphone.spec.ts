@@ -297,7 +297,7 @@ test('iPhone: design a 36 mm label for a PT-P910BT and hand it off', async ({ pa
   const field = dialog.getByRole('textbox', { name: 'Share link' })
   await expect(field).toHaveValue(/\/ptouch\/#d=/)
   const doc = JSON.parse(decodeLink(await field.inputValue())) as { schema: number; tape: { widthMm: number; model?: string } }
-  expect(doc.schema).toBe(5)
+  expect(doc.schema).toBe(6)
   expect(doc.tape).toMatchObject({ widthMm: 36, model: 'PT-P910BT' })
 })
 
@@ -414,4 +414,50 @@ test('iPhone 375 px: edit a table, no horizontal scroll, 44 px controls, the lin
   await page.goto(url)
   await expect(page.getByRole('region', { name: 'Label preview' })).toHaveAttribute('data-ready', 'true')
   await expect(page.getByRole('region', { name: 'Blocks' }).getByRole('listitem').nth(1)).toContainText('2 × 7 · DO RE MI FA SOL LA SI')
+})
+
+// Cut blocks (docs/CUT-PLAN.md C15): the same tile and panel on an iPhone; the link carries them.
+test('iPhone 375 px: a strip with a Cut, no horizontal scroll, 44 px button, the link carries the Cut', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 760 })
+  const doc = {
+    schema: 6,
+    id: '0b6c1c55-6a0e-4f1e-9d55-2f1b1a3c4e01',
+    name: 'Two tags',
+    createdAt: '2026-10-22T10:00:00.000Z',
+    updatedAt: '2026-10-22T10:00:00.000Z',
+    tape: { widthMm: 24 },
+    length: { mode: 'auto' },
+    marginsMm: { start: 2, end: 2 },
+    layout: { mode: 'flow', gapMm: 3, align: 'center' },
+    items: [
+      { id: '0b6c1c55-6a0e-4f1e-9d55-2f1b1a3c4e02', kind: 'text', text: 'Kitchen', fontFamily: 'fira-sans', fontWeight: 600, italic: false, size: { mode: 'fit' }, align: 'center', lineHeight: 1.1, invert: false },
+      { id: '0b6c1c55-6a0e-4f1e-9d55-2f1b1a3c4e03', kind: 'cut' },
+      { id: '0b6c1c55-6a0e-4f1e-9d55-2f1b1a3c4e04', kind: 'text', text: 'Office', fontFamily: 'fira-sans', fontWeight: 600, italic: false, size: { mode: 'fit' }, align: 'center', lineHeight: 1.1, invert: false },
+    ],
+    print: { copies: 1, autoCut: false, chain: false, mirror: false, threshold: 128 },
+  }
+  await startDesigning(page, `#d=${deflateRawSync(Buffer.from(JSON.stringify(doc))).toString('base64url')}`)
+  const blocks = page.getByRole('region', { name: 'Blocks' }).getByRole('listitem')
+  await expect(blocks.nth(1)).toContainText(/[\d.]+\s\/ [\d.]+\smm, by hand/)
+  await blocks.nth(1).getByRole('button').first().tap()
+  await expect(page.getByRole('heading', { name: /Cut block/ })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
+  const turnOn = page.getByRole('button', { name: 'Turn on Cut each' })
+  expect((await turnOn.boundingBox())?.height).toBeGreaterThanOrEqual(44)
+  await turnOn.tap()
+  await expect(page.getByText('The printer cuts here.')).toBeVisible()
+  await expect(blocks.nth(1).getByRole('button').first()).toHaveAccessibleName(/^Cut: Printer cuts: pieces of [\d.]+ and [\d.]+ mm, block 2 of 3$/)
+  // A second Cut from the Insert tile, after the selected one (ignored: nothing between them).
+  await page.getByRole('button', { name: 'Insert Cut' }).tap()
+  await expect(blocks).toHaveCount(4)
+  await expect(blocks.nth(2)).toContainText('Ignored: nothing since the cut before')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
+
+  await page.getByRole('button', { name: 'Send to computer…' }).click()
+  const field = page.getByRole('dialog', { name: 'Send to computer' }).getByRole('textbox', { name: 'Share link' })
+  await expect(field).toHaveValue(/#d=/)
+  const sent = JSON.parse(decodeLink(await field.inputValue())) as { schema: number; items: { kind: string }[]; print: { autoCut: boolean } }
+  expect(sent.schema).toBe(6)
+  expect(sent.items.map((i) => i.kind)).toEqual(['text', 'cut', 'cut', 'text'])
+  expect(sent.print.autoCut).toBe(true)
 })

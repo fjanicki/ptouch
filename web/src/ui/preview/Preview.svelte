@@ -2,11 +2,11 @@
      printable band, tape edges, feed margins and cut lines; ruler in mm; length readout; zoom
      (fit / real size / steps); Design vs Exact-dots modes; click a block to select it. -->
 <script lang="ts">
-  import { estimateTape, pageLengthsMm, paintPreview } from '../../render'
+  import { estimateTape, handPiecesMm, pageLengthsMm, paintPreview } from '../../render'
   import Icon from '../common/Icon.svelte'
   import Segmented from '../common/Segmented.svelte'
   import { getStudio } from '../state/studio.svelte'
-  import { formatMm, piecesText, previewColors, realScale, rulerSteps, zoomPercent, zoomStep } from '../state/view-model'
+  import { formatMm, handPiecesText, pieceListText, piecesText, previewColors, realScale, rulerSteps, shortPieceHintFor, zoomPercent, zoomStep } from '../state/view-model'
   import { savePrefs } from '../../doc/persist-prefs'
 
   const studio = getStudio()
@@ -51,9 +51,15 @@
   const marginEndPx = $derived(px((studio.doc.marginsMm.end * dpi) / 25.4))
   const smooth = $derived(mode === 'design' && scale < 1)
   const showGrid = $derived(mode === 'dots' && scale >= 4)
-  /** The printer cuts the label into pieces (a table cut between its columns). */
+  /** The printer cuts the label into pieces (a table cut between its columns, Cut blocks). */
   const pieceLengths = $derived(result?.cuts ? pageLengthsMm(result) : null)
-  const pieces = $derived(result && pieceLengths ? piecesText(pieceLengths, result.feedMarginMm) : null)
+  /** Cut blocks (docs/CUT-PLAN.md): where pieces meet (margin bands in Design), and whether the
+   * printer cuts at any of them (the readout then lists every piece). */
+  const cutEdges = $derived((result?.cutItems ?? []).flatMap((c) => (c.how !== 'ignored' && c.x !== undefined && c.x > 0 && c.x < (result?.lengthDots ?? 0) ? [c.x] : [])))
+  const cutBlocks = $derived(!!result?.cutItems?.some((c) => c.how === 'printer'))
+  const pieces = $derived(result && pieceLengths ? (cutBlocks ? pieceListText(pieceLengths, result.feedMarginMm) : piecesText(pieceLengths, result.feedMarginMm)) : null)
+  const handPieces = $derived(result?.marks ? handPiecesText(handPiecesMm(result)) : null)
+  const shortHint = $derived(result && cutBlocks ? shortPieceHintFor(result, dpi, studio.doc.length.mode === 'fixed') : null)
   /** Tape the pieces use: each piece has the feed margin at both ends (render/job.ts estimateTape,
    * as the print bar counts it), so more than the one strip drawn here. */
   const piecesMm = $derived(result && pieceLengths ? estimateTape(pieceLengths, result.feedMarginMm, { leader: false }).labelsMm : null)
@@ -168,6 +174,11 @@
             {#if mode === 'design'}
               {#if marginStartPx > 0}<span class="margin start" style:width="{marginStartPx}px"></span>{/if}
               {#if marginEndPx > 0}<span class="margin end" style:width="{marginEndPx}px"></span>{/if}
+              <!-- Every piece made by a Cut block has the label's margins (C2). -->
+              {#each cutEdges as x (x)}
+                {#if marginEndPx > 0}<span class="margin end" style:right="auto" style:left="{px(x) - marginEndPx}px" style:width="{marginEndPx}px"></span>{/if}
+                {#if marginStartPx > 0}<span class="margin start" style:left="{px(x)}px" style:width="{marginStartPx}px"></span>{/if}
+              {/each}
               {#if hoverBox}
                 <span class="box hover" style:left="{px(hoverBox.x)}px" style:top="{px(hoverBox.y)}px" style:width="{px(hoverBox.w)}px" style:height="{px(hoverBox.h)}px"></span>
               {/if}
@@ -180,6 +191,7 @@
           <span class="cut start" aria-hidden="true"></span>
           <span class="cut end" aria-hidden="true"></span>
           {#each result.cuts ?? [] as x (x)}<span class="cut piece" style:left="{px(feedDots + x)}px" aria-hidden="true"></span>{/each}
+          {#each result.marks ?? [] as x (x)}<span class="cut mark" style:left="{px(feedDots + x)}px" aria-hidden="true"></span>{/each}
         </div>
         <svg class="ruler" width={px(totalDots)} height="26" aria-hidden="true">
           {#each ticks as t, i (i)}
@@ -200,9 +212,11 @@
     <div class="readout">
       {#if pieceLengths && piecesMm !== null}<span><strong>{formatMm(piecesMm)}</strong> of tape in {pieceLengths.length} pieces</span>{:else}<span><strong>{formatMm(totalMm)}</strong> label</span>{/if}
       {#if pieces}<span class="pieces">{pieces}</span>{:else}<span>{formatMm(result.lengthMm)} printed + 2 × {formatMm(result.feedMarginMm)} feed</span>{/if}
+      {#if handPieces}<span class="pieces">{handPieces}</span>{/if}
       <span>{formatMm(studio.doc.tape.widthMm)} tape · printable {formatMm((bandDots * 25.4) / dpi)} ({bandDots} dots)</span>
       {#if studio.doc.print.mirror}<span class="badge"><Icon name="flip" size={14} />Mirrored when printed</span>{/if}
       {#if colors.fromPrinter}<span class="badge">Colours from printer</span>{/if}
+      {#if shortHint}<span class="short-hint">{shortHint}</span>{/if}
     </div>
   {/if}
   {#if labelWarnings.length}
@@ -372,6 +386,11 @@
   .cut.piece {
     border-left-color: var(--danger);
   }
+  /* A Cut block printed as a cut mark (no cutter, or Cut each off): cut by hand. */
+  .cut.mark {
+    border-left-style: dotted;
+    opacity: 0.8;
+  }
   .ruler {
     display: block;
     overflow: visible;
@@ -423,6 +442,9 @@
     color: var(--text-muted);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
+  }
+  .short-hint {
+    flex-basis: 100%;
   }
   .readout strong {
     color: var(--text);

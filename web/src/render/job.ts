@@ -82,6 +82,21 @@ export function pageLengthsMm(result: Pick<RenderResult, 'lengthDots' | 'lengthM
 }
 
 /**
+ * The pieces of a strip that is cut apart by hand at its cut marks (`result.marks`, Cut blocks on
+ * a printer without a cutter or with Cut each off, docs/CUT-PLAN.md C5), mm as cut: the first and
+ * the last piece carry the printer's feed margin at the strip's ends, the others none. Empty when
+ * the strip has no marks.
+ */
+export function handPiecesMm(result: Pick<RenderResult, 'lengthDots' | 'lengthMm' | 'marks' | 'feedMarginMm'>): number[] {
+  const marks = result.marks ?? []
+  if (!marks.length) return []
+  const mmPerDot = result.lengthDots > 0 ? result.lengthMm / result.lengthDots : 0
+  const edges = [0, ...marks, result.lengthDots]
+  const last = edges.length - 2
+  return edges.slice(1).map((e, i) => (e - (edges[i] ?? 0)) * mmPerDot + (i === 0 ? result.feedMarginMm : 0) + (i === last ? result.feedMarginMm : 0))
+}
+
+/**
  * Encodes the rendered label as one job: its page (or its pieces, `pageSpans`) repeated
  * `copies` times inside the core (A B C A B C; the leader is fed once). Throws an Error with a
  * user-facing message when the render is blocking or stale for `target` or has too many pages,

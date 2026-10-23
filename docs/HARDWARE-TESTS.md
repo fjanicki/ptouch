@@ -275,6 +275,26 @@ print bar's tape estimate, then print one copy. Record:
 
 Until this has run, the studio says "about" for the piece lengths.
 
+## 11. Studio Cut blocks: a strip cut into pieces (docs/CUT-PLAN.md §7)
+
+**HW-C1: a strip cut at Cut blocks. PENDING.** In the studio on the PT-P710BT, 24 mm tape,
+default margins (2 / 2 mm), Cut each on, chain off: Text "A", Cut, Text "Kitchen drawer", Cut,
+QR code, Cut, Text "B". Note the readout ("Cut into 4 pieces: about …") and the print bar's
+estimate, then print one copy. Record:
+
+- the number of cuts and pieces (expected 4, plus the leader cut-off);
+- each piece's length with a ruler, against the readout;
+- whether each piece's blank ends match a label of the same block printed on its own (print
+  "Kitchen drawer" alone and lay them side by side);
+- whether the short pieces ("A", "B", well under 25 mm) come out at their own length or longer
+  (the ≈ 24.5 mm head-to-cutter distance, PROTOCOL.md §5.6; the same open question as HW-T1);
+- repeat with a fixed length of 30 mm and "Shrink text to fit length" on: all four pieces should
+  be the same length (about 34 mm as cut);
+- repeat with Cut each off: one strip with tick marks at the three cut positions.
+
+Until HW-T1 / HW-C1 have run, the studio says "about" for piece lengths and shows the short-piece
+hint.
+
 ## Log
 
 | Date | OS | Model / firmware | Transport | Test | Result | Notes |

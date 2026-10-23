@@ -21,8 +21,10 @@
  * clamped to 24 mm, but opens it read-only: the first edit saves a copy, so the 36 mm original is
  * never saved over.
  * 5 (tables, docs/TABLE-PLAN.md): the `table` item. Nothing else changes (4 → 5 only changes the
- * version); an older app opens a schema-5 label read-only and drops its tables with a notice. */
-export const SCHEMA_VERSION = 5 as const
+ * version); an older app opens a schema-5 label read-only and drops its tables with a notice.
+ * 6 (cut lines, docs/CUT-PLAN.md): the `cut` item. Nothing else changes (5 → 6 only changes the
+ * version); an older app opens a schema-6 label read-only and drops its cuts with a notice. */
+export const SCHEMA_VERSION = 6 as const
 
 /**
  * Nominal TZe tape widths any supported model takes (3.5 mm reports width byte 4 in the status).
@@ -356,7 +358,15 @@ export interface TableItem extends ItemBase {
   cutBetween: boolean
 }
 
-export type Item = TextItem | IconItem | CodeItem | ImageItem | ShapeItem | SpacerItem | TableItem
+/**
+ * A cut (schema 6, docs/CUT-PLAN.md): splits the flow into pieces, each laid out like a label of
+ * its own. The printer cuts here (Cut each + a cutter) or prints a cut mark. Never has a `frame`.
+ */
+export interface CutItem extends ItemBase {
+  kind: 'cut'
+}
+
+export type Item = TextItem | IconItem | CodeItem | ImageItem | ShapeItem | SpacerItem | TableItem | CutItem
 export type ItemKind = Item['kind']
 export type ItemOf<K extends ItemKind> = Extract<Item, { kind: K }>
 
@@ -452,6 +462,7 @@ export function createItem<K extends ItemKind>(kind: K): ItemOf<K> {
       cutMarks: false,
       cutBetween: false,
     },
+    cut: { id, kind: 'cut' },
   }
   return items[kind] as ItemOf<K>
 }
@@ -875,6 +886,10 @@ function readItem(r: Reader, o: Obj, id: string): Item | undefined {
       }
     case 'spacer':
       return { ...base, kind: 'spacer', widthMm: r.num(o, 'widthMm', LIMITS.widthMm.min, LIMITS.widthMm.max, 5) }
+    case 'cut':
+      // A cut is a position in the flow (docs/CUT-PLAN.md C10): it is never placed by a frame.
+      if (frame) r.note('a cut has no frame; removed')
+      return { id, kind: 'cut' }
     default:
       return undefined
   }

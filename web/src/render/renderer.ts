@@ -1,6 +1,7 @@
 // W3 — LabelDoc → Bitmap1 (ARCHITECTURE.md §5.1–§5.2). Canvas2D (OffscreenCanvas where
 // available) draws the crisp plane at 3×; photos go through Raster.blitTone; codes through
-// encodeCode + Raster.blitCode (never via canvas). Compositing order: tone → crisp → codes.
+// encodeCode + Raster.blitCode (never via canvas). Compositing order: tone → crisp → cut marks
+// (protected) → codes.
 //
 // One renderer, two outputs: the Bitmap1 returned here is both the preview and the printed
 // page. Canvas x = along the label (column 0 = left end as read), y = across the tape (row 0 =
@@ -15,9 +16,9 @@ import { loadIcons, loadedIcons } from './icon-set'
 import { loadTables } from './table-set'
 import type { IconDef } from './icons'
 import { MAX_IMAGE_DOTS, decodeImage, imageSize, resolveImageBlob, type RgbaImage } from './images'
-import { contentLength, flowSettings, layoutFlow, layoutFree, type FlowLayout, type FramedItem, type MeasuredItem } from './layout'
+import { contentLength, flowSettings, layoutFlow, layoutFree, layoutPieces, splitPieces, type FlowLayout, type FramedItem, type IgnoredCutReason, type MeasuredItem, type PiecesLayout } from './layout'
 import { DEFAULT_CRISP_FACTOR, MIN_SHRINK, canvasMeasure, cssFont, drawTextBlock, faceMetrics, fitTextBlock, lineHeightOf, pixelGrid, shrinkFactor, sizeTextBlock, splitLines } from './text'
-import type { ItemBox, RenderOptions, RenderResult, RenderTarget, RenderWarning, TextRenderInfo } from './types'
+import type { CutInfo, ItemBox, RenderOptions, RenderResult, RenderTarget, RenderWarning, TextRenderInfo } from './types'
 import { dotsToMm, mmToDots } from './units'
 import { wifiWarnings } from './wifi'
 
@@ -63,6 +64,13 @@ interface Prepared {
   text?: TextRenderInfo
   /** Machine cuts inside the item (table "cut between columns"), dots from its left edge. */
   cuts?: number[]
+  /** A Cut block (docs/CUT-PLAN.md): no ink, splits the flow into pieces. */
+  cut?: boolean
+}
+
+/** What the pure layout needs of a prepared item. */
+function measuredOf(p: Prepared): MeasuredItem {
+  return { itemId: p.id, w: p.w, h: p.h, ...(p.spacer ? { spacer: true } : {}), ...(p.cut ? { cut: true } : {}) }
 }
 
 interface Ctx {
@@ -376,8 +384,7 @@ function sizeAutoLinearCodes(doc: LabelDoc, prepared: Prepared[], items: Item[],
   if (doc.length.mode !== 'fixed') return
   const auto = prepared.flatMap((p, i) => (p.autoLinear ? [i] : []))
   if (!auto.length) return
-  const measured: MeasuredItem[] = prepared.map((p) => ({ itemId: p.id, w: p.w, h: p.h, ...(p.spacer ? { spacer: true } : {}) }))
-  const { contentDots } = layoutFlow(doc, measured, band, c.dpi)
+  const { contentDots } = layoutFlow(doc, prepared.map(measuredOf), band, c.dpi)
   const ends = Math.max(0, mmToDots(doc.marginsMm.start, c.dpi)) + Math.max(0, mmToDots(doc.marginsMm.end, c.dpi)) + 2 * limits.insetDots
   const others = contentDots - auto.reduce((n, i) => n + (prepared[i]?.w ?? 0), 0)
   const each = Math.floor((mmToDots(doc.length.mm, c.dpi) - ends - others) / auto.length)
@@ -416,7 +423,7 @@ function shrinkTextToLength(doc: LabelDoc, prepared: Prepared[], items: Item[], 
   const ends = Math.max(0, mmToDots(doc.marginsMm.start, c.dpi)) + Math.max(0, mmToDots(doc.marginsMm.end, c.dpi)) + 2 * limits.insetDots
   const avail = mmToDots(doc.length.mm, c.dpi) - ends
   const texts = [...held.keys()]
-  const content = (): number => contentLength(prepared.map((p) => ({ itemId: p.id, w: p.w, h: p.h, ...(p.spacer ? { spacer: true } : {}) })), gap)
+  const content = (): number => contentLength(prepared.map(measuredOf), gap)
 
   /** Shrink the text blocks (from their current size) until the content fits; the final scale. */
   const run = (): { scale: number; fits: boolean } => {
@@ -523,6 +530,8 @@ async function prepareItem(item: Item, band: number, c: Ctx, rotation: Rotation,
       return { id: item.id, w: Math.max(0, mmToDots(item.widthMm, c.dpi)), h: 0, spacer: true }
     case 'table':
       return prepareTable(item, band, c)
+    case 'cut':
+      return { id: item.id, w: 0, h: 0, cut: true }
   }
 }
 
@@ -558,6 +567,10 @@ interface Placed {
   w: number
   h: number
   rotation: Rotation
+  /** The piece of a cut strip this block belongs to, `[start, end)` dots: it is drawn inside it
+   * only, so a block that overflows a fixed-length piece is cut off at the cut, as on a label of
+   * its own (docs/CUT-PLAN.md C2). Absent = drawn wherever it reaches (the label's own edges). */
+  clip?: [number, number]
 }
 
 /** Rotates a rect inside a `w × h` box clockwise; returns it in the rotated box. */
@@ -636,10 +649,34 @@ function drawFrame(ctx: Ctx2D, g: FrameGeom, length: number, band: number, f: nu
 // Crisp plane
 // ------------------------------------------------------------------------------------------
 
-function drawCrispScene(ctx: Ctx2D, placed: Placed[], frame: FrameGeom | undefined, length: number, band: number, f: number, x0: number, x1: number): boolean {
+/** Rectangles in dots (cut marks). */
+interface DotRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/**
+ * What is drawn besides the items: the label frame around every piece (`spans`, one span = the
+ * whole label) and the cut marks of Cut blocks the printer does not cut at (docs/CUT-PLAN.md C5).
+ */
+interface Decor {
+  frame: FrameGeom | undefined
+  spans: [number, number][]
+  marks: DotRect[]
+}
+
+function drawCrispScene(ctx: Ctx2D, placed: Placed[], decor: Decor, band: number, f: number, x0: number, x1: number): boolean {
   let drew = false
-  if (frame) {
-    drawFrame(ctx, frame, length, band, f)
+  if (decor.frame) {
+    for (const [a, b] of decor.spans) {
+      // Moved by the transform (whole px), so the path is the same as a label of its own.
+      ctx.save()
+      ctx.translate(a * f, 0)
+      drawFrame(ctx, decor.frame, b - a, band, f)
+      ctx.restore()
+    }
     drew = true
   }
   for (const pl of placed) {
@@ -647,9 +684,16 @@ function drawCrispScene(ctx: Ctx2D, placed: Placed[], frame: FrameGeom | undefin
     if (!draw || pl.w <= 0 || pl.h <= 0) continue
     const slackDots = Math.ceil((pl.p.clipSlack ?? 0) / f)
     if (pl.x + pl.w + slackDots < x0 || pl.x - slackDots > x1) continue
+    if (pl.clip && (pl.clip[1] <= Math.max(x0, pl.clip[0]) || pl.clip[0] >= x1)) continue
     const uw = quarter(pl.rotation) ? pl.h : pl.w
     const uh = quarter(pl.rotation) ? pl.w : pl.h
     ctx.save()
+    if (pl.clip && (pl.x - slackDots < pl.clip[0] || pl.x + pl.w + slackDots > pl.clip[1])) {
+      // Overflows its piece: cut off at the piece's ends (whole px, so no edge is anti-aliased).
+      ctx.beginPath()
+      ctx.rect(pl.clip[0] * f, 0, (pl.clip[1] - pl.clip[0]) * f, band * f)
+      ctx.clip()
+    }
     ctx.translate((pl.x + pl.w / 2) * f, (pl.y + pl.h / 2) * f)
     ctx.rotate((pl.rotation * Math.PI) / 180)
     ctx.translate((-uw / 2) * f, (-uh / 2) * f)
@@ -661,15 +705,23 @@ function drawCrispScene(ctx: Ctx2D, placed: Placed[], frame: FrameGeom | undefin
     ctx.restore()
     drew = true
   }
+  // Cut marks last (plain fills; the items above restore their own state).
+  if (decor.marks.length) {
+    ctx.fillStyle = '#000'
+    for (const r of decor.marks) ctx.fillRect(r.x * f, r.y * f, r.w * f, r.h * f)
+    drew = true
+  }
   return drew
 }
 
-function paintCrisp(raster: Raster, placed: Placed[], frame: FrameGeom | undefined, length: number, band: number, f: number, threshold: number): void {
-  if (!frame && !placed.some((p) => p.p.crisp && p.w > 0 && p.h > 0)) return
+function paintCrisp(raster: Raster, placed: Placed[], decor: Decor, length: number, band: number, f: number, threshold: number): void {
+  if (!decor.frame && !decor.marks.length && !placed.some((p) => p.p.crisp && p.w > 0 && p.h > 0)) return
   const tileDots = Math.max(1, Math.floor(MAX_TILE_PX / f))
+  // Tiles start at every piece (one span = the whole label): a piece made by a Cut block is drawn
+  // on the same canvases as when it is printed on its own, so it gets the very same dots (C2).
+  const tiles = decor.spans.flatMap(([s, e]) => Array.from({ length: Math.ceil((e - s) / tileDots) }, (_, i): [number, number] => [s + i * tileDots, Math.min(tileDots, e - s - i * tileDots)]))
   let canvas: AnyCanvas | undefined
-  for (let x0 = 0; x0 < length; x0 += tileDots) {
-    const len = Math.min(tileDots, length - x0)
+  for (const [x0, len] of tiles) {
     const w = len * f
     const h = band * f
     if (!canvas || canvas.width !== w || canvas.height !== h) canvas = createCanvas(w, h)
@@ -678,7 +730,7 @@ function paintCrisp(raster: Raster, placed: Placed[], frame: FrameGeom | undefin
     ctx.fillStyle = '#fff'
     ctx.fillRect(0, 0, w, h)
     ctx.setTransform(1, 0, 0, 1, -x0 * f, 0)
-    if (!drawCrispScene(ctx, placed, frame, length, band, f, x0, x0 + len)) continue
+    if (!drawCrispScene(ctx, placed, decor, band, f, x0, x0 + len)) continue
     const data = ctx.getImageData(0, 0, w, h).data
     if (len === length) {
       raster.blitCrisp(rgbaBytes(data), w, h, f, threshold)
@@ -695,6 +747,83 @@ function paintCrisp(raster: Raster, placed: Placed[], frame: FrameGeom | undefin
         release(bmp)
       }
     }
+  }
+}
+
+// ------------------------------------------------------------------------------------------
+// Cut blocks (docs/CUT-PLAN.md)
+// ------------------------------------------------------------------------------------------
+
+/**
+ * Blits a photo at (`x`, `y`), kept inside `clip` (its piece of a cut strip). An image that
+ * overflows its piece is dithered whole on a raster of the piece's length, as on a label of its
+ * own, and that raster is OR-ed in (tone comes first, so the strip is still blank there).
+ */
+function blitToneIn(raster: Raster, t: NonNullable<Prepared['tone']>, x: number, y: number, band: number, clip: [number, number] | undefined): void {
+  const { img, opts } = t
+  if (!clip || (x >= clip[0] && x + img.width <= clip[1])) {
+    raster.blitTone(rgbaBytes(img.rgba), img.width, img.height, x, y, opts)
+    return
+  }
+  const [a, b] = clip
+  if (b <= a) return
+  const piece = new Raster(b - a, band)
+  let bmp: Bitmap1 | null = null
+  try {
+    piece.blitTone(rgbaBytes(img.rgba), img.width, img.height, x - a, y, opts)
+    bmp = piece.finish()
+    raster.blitBitmap(bmp, a, 0)
+  } finally {
+    release(piece) // still owned if blitTone threw (finish() consumes it otherwise)
+    release(bmp)
+  }
+}
+
+/**
+ * A code's modules at (`x`, …) with `md` dots per module, cut to `clip` (its piece of a cut
+ * strip): unchanged when it fits, else expanded to one dot per module and cut at the piece's
+ * ends, so the strip gets the very dots (and quiet-zone clearing) of the piece printed alone.
+ * Undefined when nothing of it is inside.
+ */
+function clipCode(m: ModuleMatrix, md: number, x: number, clip: [number, number] | undefined): { m: ModuleMatrix; md: number; x: number } | undefined {
+  const w = m.width * md
+  if (!clip || (x >= clip[0] && x + w <= clip[1])) return { m, md, x }
+  const x0 = Math.max(clip[0], x)
+  const x1 = Math.min(clip[1], x + w)
+  if (x1 <= x0) return undefined
+  const cw = x1 - x0
+  const ch = m.height * md
+  const modules = new Array<number>(cw * ch)
+  for (let y = 0; y < ch; y++) {
+    const row = Math.floor(y / md) * m.width
+    for (let i = 0; i < cw; i++) modules[y * cw + i] = m.modules[row + Math.floor((x0 - x + i) / md)] ?? 0
+  }
+  return { m: { width: cw, height: ch, modules }, md: 1, x: x0 }
+}
+
+/** The `cut-ignored` sentences (C3). */
+const IGNORED_CUT: Record<IgnoredCutReason, string> = {
+  start: 'Nothing is printed before this cut, so it is ignored.',
+  double: 'Nothing is printed between this cut and the one before it, so it is ignored.',
+  end: 'Nothing is printed after this cut, so it is ignored. Add a block after it to start the next piece.',
+}
+/** A kept Cut beyond a strip that was cut to the printer maximum (no machine cuts). */
+const BEYOND_MAX_CUT = 'The strip is cut off at the printer maximum before this cut, so it is ignored.'
+
+/**
+ * The box of a kept Cut (selection outline, hit-testing): the blank between the two pieces, the
+ * end margin before it and the start margin after it (frame reserve included), at least 1.5 mm
+ * wide so it can be clicked with margins of 0.
+ */
+function cutBoxOf(doc: LabelDoc, dpi: number, reserve: number, band: number, length: number): (itemId: string, x: number) => ItemBox {
+  const before = Math.max(0, mmToDots(doc.marginsMm.end, dpi)) + reserve
+  const after = Math.max(0, mmToDots(doc.marginsMm.start, dpi)) + reserve
+  const min = mmToDots(1.5, dpi)
+  return (itemId, x) => {
+    const extra = Math.max(0, min - before - after)
+    const x0 = Math.max(0, x - before - Math.floor(extra / 2))
+    const x1 = Math.min(length, x + after + Math.ceil(extra / 2))
+    return { itemId, x: x0, y: 0, w: Math.max(1, x1 - x0), h: band }
   }
 }
 
@@ -770,7 +899,8 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
   const held = new Map<number, RenderWarning[]>()
   const framed: { p: Prepared; x: number; y: number; w: number; h: number; rotation: Rotation }[] = []
   for (const item of doc.items) {
-    const fr = free ? item.frame : undefined
+    // A Cut always flows (C10); the validator already drops a frame on one.
+    const fr = free && item.kind !== 'cut' ? item.frame : undefined
     if (fr) {
       const rotation = ([0, 90, 180, 270] as const).includes(fr.rotation) ? fr.rotation : 0
       const bw = Math.max(1, mmToDots(fr.wMm, dpi))
@@ -795,20 +925,45 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
     abortIfNeeded(signal)
   }
 
-  // A table cut between its columns prints as one page per piece (render/job.ts pageSpans), and
-  // the printer's maximum applies to each page: the strip itself is not cut to the maximum, its
-  // pieces are checked below instead (an 88-key keyboard is well over 1 m of tape).
+  // Cut blocks (docs/CUT-PLAN.md) split the flow into pieces, each laid out like a label of its
+  // own; a label without a kept Cut takes the plain flow path (bit-identical to before Cuts).
+  const split = splitPieces(flowItems.map(measuredOf))
+  const pieced = split.kept.length > 0
+  // A table cut between its columns, or a strip cut at its Cut blocks, prints as one page per
+  // piece (render/job.ts pageSpans), and the printer's maximum applies to each page: the strip
+  // itself is not cut to the maximum, its pieces are checked below instead (an 88-key keyboard is
+  // well over 1 m of tape).
   const pieceMax = target.area.maxLengthDots
-  const cutting = flowItems.some((p) => !!p.cuts?.length)
+  const cutting = flowItems.some((p) => !!p.cuts?.length) || (pieced && c.cut)
   const limits = { minLengthDots: target.area.minLengthDots, ...(pieceMax !== undefined && !cutting ? { maxLengthDots: pieceMax } : {}), insetDots: reserve }
-  if (shrinking) {
-    shrinkTextToLength(doc, flowItems, flowSource, inner, c, limits, held)
-    for (const ws of held.values()) for (const w of ws) warn(w)
+  // Shrink to fit length and auto linear codes work per piece (C7): a fixed length is the length
+  // of each piece.
+  for (const idx of pieced ? split.pieces : [flowItems.map((_, i) => i)]) {
+    const sub = idx.map((i) => flowItems[i] as Prepared)
+    const subSource = idx.map((i) => flowSource[i] as Item)
+    if (shrinking) {
+      const subHeld = new Map<number, RenderWarning[]>()
+      idx.forEach((i, j) => {
+        const w = held.get(i)
+        if (w) subHeld.set(j, w)
+      })
+      shrinkTextToLength(doc, sub, subSource, inner, c, limits, subHeld)
+      // The text's warnings at its final size come before the auto codes' (as without Cuts).
+      for (const ws of subHeld.values()) for (const w of ws) warn(w)
+    }
+    sizeAutoLinearCodes(doc, sub, subSource, inner, c, limits)
+    idx.forEach((i, j) => (flowItems[i] = sub[j] as Prepared))
   }
-  sizeAutoLinearCodes(doc, flowItems, flowSource, inner, c, limits)
-  const measured: MeasuredItem[] = flowItems.map((p) => ({ itemId: p.id, w: p.w, h: p.h, ...(p.spacer ? { spacer: true } : {}) }))
-  let layout: FlowLayout = layoutFlow(doc, measured, band, dpi, limits)
-  const placed: Placed[] = layout.placements.map((pl, i) => ({ p: flowItems[i] as Prepared, x: pl.x, y: pl.y, w: pl.w, h: pl.h, rotation: 0 }))
+  const measured: MeasuredItem[] = flowItems.map(measuredOf)
+  const pieces: PiecesLayout | undefined = pieced ? layoutPieces(doc, measured, band, dpi, limits, cutting) : undefined
+  let layout: FlowLayout = pieces ?? layoutFlow(doc, measured, band, dpi, limits)
+  const placed: Placed[] = layout.placements.map((pl, i) => {
+    // Pieces of a cut strip: a block is drawn inside its own piece only (a piece beyond a strip
+    // cut to the printer maximum is not drawn at all).
+    const span = pieces ? (pieces.spans[pieces.pieceOf[i] ?? 0] ?? [pieces.lengthDots, pieces.lengthDots]) : undefined
+    return { p: flowItems[i] as Prepared, x: pl.x, y: pl.y, w: pl.w, h: pl.h, rotation: 0, ...(span ? { clip: span } : {}) }
+  })
+  const pieceEdges = pieces?.pieceEdges ?? []
   if (framed.length) {
     const freeItems: FramedItem[] = framed.map((fi) => ({ itemId: fi.p.id, x: fi.x, y: fi.y, w: fi.w, h: fi.h }))
     const fl = layoutFree(doc, freeItems, band, dpi, limits)
@@ -819,21 +974,45 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
       const cw = quarter(fi.rotation) ? fi.p.h : fi.p.w
       const ch = quarter(fi.rotation) ? fi.p.w : fi.p.h
       placed.push({ p: fi.p, x: fi.x + Math.floor((fi.w - Math.min(cw, fi.w)) / 2), y: fi.y + Math.floor((fi.h - Math.min(ch, fi.h)) / 2), w: Math.min(cw, fi.w), h: Math.min(ch, fi.h), rotation: fi.rotation })
+      if (pieceEdges.some((e) => fi.x < e && e < fi.x + fi.w)) warn({ code: 'content-overflow', itemId: fi.p.id, message: 'This block lies across a cut and will be cut through.' })
     }
   }
   const length = layout.lengthDots
 
-  if (layout.clamped === 'min') {
+  if (pieces?.pieceMin) {
+    warn({ code: 'length-clamped', message: 'A piece was lengthened to the printer minimum.' })
+  } else if (layout.clamped === 'min') {
     warn({ code: 'length-clamped', message: `The label was lengthened to the printer minimum of ${dotsToMm(length, dpi).toFixed(1)} mm.` })
-  } else if (layout.clamped === 'max') {
+  }
+  if (layout.clamped === 'max') {
     warn({ code: 'length-clamped', message: `The label was shortened to the printer maximum of ${Math.round(dotsToMm(length, dpi))} mm.` })
   }
   if (layout.overflow) {
     const hint = doc.length.mode === 'fixed' && !doc.length.shrink && flowSource.some((i) => i.kind === 'text') ? ' Turn on “Shrink text to fit length” or make the label longer.' : ''
-    warn({ code: 'content-overflow', message: doc.length.mode === 'fixed' ? `The content is longer than the fixed label length and will be cut off.${hint}` : 'The content does not fit on the label and will be cut off.' })
+    const what = pieces ? 'A piece is longer than the fixed length of each piece and will be cut off.' : 'The content is longer than the fixed label length and will be cut off.'
+    warn({ code: 'content-overflow', message: doc.length.mode === 'fixed' ? `${what}${hint}` : 'The content does not fit on the label and will be cut off.' })
+  }
+  for (const ig of split.ignored) warn({ code: 'cut-ignored', itemId: ig.itemId, message: IGNORED_CUT[ig.why] })
+  for (const k of pieces?.split.kept ?? []) {
+    if ((placed[k]?.x ?? 0) >= length) warn({ code: 'cut-ignored', itemId: flowItems[k]?.id ?? '', message: BEYOND_MAX_CUT })
   }
 
-  // Compose: tone → crisp → codes.
+  // Cut blocks: the printer cuts there (Cut each and a cutter), or a cut mark is printed (C5).
+  const marks = pieced && !c.cut ? pieceEdges.filter((x) => x > 0 && x < length) : []
+  const markW = Math.max(1, mmToDots(0.25, dpi)) // table-layout.ts gridDots: the table's cut marks
+  const markL = Math.max(1, Math.min(mmToDots(1.5, dpi), Math.round(band / 4)))
+  // The pieces of Cut blocks on the strip; the last reaches the strip's end (free-layout blocks).
+  const pieceSpans = pieces?.spans.map(([a, b], k, all): [number, number] => [a, k === all.length - 1 ? length : b])
+  const decor: Decor = {
+    frame,
+    spans: pieceSpans ?? [[0, length]],
+    marks: marks.flatMap((x) => [
+      { x: x - Math.floor(markW / 2), y: 0, w: markW, h: markL },
+      { x: x - Math.floor(markW / 2), y: band - markL, w: markW, h: markL },
+    ]),
+  }
+
+  // Compose: tone → crisp → cut marks → codes.
   const threshold = clampInt(doc.print.threshold, 0, 255, 128)
   const raster = new Raster(length, band)
   let finished = false
@@ -843,9 +1022,12 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
       if (!t) continue
       const dy = Math.floor((pl.h - t.img.height) / 2)
       const dx = Math.floor((pl.w - t.img.width) / 2)
-      raster.blitTone(rgbaBytes(t.img.rgba), t.img.width, t.img.height, pl.x + dx, pl.y + dy, t.opts)
+      blitToneIn(raster, t, pl.x + dx, pl.y + dy, band, pl.clip)
     }
-    paintCrisp(raster, placed, frame, length, band, f, threshold)
+    paintCrisp(raster, placed, decor, length, band, f, threshold)
+    // Cut marks are protected too (an all-dark matrix): a code's quiet zone that reaches its piece
+    // edge (margins 0) skips their dots instead of clearing them, so the mark still prints.
+    for (const r of decor.marks) raster.blitCode({ width: r.w, height: r.h, modules: new Array<number>(r.w * r.h).fill(1) }, r.x, r.y, 1, false)
     for (const pl of placed) {
       for (const cb of pl.p.codes ?? []) {
         const uw = pl.p.w
@@ -854,7 +1036,8 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
         const r = rotateRect({ x: cb.dx, y: cb.dy + Math.floor((uh - pl.p.h) / 2), w: cb.m.width * cb.md, h: cb.m.height * cb.md }, uw, uh, pl.rotation)
         // The padded light modules are the quiet zone: the core clears and protects them, so
         // nothing under or next to the code can print into it (whatever the rotation).
-        raster.blitCode(rotateMatrix(cb.m, pl.rotation), pl.x + r.x, pl.y + r.y, cb.md, false)
+        const code = clipCode(rotateMatrix(cb.m, pl.rotation), cb.md, pl.x + r.x, pl.clip)
+        if (code) raster.blitCode(code.m, code.x, pl.y + r.y, code.md, false)
       }
     }
     const bitmap = raster.finish()
@@ -863,10 +1046,14 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
     if (bitmap.isBlank() && !warnings.some((w) => w.blocking)) {
       warn({ code: 'empty', blocking: true, message: doc.items.length ? 'Nothing would be printed. Add some text, an icon or a code.' : 'The label is empty. Add some text, an icon or a code.' })
     }
+    const keptCuts = new Set(pieces ? pieces.split.kept : [])
+    const cutBox = cutBoxOf(doc, dpi, reserve, band, length)
     const boxes: ItemBox[] = placed
-      .filter((pl) => pl.w > 0 || pl.p.spacer)
-      .map((pl) => (pl.p.spacer ? { itemId: pl.p.id, x: pl.x, y: reserve, w: Math.max(1, pl.w), h: inner } : { itemId: pl.p.id, x: pl.x, y: pl.y, w: pl.w, h: pl.h }))
-    const cuts = placed.flatMap((pl) => (pl.p.cuts ?? []).map((x) => pl.x + x)).filter((x) => x > 0 && x < length)
+      .filter((pl, i) => pl.w > 0 || pl.p.spacer || keptCuts.has(i))
+      .map((pl) => (pl.p.cut ? cutBox(pl.p.id, pl.x) : pl.p.spacer ? { itemId: pl.p.id, x: pl.x, y: reserve, w: Math.max(1, pl.w), h: inner } : { itemId: pl.p.id, x: pl.x, y: pl.y, w: pl.w, h: pl.h }))
+    // A table's column cuts inside its piece only (one that overflows a fixed length is cut off).
+    const tableCuts = placed.flatMap((pl) => (pl.p.cuts ?? []).map((x) => pl.x + x).filter((x) => !pl.clip || (x > pl.clip[0] && x < pl.clip[1])))
+    const cuts = [...new Set([...tableCuts, ...(c.cut ? pieceEdges : [])])].filter((x) => x > 0 && x < length).sort((a, b) => a - b)
     if (cuts.length && pieceMax !== undefined) {
       const edges = [0, ...cuts, length]
       const longest = Math.max(...edges.slice(1).map((e, i) => e - (edges[i] ?? 0)))
@@ -874,13 +1061,25 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
         warn({
           code: 'length-clamped',
           blocking: true,
-          message: `A piece is ${Math.round(dotsToMm(longest, dpi))} mm long; this printer prints at most ${Math.round(dotsToMm(pieceMax, dpi))} mm per piece. Make the columns narrower or shorten the blocks next to the table.`,
+          message: pieced
+            ? `A piece is ${Math.round(dotsToMm(longest, dpi))} mm long; this printer prints at most ${Math.round(dotsToMm(pieceMax, dpi))} mm per piece. Add a Cut, make the columns narrower or shorten the blocks.`
+            : `A piece is ${Math.round(dotsToMm(longest, dpi))} mm long; this printer prints at most ${Math.round(dotsToMm(pieceMax, dpi))} mm per piece. Make the columns narrower or shorten the blocks next to the table.`,
         })
       }
     }
     const blocking = warnings.some((w) => w.blocking)
     warnings.sort((a, b) => Number(!!b.blocking) - Number(!!a.blocking))
     const texts = placed.flatMap((pl) => (pl.p.text ? [pl.p.text] : []))
+    const ignoredWhy = new Map(split.ignored.map((ig) => [ig.index, ig.why]))
+    const cutItems: CutInfo[] = flowItems.flatMap((p, i): CutInfo[] => {
+      if (!p.cut) return []
+      const why = ignoredWhy.get(i)
+      if (why) return [{ itemId: p.id, how: 'ignored', why }]
+      const x = placed[i]?.x ?? 0
+      // Only a strip without machine cuts is cut to the maximum; a Cut past it prints nothing.
+      if (x >= length) return [{ itemId: p.id, how: 'ignored', why: 'max' }]
+      return [{ itemId: p.id, how: c.cut ? 'printer' : 'mark', x }]
+    })
     return {
       bitmap,
       lengthDots: length,
@@ -893,6 +1092,9 @@ export async function renderLabel(doc: LabelDoc, target: RenderTarget, opts: Ren
       overflow: layout.overflow || placed.some((pl) => pl.p.tooTall),
       texts,
       ...(cuts.length ? { cuts } : {}),
+      ...(marks.length ? { marks } : {}),
+      ...(cutItems.length ? { cutItems } : {}),
+      ...(pieces && pieceSpans ? { cutPieces: pieceSpans.map(([start, end], k) => ({ start, end, autoDots: pieces.autoDots[k] ?? end - start })) } : {}),
     }
   } finally {
     if (!finished) raster.free()

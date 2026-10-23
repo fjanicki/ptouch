@@ -20,6 +20,7 @@ export type RenderWarningCode =
   | 'icons-missing' // the icon catalogue chunk could not be loaded (offline, stale deploy)
   | 'table-missing' // the table renderer chunk could not be loaded (offline, stale deploy)
   | 'length-clamped' // below printer minimum (padded) or above maximum
+  | 'cut-ignored' // a Cut block that would make an empty piece (docs/CUT-PLAN.md C3; not blocking)
   | 'canvas-noise' // anti-fingerprinting detected: printing must be blocked
   | 'empty' // nothing would be printed
 
@@ -60,6 +61,30 @@ export interface TextRenderInfo {
   pixelScale?: number
 }
 
+/** A Cut block as rendered (docs/CUT-PLAN.md §2). */
+export interface CutInfo {
+  itemId: string
+  /** 'printer' = the printer cuts here (in `cuts`), 'mark' = printed as a cut mark (in `marks`),
+   * 'ignored' = it would make an empty piece. */
+  how: 'printer' | 'mark' | 'ignored'
+  /** Position along the strip (dots); absent when ignored. */
+  x?: number
+  /** Why it is ignored: nothing before it, nothing since the Cut before, nothing after it, or it
+   * lies past the printer maximum the strip was cut to (no machine cuts). */
+  why?: 'start' | 'double' | 'end' | 'max'
+}
+
+/** A piece made by Cut blocks (docs/CUT-PLAN.md C2), as laid out on the strip. */
+export interface CutPiece {
+  /** `[start, end)` on the strip, dots. A piece may print as several pages (a table cut between
+   * its columns inside it). */
+  start: number
+  end: number
+  /** Its length with the auto length (blocks, gaps, margins; at least the printer minimum),
+   * dots: a fixed length shorter than this cuts its content off. */
+  autoDots: number
+}
+
 export interface RenderResult {
   /** The exact dots that are previewed AND printed. Owned by the caller: free() when replaced. */
   bitmap: Bitmap1
@@ -78,9 +103,16 @@ export interface RenderResult {
   texts?: TextRenderInfo[]
   /**
    * Where the printer cuts the label into pieces (table "cut between columns", docs/TABLE-PLAN.md
-   * §3): x in dots, sorted, inside (0, lengthDots). Absent = one piece. render/job.ts `pageSpans`.
+   * §3, and Cut blocks, docs/CUT-PLAN.md): x in dots, sorted, unique, inside (0, lengthDots).
+   * Absent = one piece. render/job.ts `pageSpans`.
    */
   cuts?: number[]
+  /** Cut blocks printed as cut marks (no cutter, or Cut each off): x in dots, sorted. */
+  marks?: number[]
+  /** Every Cut block, in flow order (docs/CUT-PLAN.md). Absent when the label has none. */
+  cutItems?: CutInfo[]
+  /** The pieces made by kept Cut blocks, in order (machine-cut or marked). Absent without one. */
+  cutPieces?: CutPiece[]
 }
 
 export interface RenderOptions {
@@ -92,7 +124,7 @@ export interface RenderOptions {
   loadFontBlob?: (ref: string) => Promise<Blob | undefined>
   signal?: AbortSignal
   /** The target printer has a cutter (`caps.autoCut`; default true): tables are cut between
-   * columns only then (and with `print.autoCut`). */
+   * columns, and strips at their Cut blocks, only then (and with `print.autoCut`). */
   cutter?: boolean
 }
 

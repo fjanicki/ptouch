@@ -183,6 +183,12 @@ describe('paging, print bar', () => {
     expect(batchTape([], 1, 1, 2, false, [10, 12])).toEqual({ totalMm: 14 + 16, exact: false })
   })
 
+  it('batchTape with records of different piece counts (Cut blocks; a piece empty in one record is dropped there)', () => {
+    // Record 1: three pieces, record 2: two (its middle piece was empty), record 3: one strip.
+    const t = batchTape([[20, 21, 22], [20, 22], 30], 3, 2, 2, true, 99)
+    expect(t).toEqual({ totalMm: 2 * (20 + 21 + 22 + 20 + 22 + 30) + 2 * 6 * 4 + LEADER_MM, exact: true })
+  })
+
   it('the plain-label note uses the print formula and the next job\'s leader (not the Chain switch)', () => {
     // 50 mm label, 2 mm feed each end, 2 copies.
     const withLeader = estimateTape([50, 50], 2, { leader: true }).totalMm
